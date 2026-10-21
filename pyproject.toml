@@ -41,9 +41,10 @@ client = ["websockets>=13.0"]
 # pocket_tts kwargs). An unpinned bump can silently break facts verified via
 # scripts/verify_mlx_tts_api.py — re-run that script, the live smokes and
 # scripts/profiling/rtf_benchmark.py before moving the pin (0.4.4 -> 0.6.1 was
-# verified that way, 2026-10-21; 0.6.1 also moves mlx to 0.32.4). Importing Kokoro pulls misaki (G2P) -> num2words/spacy/
-# en_core_web_sm AND torch, so this extra is heavy by design; keep it out of
-# lean base.
+# verified that way, 2026-10-21; 0.6.1 also moves mlx to 0.32.4).
+#
+# Importing Kokoro pulls misaki (G2P) -> num2words/spacy/en_core_web_sm AND
+# torch, so this extra is heavy by design; keep it out of lean base.
 #
 # mlx-audio 0.6.1 imports misaki lazily (a helpful ImportError at synth time if
 # absent), so it is NOT a transitive hard dep of mlx-audio — Kokoro's G2P needs
@@ -111,7 +112,7 @@ dia = ["websockets>=13.0", "mlx-audio==0.6.1"]
 # voice cloning (``ref_audio``/``ref_text`` actively guarded out, decision #2).
 #
 # mlx-audio is pinned to 0.6.1 (R8), which already ships the ``qwen3_tts``
-# model family — no pin bump. Like Pocket and dia, qwen3 needs NO bespoke
+# model family. Like Pocket and dia, qwen3 needs NO bespoke
 # tokenizer dep: its tokenizers (AutoTokenizer + speech tokenizer via
 # transformers) are transitive hard deps of mlx-audio, so this extra is just
 # mlx-audio (unlike kokoro's misaki / voxtral_tts's mistral-common).
@@ -131,7 +132,7 @@ qwen3_tts = ["websockets>=13.0", "mlx-audio==0.6.1"]
 # #2). Advertises a net-new string extra, ``instruct``.
 #
 # mlx-audio is pinned to 0.6.1 (R8), which already ships the Fish Speech model
-# family under ``fish_qwen3_omni`` — no pin bump. Like Pocket/dia/qwen3, fish
+# family under ``fish_qwen3_omni``. Like Pocket/dia/qwen3, fish
 # needs NO bespoke codec/tokenizer dep: ``fish_s1_dac``/``FishTokenizer`` are
 # transitive hard deps of mlx-audio, so this extra is just mlx-audio (unlike
 # kokoro's misaki / voxtral_tts's mistral-common).

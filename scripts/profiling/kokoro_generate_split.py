@@ -20,7 +20,7 @@ normal run — an accepted profiling distortion that buys a faithful split.
 total ≈ acoustic + vocoder (+ small framing overhead).
 
 If upstream restructures these symbols, the hooks no-op with a clear warning
-(re-check against the installed mlx-audio; pin is 0.4.4).
+(re-check against the installed mlx-audio; written against 0.4.4, project pin is now 0.6.1).
 
 Usage (run with the GPU otherwise idle — see rtf_benchmark.py GPU note):
   uv run --extra kokoro python scripts/profiling/kokoro_generate_split.py --voice af_heart

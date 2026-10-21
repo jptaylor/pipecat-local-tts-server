@@ -138,7 +138,7 @@ _BRIDGE_MAXSIZE = 8
 # ``semantic_token_budget = min(max_new_tokens, max(32, text_token_count *
 # 12))`` — verbatim from the installed ``fish_speech.py:699-703`` (not a
 # public API, not documented, and not covered by mlx-audio's own version
-# guarantees). The real safety net here is the ``mlx-audio==0.4.4`` pin, NOT
+# guarantees). The real safety net here is the ``mlx-audio==0.6.1`` pin, NOT
 # this reimplementation: the pin is what keeps the mirrored formula in sync
 # with the model code actually running. If a future mlx-audio bump changes
 # ``699-703`` and the pin is bumped WITHOUT re-verifying this formula against
@@ -542,7 +542,7 @@ class FishBackend:
         mx.disable_compile()
 
         # Re-verify the live ``generate()`` signature. Phase 0 pinned
-        # ``mlx-audio==0.4.4``; a future bump that drops one of the advertised
+        # ``mlx-audio==0.6.1``; a future bump that drops one of the advertised
         # extras would silently break the contract. Warn (do not hard-fail) so
         # an upstream signature reshape is actionable rather than fatal at
         # serve time. Shared helper (dia.py uses the same one).

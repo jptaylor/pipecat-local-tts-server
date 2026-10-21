@@ -5,7 +5,15 @@
 **Affected version:** `0.4.4` (latest PyPI) and `main` as of 2026-06-24
 **File:** `mlx_audio/tts/models/kokoro/istftnet.py`
 **Severity:** High — Kokoro TTS synthesis raises for the majority of inputs.
-**Resolution:** FIXED UPSTREAM, AWAITING RELEASE. Issue #803 closed 2026-07-01 by
+**Update 2026-10-21:** pin bumped to `mlx-audio==0.6.1`, which contains the
+upstream fix (#785 merged 2026-07-01). Probed UNPATCHED on 0.6.1 (no
+`_apply_kokoro_vocoder_fix`): "Hello there.", "GOAL!", 60 O's and a normal
+sentence all synthesize without the broadcast error. PR #814 was closed without
+merging. The `_apply_kokoro_vocoder_fix` shim in `tts_server/backends/kokoro.py`
+(this note calls it `_patch_sinegen`) is therefore removable — follow-up: delete
+it + its call site per "On pin bump" below, keep the regression test.
+
+**Resolution:** FIXED UPSTREAM, AWAITING RELEASE (now released: 0.6.1). Issue #803 closed 2026-07-01 by
 [PR #785](https://github.com/Blaizzy/mlx-audio/pull/785) (Lucas Newman, merge commit
 `2fd4ca9`) — the fix is on `main` only; the latest PyPI release is still 0.4.4
 (2026-06-06), which predates it. Our `_patch_sinegen` workaround in

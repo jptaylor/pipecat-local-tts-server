@@ -180,7 +180,7 @@ class DiaBackend:
         )
 
         # Re-verify the live ``generate()`` signature (R7/R8). Phase 0 pinned
-        # ``mlx-audio==0.4.4``; a future bump that drops ``temperature``/``top_p``
+        # ``mlx-audio==0.6.1``; a future bump that drops ``temperature``/``top_p``
         # or makes ``voice`` positionally required would silently break the
         # contract. Warn (do not hard-fail) so an upstream signature reshape is
         # actionable rather than fatal at serve time. Shared helper (fish_tts is

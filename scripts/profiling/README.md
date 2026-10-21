@@ -34,7 +34,8 @@ Hooks mlx-audio 0.4.4 internals (`kokoro.Model.__call__`,
 `istftnet.Decoder.__call__`) to attribute generate() wall time to the **acoustic
 model** (ALBERT + ProsodyPredictor + TextEncoder) vs the **istftnet vocoder**.
 Tells us whether the ~12x is a fixable inefficiency or the model's floor.
-Version-pinned to mlx-audio 0.4.4; hooks no-op with a warning if symbols move.
+Written against mlx-audio 0.4.4 internals (the project pin is now 0.6.1; not
+re-verified there); hooks no-op with a warning if symbols move.
 
 ```sh
 uv run --extra kokoro python scripts/profiling/kokoro_generate_split.py --voice af_heart

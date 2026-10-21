@@ -283,6 +283,10 @@ Operators are responsible for honouring each model's license.
 
 ### Voxtral TTS capabilities (as shipped)
 
+> Capability/latency figures in the per-backend sections below were measured on
+> mlx-audio 0.4.4; the pin is now 0.6.1 and an A/B re-run showed no steady-state
+> TTFB/RTF change (see `scripts/profiling/README.md`).
+
 `streaming:true` sub-segment streamer (native `stream`/`streaming_interval`,
 locked to 0.3 s — measured TTFB 0.395 s, see the dev-plan Findings). Verified
 against mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 (mlx-audio 0.4.4):
