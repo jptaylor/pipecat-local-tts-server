@@ -586,3 +586,27 @@ How to read it for a decision:
     reliability trade (see the style-control comparison above).
   - Anything CC-BY-NC-tolerant with best raw voice quality regardless of
     speed → `voxtral_tts`.
+
+## mlx-audio 0.4.4 -> 0.6.1 A/B (2026-10-21)
+
+`rtf_benchmark.py --warm 2` per backend on each version, same M4 Max, same
+background load (an idle-ish STT server and a `pocket_tts` launchd agent were
+running, so absolute numbers are NOT pristine — e.g. voxtral_tts RTF reads ~1.7
+here vs ~1.1 uncontended above; compare columns, not rows to the tables above).
+Median over the 3 phrases x 3 warm runs.
+
+| backend | cold start 0.4.4 / 0.6.1 | TTFB s 0.4.4 / 0.6.1 | RTF 0.4.4 / 0.6.1 |
+|---|---|---|---|
+| kokoro | 3.0 / 2.5 s | 0.08 / 0.08 | 0.03 / 0.03 |
+| pocket_tts | 1.8 / 0.8 s | 0.02 / 0.02 | 0.05 / 0.05 |
+| qwen3_tts | 2.4 / 4.5 s | 0.12 / 0.12 | 0.28 / 0.26 |
+| voxtral_tts | 7.1 / 5.2 s | 0.64 / 0.63 | 1.76 / 1.65 |
+| fish_tts | 4.8 / 4.4 s | 9.0 / 10.2 | 1.54 / 1.52 |
+| dia | 10.0 / 39.1 s | n/a (see below) | 2.74 / 2.40 |
+
+No steady-state regression. Caveats: dia's output length is non-deterministic
+(same text produced 30 s of audio on one version and 7 s on the other), so only
+its per-audio-second RTF is comparable, and its cold-start warmup is variable
+for the same reason; qwen3_tts cold start roughly doubled (2.4 -> 4.5 s) — a
+single cold sample each, unexplained, watch it if launchd start-up time matters.
+
