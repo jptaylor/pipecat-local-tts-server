@@ -1,6 +1,6 @@
 [project]
 name = "pipecat-local-tts-server"
-version = "0.5.0"
+version = "0.6.0"
 description = "Standalone local WebSocket text-to-speech (TTS) server, client, and pluggable mlx-audio backends for the Pipecat ecosystem"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -36,24 +36,26 @@ dependencies = [
 client = ["websockets>=13.0"]
 # Full server install with the Kokoro mlx-audio backend.
 #
-# mlx-audio is pinned to 0.4.4 (R8): the TTS API drifted between 0.3.0 and
-# 0.4.4 (streaming-chunk fields appeared, voxtral_tts was added, pocket_tts
-# kwargs changed). An unpinned bump can silently break facts verified via
-# scripts/verify_mlx_tts_api.py against 0.4.4 — re-run that script before
-# widening the pin. Importing Kokoro pulls misaki (G2P) -> num2words/spacy/
-# en_core_web_sm AND torch, so this extra is heavy by design; keep it out of
-# lean base.
+# mlx-audio is pinned to 0.6.1 (R8): the TTS API drifts between releases
+# (0.3.0 -> 0.4.4 added streaming-chunk fields, voxtral_tts and changed
+# pocket_tts kwargs). An unpinned bump can silently break facts verified via
+# scripts/verify_mlx_tts_api.py — re-run that script, the live smokes and
+# scripts/profiling/rtf_benchmark.py before moving the pin (0.4.4 -> 0.6.1 was
+# verified that way, 2026-10-21; 0.6.1 also moves mlx to 0.32.4).
 #
-# mlx-audio 0.4.4 imports misaki lazily (a helpful ImportError at synth time if
+# Importing Kokoro pulls misaki (G2P) -> num2words/spacy/en_core_web_sm AND
+# torch, so this extra is heavy by design; keep it out of lean base.
+#
+# mlx-audio 0.6.1 imports misaki lazily (a helpful ImportError at synth time if
 # absent), so it is NOT a transitive hard dep of mlx-audio — Kokoro's G2P needs
 # it declared explicitly. ``misaki[en]`` drags in num2words/spacy/en_core_web_sm
 # AND torch, which is what makes this extra heavy (R3); keep it behind the extra.
-kokoro = ["websockets>=13.0", "mlx-audio==0.4.4", "misaki[en]"]
+kokoro = ["websockets>=13.0", "mlx-audio==0.6.1", "misaki[en]"]
 # Full server install with the Voxtral TTS mlx-audio backend (Phase 5a) — the
 # streaming reference backend (native ``stream``/``streaming_interval``, no
 # ``ref_audio`` cloning channel).
 #
-# mlx-audio is pinned to 0.4.4 (R8), same policy as the kokoro extra. Voxtral's
+# mlx-audio is pinned to 0.6.1 (R8), same policy as the kokoro extra. Voxtral's
 # tekken tokenizer needs ``mistral-common[audio]`` (the Mistral speech tokenizer
 # that builds the synthesis prompt); without it ``model.generate()`` raises at
 # load/encode time. It is NOT a transitive hard dep of mlx-audio, so the extra
@@ -68,30 +70,31 @@ kokoro = ["websockets>=13.0", "mlx-audio==0.4.4", "misaki[en]"]
 # (code), not the weights; the weights download on first ``serve``. Operators
 # are responsible for honouring the model license. Kokoro (Apache-2.0) remains
 # the default commercial-safe backend. See README → "Backends & licenses".
-voxtral_tts = ["websockets>=13.0", "mlx-audio==0.4.4", "mistral-common[audio]>=1.11,<2"]
+voxtral_tts = ["websockets>=13.0", "mlx-audio==0.6.1", "mistral-common[audio]>=1.11,<2"]
 # Full server install with the Pocket TTS mlx-audio backend (Phase 5b) — a
 # second streaming:true backend; also the no-cloning negative-guard backend
 # (its generate() exposes ref_audio/frames_after_eos which we deliberately leave
 # unwired, decision #2).
 #
-# mlx-audio is pinned to 0.4.4 (R8). Pocket needs NO bespoke tokenizer dep: its
-# tokenizer (sentencepiece, via mlx-lm) plus huggingface-hub/requests/transformers
-# are all transitive hard deps of mlx-audio — so unlike kokoro (misaki) and
-# voxtral_tts (mistral-common), this extra is just mlx-audio.
+# mlx-audio is pinned to 0.6.1 (R8). Pocket needs no bespoke tokenizer dep: its
+# tokenizer (sentencepiece) plus huggingface-hub/transformers are transitive hard
+# deps of mlx-audio. ``requests`` is the exception: 0.6.1's pocket_tts module
+# imports it (``pocket_tts/utils.py``) but mlx-audio does not declare it (and
+# huggingface-hub>=1.0 no longer brings it in), so it is listed explicitly.
 #
 # LICENSE NOTE: the Pocket TTS weights (``mlx-community/pocket-tts``) are
 # **CC-BY-4.0** — permissive, commercial use allowed WITH attribution (verified
 # via the HF model card). Unlike voxtral_tts (CC-BY-NC), Pocket is
 # commercial-safe. The package ships only runtime; weights download on first
 # ``serve``. See README → "Backends & licenses".
-pocket_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
+pocket_tts = ["websockets>=13.0", "mlx-audio==0.6.1", "requests"]
 # Full server install with the dia multi-speaker DIALOGUE mlx-audio backend
 # (Phase 5c / its own plan) — a segment-level (``split_pattern='\n'``, like
 # Kokoro) ``streaming:false`` backend. Speakers are addressed purely in-text via
 # ``[S1]``/``[S2]`` tags inside ``plain`` text (``voice_count: 0``); no voice
 # cloning (``ref_audio``/``ref_text`` left unwired, decision #2).
 #
-# mlx-audio is pinned to 0.4.4 (R8). dia needs NO bespoke tokenizer dep — like
+# mlx-audio is pinned to 0.6.1 (R8). dia needs NO bespoke tokenizer dep — like
 # Pocket, its tokenizer and transitive deps come through mlx-audio — so this
 # extra is just mlx-audio (unlike kokoro's misaki / voxtral_tts's
 # mistral-common).
@@ -100,7 +103,7 @@ pocket_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # under **Apache-2.0** — permissive, commercial use allowed. The package ships
 # only runtime; weights download on first ``serve``. See README → "Backends &
 # licenses".
-dia = ["websockets>=13.0", "mlx-audio==0.4.4"]
+dia = ["websockets>=13.0", "mlx-audio==0.6.1"]
 # Full server install with the Qwen3-TTS mlx-audio backend (its own plan) — a
 # Voxtral-derived ``streaming:true`` sub-segment streamer (native
 # ``stream``/``streaming_interval``; token-quantized cadence). The default model
@@ -108,8 +111,8 @@ dia = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # reachable via ``--model`` as a ``voice_count: 0`` unconditioned model. No
 # voice cloning (``ref_audio``/``ref_text`` actively guarded out, decision #2).
 #
-# mlx-audio is pinned to 0.4.4 (R8), which already ships the ``qwen3_tts``
-# model family — no pin bump. Like Pocket and dia, qwen3 needs NO bespoke
+# mlx-audio is pinned to 0.6.1 (R8), which already ships the ``qwen3_tts``
+# model family. Like Pocket and dia, qwen3 needs NO bespoke
 # tokenizer dep: its tokenizers (AutoTokenizer + speech tokenizer via
 # transformers) are transitive hard deps of mlx-audio, so this extra is just
 # mlx-audio (unlike kokoro's misaki / voxtral_tts's mistral-common).
@@ -119,7 +122,7 @@ dia = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # tag ``license: apache-2.0``; the HF repo ships **no LICENSE file** (verified
 # in the Phase-0 gate, Q6). The package ships only runtime; weights download on
 # first ``serve``. See README → "Backends & licenses".
-qwen3_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
+qwen3_tts = ["websockets>=13.0", "mlx-audio==0.6.1"]
 # Full server install with the Fish Audio S2 Pro mlx-audio backend (its own
 # plan) — a dia-derived ``streaming:false`` segment-level backend
 # (``generate(stream=True)`` raises ``NotImplementedError`` upstream). Default
@@ -128,8 +131,8 @@ qwen3_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # voice cloning (``ref_audio``/``ref_text`` actively guarded out, decision
 # #2). Advertises a net-new string extra, ``instruct``.
 #
-# mlx-audio is pinned to 0.4.4 (R8), which already ships the Fish Speech model
-# family under ``fish_qwen3_omni`` — no pin bump. Like Pocket/dia/qwen3, fish
+# mlx-audio is pinned to 0.6.1 (R8), which already ships the Fish Speech model
+# family under ``fish_qwen3_omni``. Like Pocket/dia/qwen3, fish
 # needs NO bespoke codec/tokenizer dep: ``fish_s1_dac``/``FishTokenizer`` are
 # transitive hard deps of mlx-audio, so this extra is just mlx-audio (unlike
 # kokoro's misaki / voxtral_tts's mistral-common).
@@ -143,7 +146,7 @@ qwen3_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # Q6) — see README → "Backends & licenses" before using this backend
 # commercially. The package ships only runtime; weights download on first
 # ``serve``.
-fish_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
+fish_tts = ["websockets>=13.0", "mlx-audio==0.6.1"]
 # Reference Pipecat-framework adapter (``examples/pipecat_tts_service.py``).
 # This is for running the *example*, not the server itself — it pulls the
 # Pipecat framework (and ``client`` for ``tts_server.client``). It is NOT a

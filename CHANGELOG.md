@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-21
+
+### Changed
+
+- **mlx-audio 0.4.4 -> 0.6.1 for every backend extra** (`kokoro`, `voxtral_tts`,
+  `pocket_tts`, `dia`, `qwen3_tts`, `fish_tts`); mlx moves to 0.32.4 and
+  transformers to 5.20. Verified with `scripts/verify_mlx_tts_api.py`
+  (`generate()` signatures and streaming fields unchanged), the full unit suite
+  (415 passed, 2 skipped), every live smoke (`just smoke-*`, multiconn, reconnect) and an
+  A/B `rtf_benchmark.py` run against 0.4.4 under identical conditions: no
+  steady-state TTFB/RTF regression on any backend (see `scripts/profiling/README.md`).
+- `pocket_tts` extra now declares `requests` explicitly: mlx-audio 0.6.1's
+  `pocket_tts` module imports it without declaring it.
+- Existing `uv.lock` environments need `uv sync` to pick up the new pin.
+- Probed unpatched on 0.6.1: Kokoro no longer hits the upstream `SineGen` broadcast
+  bug, so `_apply_kokoro_vocoder_fix` is now removable (left in place here; follow-up,
+  see `docs/upstream/mlx-audio-kokoro-sinegen-broadcast.md`).
+
 ## [0.5.0] - 2026-08-09
 
 ### Added

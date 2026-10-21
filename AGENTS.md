@@ -20,12 +20,12 @@ and fails on the missing `websockets`).
 
 ```sh
 uv sync --extra client      # lean base (websockets) — client/bot consumer
-uv sync --extra kokoro      # Kokoro backend (Apple Silicon; mlx-audio==0.4.4 + misaki[en])
-uv sync --extra voxtral_tts # Voxtral TTS — streaming:true (mlx-audio==0.4.4 + mistral-common[audio]); CC-BY-NC weights
-uv sync --extra pocket_tts  # Pocket TTS — streaming:true (mlx-audio==0.4.4); CC-BY-4.0 weights
-uv sync --extra dia         # dia DIALOGUE — streaming:false, voice_count:0 (mlx-audio==0.4.4); Apache-2.0 weights
-uv sync --extra qwen3_tts   # Qwen3-TTS — streaming:true, 9 speakers (mlx-audio==0.4.4); apache-2.0 card tag
-uv sync --extra fish_tts    # Fish Audio S2 Pro — streaming:false, voice_count:0 (mlx-audio==0.4.4); Fish Audio Research License (non-commercial)
+uv sync --extra kokoro      # Kokoro backend (Apple Silicon; mlx-audio==0.6.1 + misaki[en])
+uv sync --extra voxtral_tts # Voxtral TTS — streaming:true (mlx-audio==0.6.1 + mistral-common[audio]); CC-BY-NC weights
+uv sync --extra pocket_tts  # Pocket TTS — streaming:true (mlx-audio==0.6.1); CC-BY-4.0 weights
+uv sync --extra dia         # dia DIALOGUE — streaming:false, voice_count:0 (mlx-audio==0.6.1); Apache-2.0 weights
+uv sync --extra qwen3_tts   # Qwen3-TTS — streaming:true, 9 speakers (mlx-audio==0.6.1); apache-2.0 card tag
+uv sync --extra fish_tts    # Fish Audio S2 Pro — streaming:false, voice_count:0 (mlx-audio==0.6.1); Fish Audio Research License (non-commercial)
 uv sync --extra examples    # reference Pipecat adapter (pins pipecat-ai==1.4.0)
 ```
 

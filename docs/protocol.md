@@ -10,7 +10,7 @@ speak. It mirrors the sibling `pipecat-local-stt-server` protocol philosophy
 
 > Status: design spec, authored ahead of implementation (dev plan
 > `docs/dev_plans/20260624-feature-tts-server-v1.md`). Where a value is a backend fact it
-> is marked **VERIFIED** (mlx-audio 0.4.4, 2026-06-24); where it is a chosen default it is
+> is marked **VERIFIED** (mlx-audio 0.4.4, 2026-06-24; `generate()` signatures re-checked unchanged on 0.6.1, 2026-10-21); where it is a chosen default it is
 > marked so. Exact `ErrorCode` string values mirror stt's enum and are pinned in
 > `protocol.py` at implementation; this doc lists their semantics.
 

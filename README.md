@@ -32,27 +32,27 @@ From [PyPI](https://pypi.org/project/pipecat-local-tts-server/) (consumers):
 # client-only lean base (websockets) — for a bot that just talks to a server
 uv add pipecat-local-tts-server            # or: pip install pipecat-local-tts-server
 
-# Kokoro backend (Apple Silicon; pulls mlx-audio==0.4.4 + misaki[en])
+# Kokoro backend (Apple Silicon; pulls mlx-audio==0.6.1 + misaki[en])
 uv add "pipecat-local-tts-server[kokoro]"  # or: pip install "pipecat-local-tts-server[kokoro]"
 
-# Voxtral TTS backend — streaming:true (Apple Silicon; mlx-audio==0.4.4 +
+# Voxtral TTS backend — streaming:true (Apple Silicon; mlx-audio==0.6.1 +
 # mistral-common[audio]). NOTE: model weights are CC-BY-NC (non-commercial).
 uv add "pipecat-local-tts-server[voxtral_tts]"
 
-# Pocket TTS backend — streaming:true, fast (Apple Silicon; mlx-audio==0.4.4).
+# Pocket TTS backend — streaming:true, fast (Apple Silicon; mlx-audio==0.6.1).
 # Weights are CC-BY-4.0 (commercial OK with attribution).
 uv add "pipecat-local-tts-server[pocket_tts]"
 
 # dia DIALOGUE backend — streaming:false, multi-speaker via in-text [S1]/[S2]
-# tags (Apple Silicon; mlx-audio==0.4.4). Weights are Apache-2.0 (commercial-safe).
+# tags (Apple Silicon; mlx-audio==0.6.1). Weights are Apache-2.0 (commercial-safe).
 uv add "pipecat-local-tts-server[dia]"
 
 # Qwen3-TTS backend — streaming:true, multilingual, 9 named speakers (Apple
-# Silicon; mlx-audio==0.4.4). Weights carry the HF card tag apache-2.0.
+# Silicon; mlx-audio==0.6.1). Weights carry the HF card tag apache-2.0.
 uv add "pipecat-local-tts-server[qwen3_tts]"
 
 # Fish (S2 Pro) backend — streaming:false, instruct + inline [tag]/
-# <|speaker:N|> style control (Apple Silicon; mlx-audio==0.4.4). Weights are
+# <|speaker:N|> style control (Apple Silicon; mlx-audio==0.6.1). Weights are
 # under the Fish Audio Research License — free for research/non-commercial
 # use, commercial use requires a separate agreement (business@fish.audio).
 uv add "pipecat-local-tts-server[fish_tts]"
@@ -64,28 +64,28 @@ From source (development):
 # client-only (lean base: websockets) — for a bot that just talks to a server
 uv sync --extra client
 
-# Kokoro backend (Apple Silicon; pulls mlx-audio==0.4.4 + misaki[en], which
+# Kokoro backend (Apple Silicon; pulls mlx-audio==0.6.1 + misaki[en], which
 # drags in spacy/num2words/torch — heavy by design, kept out of lean base)
 uv sync --extra kokoro
 
-# Voxtral TTS backend — streaming:true (Apple Silicon; mlx-audio==0.4.4 +
+# Voxtral TTS backend — streaming:true (Apple Silicon; mlx-audio==0.6.1 +
 # mistral-common[audio]). Weights are CC-BY-NC; see "Backends & licenses".
 uv sync --extra voxtral_tts
 
-# Pocket TTS backend — streaming:true, fast (Apple Silicon; mlx-audio==0.4.4).
+# Pocket TTS backend — streaming:true, fast (Apple Silicon; mlx-audio==0.6.1).
 # Weights are CC-BY-4.0 (commercial OK with attribution).
 uv sync --extra pocket_tts
 
 # dia DIALOGUE backend — streaming:false, multi-speaker via in-text [S1]/[S2]
-# tags (Apple Silicon; mlx-audio==0.4.4). Weights are Apache-2.0 (commercial-safe).
+# tags (Apple Silicon; mlx-audio==0.6.1). Weights are Apache-2.0 (commercial-safe).
 uv sync --extra dia
 
 # Qwen3-TTS backend — streaming:true, multilingual, 9 named speakers (Apple
-# Silicon; mlx-audio==0.4.4). Weights carry the HF card tag apache-2.0.
+# Silicon; mlx-audio==0.6.1). Weights carry the HF card tag apache-2.0.
 uv sync --extra qwen3_tts
 
 # Fish (S2 Pro) backend — streaming:false, instruct + inline [tag]/
-# <|speaker:N|> style control (Apple Silicon; mlx-audio==0.4.4). Weights are
+# <|speaker:N|> style control (Apple Silicon; mlx-audio==0.6.1). Weights are
 # under the Fish Audio Research License; see "Backends & licenses".
 uv sync --extra fish_tts
 
@@ -282,6 +282,10 @@ Operators are responsible for honouring each model's license.
 > *fish_tts capabilities* below.
 
 ### Voxtral TTS capabilities (as shipped)
+
+> Capability/latency figures in the per-backend sections below were measured on
+> mlx-audio 0.4.4; the pin is now 0.6.1 and an A/B re-run showed no steady-state
+> TTFB/RTF change (see `scripts/profiling/README.md`).
 
 `streaming:true` sub-segment streamer (native `stream`/`streaming_interval`,
 locked to 0.3 s — measured TTFB 0.395 s, see the dev-plan Findings). Verified
