@@ -1,0 +1,486 @@
+# Task: tts-server — `phonon` (Gradium Phonon 31M) backend
+
+**Status**: Not Started
+**Component**: tts-server (backends)
+**Assigned to**: Varun Singh
+**Priority**: Medium
+**Branch**: `feature/tts-phonon-backend` (off `main` @ `a3f1192`)
+**Created**: 2026-10-21
+**Review Gates**: full
+
+## Objective
+
+Add a `phonon` streaming TTS backend (`gradium/phonon-31m-en`; licence verified in Phase 0 Q6,
+the spike saw Apache-2.0) through mlx-audio 0.6.1's `pocket_tts` module, with **operator-selected
+named voices** drawn from the ~102-voice `gradium/phonon-voices` catalog, a `voices` CLI
+subcommand to list that catalog, unit tests, justfile smoke recipes, a profiling entry, and a
+**0.7.0** release. **No session-loop or wire-protocol changes** — the backend plugs into the
+existing `BridgedStream` (`tts_server/backends/_bridge_stream.py`) / `_stream_util` bridge like
+every other backend.
+
+## Context
+
+- **Spike (2026-10-21, scratchpad `phonon_spike.py`, mlx-audio 0.6.1, rev `52433c4697`)**:
+  load 1.2 s, TTFB 43 ms, RTF 0.034, 24 kHz, default chunks 2.0 s (`streaming_interval=2.0`).
+  With Parakeet-v3 looping in another process: TTFB 53 ms, RTF 0.042. `gen.close()` between
+  chunks cancels cleanly and the model stays healthy. Details in memory `phonon-tts-spike.md`.
+- **Loader**: Phonon has no module of its own; its checkpoint (`flow_lm` + `mimi` keys, no
+  `model_type`) routes to `mlx_audio.tts.models.pocket_tts` (PR #1049, first in 0.6.1). The pin
+  is already `mlx-audio==0.6.1` everywhere (PR #17 / 0.6.0), so **no pin conflict remains**.
+- **Blocker**: on 2026-10-21 Gradium pushed HF commit `5c8a65f0` ("add transformers support")
+  setting `model_type: gradium_phonon_tts`. mlx-audio 0.6.1 and main (`7cc680b2`) fail with
+  "Model type gradium_phonon_tts not supported". Revision `52433c4697` loads. The backend must
+  therefore load a **pinned revision** until a separate repo-wide mlx-audio bump supports the
+  new config. Revision durability (the sha staying fetchable and ungated) is an **assumption**;
+  Phase 0 Q1 is its point-in-time detector and the recovery path is `--model <absolute snapshot
+  path>`, which loads as given (see Requirements).
+- **Voices (review-plan reads of the live repos, 2026-10-21)**: the 31M checkpoint has only
+  `default` (shipped as `default-voice.safetensors`) and no speaker encoder (`ref_audio` raises
+  "checkpoint omits the speaker encoder"). `gradium/phonon-voices` holds **102 voices** —
+  37 English, 15 French, 13 German, 25 Spanish, 12 Portuguese — as
+  `voices/<id>.safetensors` (1×512×125, ~256 KB each, ~26 MB total), plus 102 `samples/*.ogg`
+  and a machine-readable `voices.jsonl` (name, voice_id, language, locale, gender, age,
+  description). Both repos read as Apache-2.0 / ungated with an authenticated client — Phase 0
+  re-verifies with `token=False`. The voices repo (updated 2026-10-20, format tag
+  `ba7a5a45@300`) is newer than the pinned model revision, and only one voice was tried in the
+  spike. Display names are not plain ASCII slugs (e.g. "Elodie-Rose", "Lucía-Sol", "Captain
+  Silas Blackwater"). Named-voice TTFB ≈ 0.14 s vs 0.043 s default (mlx-audio recomputes the
+  voice prompt state on every `generate()` call, so the cost is per call); first fetch ≈ 1.2 s.
+- **Voice security constraint**: `server._validate_voice` restricts `voice` to the advertised
+  set because mlx-audio treats `*.safetensors` / `hf://` strings as loadable paths (file read /
+  network egress). For the encoder-less 31M an unknown bare name raises `ValueError("Unknown
+  voice")` in mlx-audio 0.6.1, but the loader still special-cases bare names for other models
+  (e.g. Kyutai's `PREDEFINED_VOICES`, and the catalog has a voice named "Alba"). Path-only
+  resolution is therefore kept as defence in depth: the resolved argument is **always an
+  absolute local `.safetensors` path**.
+- **Operator settings precedent**: there is no runtime config-file mechanism (the only `toml`
+  is `pyproject.toml`). The one backend-specific operator setting so far,
+  `PIPECAT_TTS_KOKORO_EXTRA_LANGS`, is env-only: read inside the backend constructor
+  (`kokoro.py`, `env_str_set`), baked into the launchd plist and syntax-validated by
+  `scripts/render_tts_plist.py`, and an unknown value is **warned about and dropped**, not
+  fatal. Voice selection follows that precedent exactly.
+- **HF cache under launchd is not new**: every backend already loads model weights from HF with
+  only `HOME` baked into the plist, so the default `~/.cache/huggingface` is what agents use.
+  This plan adds no HF environment passthrough.
+- 40M Phonon models were recorded in the spike as CC BY-NC and gated — out of scope (not
+  defaulted, not smoke-tested); no doc quotes that statement unless Phase 0 Q6 verifies it.
+- `docs/dev_plans/README.md` does not exist; nothing to index.
+
+## Requirements
+
+- **Backend `phonon`**: `streaming: true`, 24 kHz, `languages: ["en"]`, default model
+  `gradium/phonon-31m-en`.
+- **Revision pin = per-repo table** `{repo_id: sha}` (full 40-char sha from Phase 0 Q2). A model
+  with a table entry is fetched with `snapshot_download(repo, revision=sha)` (allow-patterns
+  chosen from the file list Q2 records, mirroring mlx-audio's `DEFAULT_ALLOW_PATTERNS`) and
+  loaded from the returned local path. A model with no entry (another repo id, or a local path
+  such as an absolute snapshot path) loads as given with a logged warning — this is also the
+  recovery path if the pinned sha disappears. The effective repo, revision and resolved path
+  are logged at startup. An unreachable or unknown pinned sha is a **startup error** — never a
+  fallback to HEAD.
+- **Voices — catalog vs enabled set**:
+  - The *catalog* is a static name→id table bundled in the package, derived from `voices.jsonl`
+    at a recorded 40-char voices-repo sha, with a language per voice. Names are slugged
+    (NFKD-strip diacritics, lowercase, non-alphanumerics → `_`) and unique after slugging.
+  - The *enabled set* is chosen by the operator ahead of time with env var
+    `PIPECAT_TTS_PHONON_VOICES` (comma-separated slugs, matching
+    `^[a-z0-9_]+(,[a-z0-9_]+)*$`; duplicates collapsed in order), read in
+    `PhononBackend.__init__` with the same helper Kokoro uses. Unset → `default` only. There is
+    **no `serve` flag** and no change to `make_backend`.
+  - Only enabled voices are advertised (`default` always first) and only enabled voices are
+    downloaded, **one file each**: `hf_hub_download(voices_repo, "voices/<id>.safetensors",
+    revision=<voices sha>)`, trying `local_files_only=True` first so a warm cache makes no
+    network call. After download the backend asserts `os.path.isfile` for every resolved path.
+  - **Soft failure (Kokoro-style)**: an enabled name outside the catalog, or an enabled voice
+    that cannot be fetched (offline and uncached, gated, deleted), is logged as a warning and
+    **skipped** — not advertised, server still starts with `default` plus the voices that
+    resolved. A client asking for a skipped voice gets `invalid_config` from the existing server
+    validation; there is no silent substitution of the default voice. The final advertised list
+    is logged at startup and is what `server.status` reports.
+  - Enabling a non-English voice logs a warning (the model is `-en`); Phase 0 Q4 synthesizes
+    several to document the caveat.
+  - `generate(voice=...)` receives only an absolute local `.safetensors` path (`default` →
+    kwarg omitted); no client string, `hf://` URL or bare name ever reaches it.
+- **Catalog CLI**: `python -m tts_server voices [--backend phonon]` lists the catalog (name,
+  language, enabled, cached); `--backend` defaults to `phonon` and any other value exits non-zero
+  with "no voice catalog for backend X". `--refresh` fetches the current `voices.jsonl`, shows
+  what differs from the bundled table and **changes nothing** (v1). Using refreshed voices means
+  updating the bundled table after verification against the pinned model. `voices` is added to
+  the subcommand dispatch set in `__main__.py`. No wire-protocol surface.
+- Never forward `ref_audio` or `frames_after_eos` (no cloning — v1 decision #2; same negative
+  guard as `pocket_tts`). Extras = what `generate()` accepts (Phase 0 Q3; expected
+  `temperature`); enforcement is the `merge_extras(_EXTRA_COERCERS, …)` allowlist.
+  `_introspect_util.verify_generate_signature` additionally warns at serve time (log-only).
+- `phonon` extra in `pyproject.toml`: `websockets>=13.0`, `mlx-audio==0.6.1`, `requests`
+  (undeclared by 0.6.1's `pocket_tts/utils.py`, same as the `pocket_tts` extra) and
+  `huggingface_hub>=2.0` (imported directly, lazily, inside `start()`/CLI handlers only; the
+  offline-cache behaviour relied on here is a 2.x behaviour, and Q2 records the locked
+  version). Lean base stays import-clean.
+- Cancel/barge-in via the existing `BridgedStream.cancel()` — verified between chunks and
+  through the real server.
+- The repo-wide mlx-audio pin stays `0.6.1`; moving it is a separate bump.
+- Version `0.6.0` → `0.7.0`, CHANGELOG entry, README/AGENTS/protocol docs, release by the user
+  after merge.
+- No upstream-facing action (issue/PR to mlx-audio) without the user's say-so; this plan only
+  drafts the note.
+
+## Review Focus
+
+- **Revision pinning**: the pin is applied by `snapshot_download(revision=…)` + load of the local
+  path, scoped to repos in the pin table; a stale/unreachable pin fails startup loudly, never
+  loads HEAD; non-table models are explicit (warning, loaded as given); revision durability is
+  a named assumption with a recovery path.
+- **Voice security**: no client string reaches `generate(voice=…)`; every resolved argument is
+  an absolute local path that exists.
+- **Soft-failure voice startup**: unknown or unfetchable enabled voices are skipped with a
+  warning, never fatal, never silently replaced by the default voice.
+- **Offline / first-use behaviour**: network only on a cache miss at startup, per enabled
+  voice; offline+cached works; offline+uncached skips that voice.
+- **Duplication vs `pocket_tts.py`**: decided — copy the small skeleton, leave `pocket_tts`
+  untouched (see Architecture Decisions); revisit if a third pocket-family backend appears.
+- **Upstream drift**: Gradium may re-upload again; the Phase 0 gate script must be re-runnable.
+- **Operator surface**: `PIPECAT_TTS_PHONON_VOICES` validation (plist injection safety) and the
+  `voices` subcommand.
+
+## Implementation Checklist
+
+Phase blocks are the immutable contract; progress lives in `## Progress` below the marker.
+
+### Phase 0: Model verification gate (dia/qwen3/fish precedent)
+
+**Impl files:** `tests/smoke/phonon_phase0_gate.py`
+**Test files:** `tests/smoke/phonon_phase0_gate.py`
+**Test command:** `uv run --extra pocket_tts python tests/smoke/phonon_phase0_gate.py`
+**Goal:** Every assumption in this plan that the spike did not measure is answered by a run
+against the installed 0.6.1 and the live HF repos (Q1 alone queries PyPI/upstream metadata
+outside the pinned env), and recorded in `## Findings`; no Phase 1 code depends on a guess.
+(`--extra pocket_tts` is used because the `phonon` extra does not exist until Phase 1; the two
+extras differ only by the explicit `huggingface_hub` declaration, which mlx-audio already pulls
+in transitively — Q2 asserts importability as the proof.)
+
+- Q1 (informational, also the revision-durability detector): does HF HEAD of
+  `gradium/phonon-31m-en` still fail with `gradium_phonon_tts`? Is the pinned sha still
+  fetchable and ungated? Has a newer mlx-audio (PyPI release or main) added support? Run the
+  upstream check outside the project env (e.g. `uv run --no-project --with <spec> python …`,
+  or PyPI metadata plus a hand-recorded upstream sha). Recorded only; the repo pin stays
+  `0.6.1` and a bump is a separate change.
+- Q2: confirm the pin mechanism as an assertion — `snapshot_download(repo, revision=<40-char
+  sha>)` returns a local snapshot, `load(local_path, lazy=False, strict=True)` loads it, a bogus
+  sha raises, and `huggingface_hub` is importable from the dependency set. Record the full
+  40-char model sha, the **file list and total size at that sha** (and the allow-patterns chosen
+  from it), and the locked `huggingface_hub` version (must satisfy `>=2.0`; check how the
+  offline/local-files-only path behaves on a complete vs a partial snapshot).
+- Q3: `inspect.signature(model.generate)` — real kwargs; which extras to advertise; confirm
+  `ref_audio` / `frames_after_eos` exist and are never forwarded; confirm `voice=None` omit
+  rule; confirm `_introspect_util.verify_generate_signature` warns on drift (it is log-only —
+  the `merge_extras` allowlist is the enforcement).
+- Q4: voices — fetch `voices.jsonl` and record the voices-repo 40-char sha; record per-language
+  counts and the slug rule's output (assert unique after slugging); verify both repos are
+  ungated **unauthenticated**: `HfApi().model_info(repo, token=False)` with `not info.gated`
+  (the field is `Literal["auto","manual",False] | None`) plus one `hf_hub_download(...,
+  token=False)`; load **every** catalog `.safetensors` through the model's voice path at the
+  pinned model revision before freezing the table, and **synthesize several English named
+  voices, keeping the WAVs for a listen** (loading proves shape only); confirm `voice=` accepts
+  an absolute local path; record what a bare unknown name does on this model (expected:
+  `ValueError("Unknown voice")`), justifying path-only resolution as defence in depth; measure
+  per-file download of N enabled voices (N = 1, 5, 37) vs the all-102 total, and named-voice
+  TTFB with a warm cache; synthesize one non-English voice for the caveat.
+- Q5: `streaming_interval` sweep (0.3 / 0.5 / 1.0 / 2.0 s) on TTFB and RTF. "Continuity" is
+  measured **directly from `model.generate()` chunk timestamps** (no server exists in Phase 0):
+  the maximum gap between consecutive chunk arrivals must not exceed the chunk duration. Lock
+  one constant like `pocket_tts` (`_STREAMING_INTERVAL`). A server-level confirmation via
+  `latency_smoke.py` happens in Phase 3.
+- Q6: licence — fetch the model card and voices-repo licence text; docs quote only the verified
+  text; record the 40M repos' licence/gating only if checked here (else drop the claim).
+- Q7: cancel — close the generator at chunk boundaries (default and a named voice), then run a
+  follow-up generate on the same model object. Server-level barge-in/disconnect is Phase 3.
+- Q8: long-text probe — synthesize ~2000 characters, assert duration scales with word count
+  (qwen3/fish found model-side truncation below the server cap); derive `_MAX_TEXT_CHARS` and
+  `ideal_words` from the result, with a truncation tripwire only if truncation is observed.
+
+### Phase 1: Backend module, voice catalog, unit tests (mlx-gated + lean)
+
+**Impl files:** `tts_server/backends/phonon.py, tts_server/backends/phonon_voices.py, tts_server/backends/__init__.py, pyproject.toml, uv.lock, .github/workflows/test.yml`
+**Test files:** `tests/test_phonon_lean.py, tests/test_phonon_backend.py, tests/test_import_safety.py`
+**Test command:** `uv run --extra phonon pytest tests/test_phonon_lean.py tests/test_phonon_backend.py tests/test_import_safety.py -v` (pass condition: no skips — a skip means the mlx-gated coverage did not run)
+**Goal:** `phonon.py` imports cleanly without mlx; with the extra installed it loads the pinned
+revision from a local snapshot, advertises `default` + the enabled voices that resolved, and no
+code path forwards a client string, `ref_audio`, or `frames_after_eos` to `generate()`.
+
+- `phonon_voices.py` (lean, no mlx/hf imports at module load): bundled catalog table (slug →
+  voice id, language), voices-repo sha, slug function, `resolve_enabled(names)` returning
+  `(resolved, unknown)`.
+- `phonon.py`: `PhononBackend(model=…)` (`backend_name = "phonon"`), reads
+  `PIPECAT_TTS_PHONON_VOICES` in `__init__`; `DEFAULT_PHONON_MODEL`, pin table,
+  `_PhononStream` (`BridgedStream` subclass, copied skeleton), `_STREAMING_INTERVAL` from Q5,
+  `_MAX_TEXT_CHARS` from Q8. **Module-level patchable seams** `_snapshot_download`,
+  `_load_model`, `_download_voice` (each lazy-imports its heavy dependency inside the call) so
+  lean tests exercise `start()` without mlx or huggingface_hub; every existing lean test
+  bypasses `start()` via `backend._loaded_model = spy`, which cannot cover the pin logic.
+- `start()`: resolve the model (pin table → `_snapshot_download(revision=sha)` and
+  `_load_model(local_path)`; else warn and load as given); read `sample_rate`; resolve enabled
+  voices via `_download_voice` (local-files-only first, then network; skip-with-warning on
+  failure; `os.path.isfile` assert on success); verify the `generate()` signature with
+  `_introspect_util` (log-only); warm up under the metal lock; log effective revisions and the
+  advertised voice list.
+- Voice mapping: `default`/`None` → omit `voice` kwarg; named → absolute local path.
+- `capabilities()`: `streaming: true`, `languages: ["en"]`, `voice_count`, `extras`, `ideal_words`,
+  `max_text_chars` (values from Phase 0).
+- `pyproject.toml`: `phonon` extra (incl. `huggingface_hub>=2.0`); regenerate `uv.lock`.
+- Register in `make_backend` (signature unchanged: `make_backend(name, model=None)`); add **both**
+  `phonon.py` and `phonon_voices.py` to the lean-module list in `test_import_safety.py`.
+- CI (same commit as the lean test, per `test.yml` convention): add `tests/test_phonon_lean.py`
+  to the lean allow-list and the `import tts_server.backends.phonon` + `DEFAULT_PHONON_MODEL`
+  print to the macOS smoke block.
+- Tests, lean (patching the module seams, no mlx): catalog integrity (slugs unique and
+  `[a-z0-9_]+`, ids unique, count and per-language counts match Q4, `default` reserved);
+  `resolve_enabled` unknown-name handling; env parsing (regex, duplicates, unset → default
+  only); extras filtering via the `merge_extras` allowlist; forbidden kwargs never forwarded;
+  pin spy tests (download carries the 40-char sha, `_load_model` receives the local snapshot
+  path, a download exception propagates from `start()` with no fallback load call); non-table
+  model → warning, no pin; **soft failure**: unknown enabled name and offline+uncached enabled
+  voice are each skipped with a warning, server still starts, advertised list excludes them;
+  warm cache → zero network-mode download calls (local-files-only tried first);
+  `open_stream(voice="hf://…" | unknown name)` rejected at the backend layer; an enabled name
+  (including `alba`, a real catalog slug) forwards an absolute `.safetensors` path and the
+  literal slug never appears in `generate()` kwargs, while a not-enabled `alba` is rejected;
+  `voice_count == len(voices())`; every resolved voice argument is an absolute existing
+  `.safetensors` path; server-level check with a stub-loaded backend via `running_server`:
+  status voices start with `default`, commit `voice="hf://x"` → `invalid_config`.
+- Tests, mlx-gated: real load of the pinned revision (rate 24000, short synthesis), a named
+  voice, cancel mid-stream then reuse, `HF_HUB_OFFLINE=1` start after the cache is warm, and a
+  long-text regression (~`_MAX_TEXT_CHARS` input; seconds-per-word stays inside the band Q8
+  recorded).
+
+### Phase 2: Wiring — CLI, voice env var, justfile, smoke, plist renderer, docs, version
+
+**Impl files:** `tts_server/__main__.py, justfile, scripts/render_tts_plist.py, scripts/install_tts_agent.sh, tests/smoke/run_smoke.sh, tests/smoke/run_multiconn.sh, .github/workflows/test.yml, README.md, AGENTS.md, CHANGELOG.md, docs/protocol.md, pyproject.toml, uv.lock, scripts/profiling/rtf_benchmark.py`
+**Test files:** `tests/test_justfile_recipes.py, tests/test_render_tts_plist.py, tests/test_phonon_lean.py, tests/test_phonon_voices_cli.py`
+**Test command:** `uv run --extra phonon pytest tests/test_justfile_recipes.py tests/test_render_tts_plist.py tests/test_phonon_lean.py tests/test_phonon_voices_cli.py -v`
+**Validation cmd:** `just smoke-phonon`
+**Goal:** Every enumeration of backend names in the repo includes `phonon`; the files that
+`test_justfile_recipes.py` asserts equal land in ONE commit; a fresh checkout can
+`uv sync --extra phonon && just smoke-phonon`.
+
+- **Commit A (atomic — tests assert exact equality across these):** `__main__.py` `--backend`
+  choices (~l.375) and default-model resolver (`_resolve_model`, ~l.35-66); `justfile`
+  `_resolve` map (ports: tone 8665, kokoro 8765, voxtral 8865, pocket 8965, dia 9065, qwen3 9165,
+  fish 9265 → **phonon 9365**), the backend-name case arm (~l.197), `smoke-phonon`,
+  `smoke-multiconn-phonon`; README "Per-backend port convention" row
+  `| phonon | pipecat.tts-server.phonon | 9365 |`; `render_tts_plist._BACKEND_RE` + usage string;
+  `run_smoke.sh` / `run_multiconn.sh` guards; updated `test_justfile_recipes.py` /
+  `test_render_tts_plist.py`; and the **dual-wire assertions in `test_phonon_lean.py`**
+  (argparse choice and `_resolve_model` equality, per `test_fish_lean.py` precedent) — they
+  cannot pass before `__main__.py` is edited, so they land here, not in Phase 1.
+- **Commit B:** the plist renderer validates and bakes `PIPECAT_TTS_PHONON_VOICES` (strict regex
+  above like the Kokoro one; hostile values rejected; baked only when the backend is `phonon`),
+  `install_tts_agent.sh` passthrough/comment; the `voices` subcommand with `voices` added to
+  the dispatch set in `main()` (and its docstring); `tests/test_phonon_voices_cli.py` — lean,
+  isolated with `HF_HUB_CACHE=tmp_path` and a stubbed download seam serving a fake
+  `voices.jsonl`; asserts the `cached` column flips when a fake `voices/<id>.safetensors` is
+  placed, `--refresh` leaves the bundled catalog and the tmp cache byte-identical, no
+  `--backend` defaults to phonon, a non-phonon backend exits non-zero; renderer tests
+  `test_main_bakes_phonon_voices_into_plist`, `test_main_rejects_malformed_phonon_voices`, and
+  env ignored with a warning on non-phonon backends; add `tests/test_phonon_voices_cli.py` to the
+  `test.yml` lean allow-list.
+- **Commit C:** docs and release prep — README (backends & licences table, install line, voice
+  selection env var), AGENTS.md (`uv sync` line, CLI table incl. `voices`, env vars table,
+  `--backend` choices, smoke recipes), `docs/protocol.md` (capabilities, voices, licence),
+  CHANGELOG `## [0.7.0]`, `pyproject.toml` version `0.7.0` **with `uv.lock` regenerated in the
+  same commit**, `rtf_benchmark.py` docstring only (add `phonon` to the backend list in its
+  header; no code change), and `docs/upstream/mlx-audio-phonon-model-type.md` (draft note on the
+  `gradium_phonon_tts` breakage and the pin; the user decides whether to file it).
+
+### Phase 3: Smoke, profiling, adapter e2e
+
+**Impl files:** `tests/smoke/reconnect_smoke.py, tests/smoke/latency_smoke.py, tests/smoke/phonon_cancel_smoke.py, tests/smoke/pipecat_adapter_e2e.py, scripts/profiling/README.md, tests/smoke/README.md, CHANGELOG.md`
+**Test files:** `tests/test_pipecat_adapter.py`
+**Test command:** `uv run --extra examples --extra phonon pytest tests/test_pipecat_adapter.py -v` (pass condition: no skips)
+**Validation cmd:** `just smoke-phonon && just smoke-multiconn-phonon && uv run --extra phonon python tests/smoke/reconnect_smoke.py --backend phonon && uv run --extra phonon python tests/smoke/phonon_cancel_smoke.py && uv run --extra examples --extra phonon python tests/smoke/pipecat_adapter_e2e.py`
+**Goal:** Measured numbers in the docs come from this repo's own harness against the shipped
+backend, not from the spike, and barge-in/disconnect and a **named voice** are exercised through
+the real server.
+
+- `rtf_benchmark.py --backend phonon`: cold start, TTFB, RTF; default and one named voice; with
+  and without a concurrent STT process (re-confirm the spike's contention numbers).
+- `latency_smoke.py`: add a `max_gap` (maximum inter-chunk arrival gap) field to its output so
+  the Phase 0 Q5 constant is confirmed at server level.
+- `tests/smoke/phonon_cancel_smoke.py` (new, modelled on `dia_dialogue_smoke.py
+  --check-disconnect`; confirm names at implementation): starts the server with
+  `PIPECAT_TTS_PHONON_VOICES=<an English slug>,<a typo'd slug>`; asserts `server.status`
+  voices == `["default", <slug>]` (typo skipped, server up), audio for `voice=<slug>`,
+  `invalid_config` for `voice="hf://x"` and for the typo'd slug; then barge-in
+  (`response.cancel` between chunks) and abrupt-disconnect-then-reuse.
+- `reconnect_smoke.py`: extend its `--backend` choices (currently tone/kokoro) to `phonon`.
+- `tests/smoke/pipecat_adapter_e2e.py` (new; promotes the ad-hoc 0.6.0 adapter e2e): uses the
+  **default voice** and asserts on the **second utterance** (warm): 24 kHz, first audio frame
+  TTFB < 0.1 s, ≥ 1 audio frame; the first utterance only has to succeed (named-voice TTFB is
+  ≈ 0.14 s, so named voices are not asserted against 0.1 s).
+- Record results in `scripts/profiling/README.md` and the CHANGELOG `0.7.0` entry; document the
+  new smoke scripts in `tests/smoke/README.md`.
+
+## Technical Specifications
+
+### Files to Modify
+- `tts_server/backends/__init__.py` — `make_backend` registration only (signature unchanged).
+- `tts_server/__main__.py` — default model resolver, `--backend` choices, `voices` subcommand
+  and the subcommand dispatch set.
+- `pyproject.toml` — `phonon` extra; version `0.7.0`; extend the pin-policy comment.
+- `uv.lock` — regenerated (Phase 1 for the extra, Phase 2 for the version).
+- `justfile`, `scripts/render_tts_plist.py`, `scripts/install_tts_agent.sh`,
+  `tests/smoke/run_smoke.sh`, `tests/smoke/run_multiconn.sh`, `tests/smoke/reconnect_smoke.py`,
+  `tests/smoke/latency_smoke.py`, `.github/workflows/test.yml`.
+- `tests/test_import_safety.py` (both new lean modules), `tests/test_justfile_recipes.py`
+  (port 9365), `tests/test_render_tts_plist.py`.
+- `README.md` (incl. port-convention table), `AGENTS.md`, `CHANGELOG.md`, `docs/protocol.md`,
+  `scripts/profiling/rtf_benchmark.py` (docstring only), `scripts/profiling/README.md`,
+  `tests/smoke/README.md`.
+
+### New Files to Create
+- `tts_server/backends/phonon.py` — the backend.
+- `tts_server/backends/phonon_voices.py` — bundled voice catalog + slug/validation (lean).
+- `tests/test_phonon_lean.py`, `tests/test_phonon_backend.py`, `tests/test_phonon_voices_cli.py`.
+- `tests/smoke/phonon_phase0_gate.py` — re-runnable verification gate.
+- `tests/smoke/phonon_cancel_smoke.py`, `tests/smoke/pipecat_adapter_e2e.py`.
+- `docs/upstream/mlx-audio-phonon-model-type.md` — upstream note (draft only).
+
+### Architecture Decisions
+- Decision (grilled): **pin = per-repo table, applied by `snapshot_download(revision=sha)` then
+  loading the local path.** Repos not in the table (other `--model` ids, local paths) load as
+  given with a logged warning; the pin never silently disappears or mis-applies. No HEAD
+  fallback exists anywhere in the backend; an unreachable pin is a startup error. The Q1
+  "load HEAD with a newer mlx-audio" branch is dropped: the repo-wide pin moves only in a
+  separate bump. Revision durability is a named assumption; recovery is
+  `--model <absolute snapshot path>`.
+- Decision (grilled): **voices are chosen ahead of time by the operator via the env var
+  `PIPECAT_TTS_PHONON_VOICES` only** — consistent with the existing backend-specific setting
+  (`PIPECAT_TTS_KOKORO_EXTRA_LANGS`: env-only, read in the backend, baked into the plist, no
+  CLI flag, no `make_backend` change). Catalog (bundled, language-tagged, pinned voices sha) is
+  separate from the enabled set (advertised + downloaded, one file each).
+- Decision (grilled): **voice failures are soft, Kokoro-style.** An unknown or unfetchable
+  enabled voice is warned about and skipped; `default` is always advertised; no silent
+  substitution (a client asking for a skipped voice gets `invalid_config`). This removes the
+  launchd KeepAlive restart-loop risk of a fail-closed typo and needs no installer-side
+  catalog check.
+- Decision (grilled): **no HF environment passthrough in the plist.** The HF cache location is
+  an existing property of every backend (HOME-based default cache); this plan neither changes
+  nor documents it beyond a note.
+- Decision (grilled): **catalog listing/refresh is CLI-only, list-only in v1.** `voices
+  --refresh` reports differences against `voices.jsonl` but changes nothing; adopting refreshed
+  voices needs verification against the pinned model (the voices repo is newer than the pinned
+  model revision). No wire-protocol surface: the protocol is frozen at v0.1, the server caches
+  its voice set once in `start()`, and a client-triggered download is the egress path
+  `_validate_voice` exists to close.
+- Decision (grilled): **copy the small pocket skeleton; leave `pocket_tts.py` untouched.**
+  `phonon.py` has its own `_PhononStream`/backend class but imports shared helpers
+  (`BridgedStream`, `_extras_util`, `_introspect_util`). Accepted cost: duplication the repo's
+  "lift on second use" notes warn about (memory `truncation-tripwire-duplicated-qwen3-fish`);
+  revisit if a third pocket-family backend appears.
+- **Test seams over `_loaded_model` bypass**: because pin/voice logic lives in `start()`,
+  `phonon.py` exposes module-level `_snapshot_download` / `_load_model` / `_download_voice`
+  seams; lean tests patch them (the existing `_loaded_model = spy` pattern cannot reach this
+  code).
+- **Static catalog, not runtime discovery**: names/ids fixed per pinned voices-repo sha; table
+  integrity is unit-tested.
+- **No cloning** (decision #2): `ref_audio` unwired; the 31M has no speaker encoder anyway.
+- **Version**: new backend + new extra + new CLI surface = minor bump to 0.7.0; the user cuts
+  the GitHub Release after merge (`pypi` environment needs manual deploy approval).
+
+### Dependencies
+- `mlx-audio==0.6.1` (pinned everywhere); `requests` (undeclared by 0.6.1);
+  `huggingface_hub>=2.0` (declared in the `phonon` extra because it is imported directly and
+  the cache semantics relied on are 2.x; mlx-audio itself only requires `>=1.0`; lazy import
+  only).
+
+### Integration Seams
+
+| Seam | Writer | Caller | Contract |
+|------|--------|--------|----------|
+| voice name → generate arg | `phonon_voices` table + `PhononBackend` | `server._validate_voice` → `open_stream` | Only enabled, resolved slugs map; result is an absolute existing local `.safetensors` path or omitted (`default`); never `hf://`, http, or a bare name |
+| enabled voices → plist | `render_tts_plist.py` | env `PIPECAT_TTS_PHONON_VOICES` | Validated by strict regex before baking, phonon backend only; hostile values rejected |
+| cancel between chunks | `BridgedStream.cancel()` | server `response.cancel` | Generator closed at a yield boundary under the metal lock; model reusable immediately |
+| pinned revision | `start()` via `_snapshot_download` / `_load_model` seams | `snapshot_download` → `mlx_audio.tts.utils.load(local_path)` | Table repos load only at their sha; failure to fetch is a startup error; non-table models warn |
+| voice download | `start()` via `_download_voice` | `hf_hub_download` (per file) | local-files-only first; failure skips that voice with a warning; never on the commit path |
+| atomic wiring set | Phase 2 commit A | `tests/test_justfile_recipes.py` | argparse choices == `just _resolve` == README port table == plist regex, in one commit; the `run_smoke.sh` / `run_multiconn.sh` guards and `install_tts_agent.sh` list are exercised by `just smoke-phonon` (Phase 2 validation), not by that test |
+
+(Architecture & Call Flow section omitted: single-component change — the backend plugs into the
+unchanged session loop and bridge. The HF cache is an external store, not an executing
+component; the `voices` subcommand is a separate short-lived process that never talks to a live
+server.)
+
+## Testing Notes
+
+### Test Approach
+- [ ] Lean tests (patching the `phonon.py` seams): constants, catalog integrity, slug rule, env
+  parsing, extras filtering, forbidden kwargs, pin spy tests, soft-failure voice cases,
+  voice-argument rules, stub-model capabilities, server-level voice rejection.
+- [ ] mlx-gated (`--extra phonon`, zero skips): real pinned load, default + named voice,
+  cancel and reuse, offline-after-warm start, long-text regression.
+- [ ] Live smoke recipes, multiconn/reconnect/cancel smokes (cancel smoke enables a named voice
+  and a typo'd one), Pipecat adapter e2e.
+
+### Test Results
+- [ ] Existing suite passes (415 passed, 2 skipped baseline on 0.6.0; pytest exits 138 / SIGBUS at
+  teardown after passing — pre-existing, not a regression).
+- [ ] New tests added and passing.
+
+### Edge Cases Tested
+- [ ] Unknown / URL-like / path-traversal voice strings rejected at the backend and at the
+  server; enabled `alba` resolves to a path, not-enabled `alba` is rejected.
+- [ ] `default` never forwards a `voice` kwarg.
+- [ ] Cancel mid-stream then immediate reuse; abrupt disconnect then reuse.
+- [ ] Pinned revision unreachable → clean startup failure, no HEAD fallback.
+- [ ] Non-table `--model` → warning, loaded as given.
+- [ ] Warm cache: no network-mode download calls; offline start with enabled voices cached.
+- [ ] Offline + uncached enabled voice, and a typo'd enabled name: skipped with a warning,
+  server starts, not advertised.
+- [ ] `PIPECAT_TTS_PHONON_VOICES`: malformed values rejected by the plist renderer; ignored with
+  a warning on non-phonon backends; `voices` subcommand rejects non-phonon backends.
+- [ ] Long text (~2000 chars) does not truncate silently (Phase 0 probe + mlx-gated regression).
+
+## Acceptance Criteria
+
+- `uv sync --extra phonon && just smoke-phonon` passes on a clean checkout (Apple Silicon).
+- `server.status` for `--backend phonon` advertises `streaming: true`, rate 24000, `default`
+  plus the enabled voices that resolved only; an unadvertised voice gets `INVALID_CONFIG`
+  (tested at lean and at real-server level with a named voice enabled).
+- No `ref_audio` / `frames_after_eos` / client-supplied path or URL can reach `generate()`
+  (tested); every resolved voice argument is an absolute existing local path.
+- Startup never loads an unpinned table repo from HEAD; unreachable pin fails startup.
+- An unknown or unfetchable enabled voice never prevents startup and is never silently replaced
+  by `default`.
+- `python -m tts_server voices` lists the catalog; `--refresh` changes no state (tested).
+- Measured TTFB/RTF for the shipped backend recorded in `scripts/profiling/README.md`.
+- Lean CI job still passes (no mlx/numpy import); macOS smoke job imports the module.
+- README/AGENTS/protocol/CHANGELOG updated; version 0.7.0; licence text quoted only as verified
+  in Phase 0 Q6.
+- Code reviewed and approved; tests passing; ruff format and check clean.
+
+<!-- reviewed: 2026-10-22 @ f38c107121963144ae0402e83e1ac076e2474461 -->
+
+<!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
+
+## Progress
+
+- [ ] Phase 0: Model verification gate
+- [ ] Phase 1: Backend module, voice catalog, unit tests
+- [ ] Phase 2: Wiring — CLI, voice env var, justfile, smoke, plist renderer, docs, version
+- [ ] Phase 3: Smoke, profiling, adapter e2e
+
+## Findings
+
+### Review Waivers
+
+- (none)
+
+## Issues & Solutions
+
+## Final Results
+
+### Follow-up Work
+- Remove `_apply_kokoro_vocoder_fix` (kokoro.py); keep its regression test.
+- Re-verify qwen3_tts / fish_tts crash guards on 0.6.1; investigate qwen3 (2.4→4.5 s) and dia
+  (10→39 s) cold-start changes.
+- Upstream issue to mlx-audio for `gradium_phonon_tts` (user's call).
+- Adopt refreshed catalog voices (`voices --refresh`) once verified against the pinned model.
+- Lift shared pocket-family helpers if a third pocket-family backend appears.
