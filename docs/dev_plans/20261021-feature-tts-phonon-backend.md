@@ -469,6 +469,17 @@ server.)
 
 ## Findings
 
+**Chunk tripwire (2026-10-22, user-approved, outside the reviewed contract):** the "silent 45 s clip"
+below is now a `response.failed`. Probe: the model emits EOS at step 562 (564 frames, 45.1 s) for any
+chunk too long for its training length, identical for fp/q8/q4 x default/zoey (not the KV cache: cache
+offsets differed, 926 vs 1158). mlx-audio exposes no per-sentence boundary and sets `segment_idx` /
+`token_count` per commit, so the shared `_truncation_util` helpers do not apply; the guard wraps
+`model._generate_audio_stream_short_text` (a private mlx-audio 0.6.1 method, pinned) and counts frames per
+call, raising `PhononTruncationError` at >=560 frames (a natural 44.8-45.1 s sentence would false-positive;
+~160 words = 36.6 s do not). If mlx-audio drops that method, `start()` warns "guard is OFF". Real-model
+tests: 250-word run-on fails with no `completed`; 120 words completes. Not built: a server-side splitter
+(only worth it if real clients send unpunctuated text).
+
 **`/code-review xhigh --fix` (2026-10-22):** fixed: a voice path containing `@` is skipped at start
 (mlx-audio would decode it as audio and fail at synthesis); `default` in `PIPECAT_TTS_PHONON_VOICES` no
 longer logs a bogus "unknown voice" warning; `run_reconnect.sh` syncs and pins `--no-sync` for phonon

@@ -98,6 +98,32 @@ async def test_q8_alias_synthesizes(started_q8_backend, voice):
     assert 2.0 < nbytes / 2 / 24000 < 15.0
 
 
+def _run_on(words: int) -> str:
+    """One unpunctuated sentence: mlx-audio never splits inside it."""
+    base = "the quick brown fox jumps over the lazy dog and then keeps on running".split()
+    return " ".join((base * 60)[:words])
+
+
+async def test_run_on_sentence_over_the_model_limit_fails_instead_of_clipping(started_backend):
+    stream = await started_backend.open_stream(voice=None, language=None, extras=None)
+    await stream.feed(_run_on(250))
+    await stream.end()
+    events = []
+    with pytest.raises(PH.PhononTruncationError, match="45 s"):
+        async for ev in stream.events():
+            events.append(ev)
+    assert all(ev.kind != "completed" for ev in events)
+    assert sum(len(ev.pcm) for ev in events if ev.kind == "delta") / 2 / 24000 > 40.0
+
+
+async def test_long_sentence_under_the_limit_still_completes(started_backend):
+    stream = await started_backend.open_stream(voice=None, language=None, extras=None)
+    await stream.feed(_run_on(120))
+    await stream.end()
+    _chunks, nbytes = await _drain(stream)
+    assert 20.0 < nbytes / 2 / 24000 < PH._CHUNK_FRAMES_CEILING / 12.5
+
+
 async def test_hello_advertises_rate_and_voices():
     mp = pytest.MonkeyPatch()
     mp.setenv(_VOICES_ENV, _NAMED)

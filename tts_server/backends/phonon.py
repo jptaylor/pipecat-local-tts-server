@@ -142,13 +142,18 @@ _STREAMING_INTERVAL = 0.3
 _BRIDGE_MAXSIZE = 32
 
 # Chosen defaults, not model facts (pocket_tts values; Phase 0 Q8 saw no
-# truncation to 5161 chars of PUNCTUATED text). Known limit, NOT guarded here:
-# mlx-audio generates per sentence chunk and never splits inside a sentence, and one
-# chunk's audio is capped at ~45 s with no error (measured 2026-10-22: single
-# run-on sentences of 200/300/400 words all return exactly 45.1 s, i.e. silently
-# clipped; ~160 words still fit). ``max_text_chars`` does not protect against it.
+# truncation to 5161 chars of PUNCTUATED text). mlx-audio generates per sentence chunk
+# and never splits inside a sentence, and the model ends a chunk at ~45 s of audio
+# (measured 2026-10-22: run-on sentences of 200/300/400 words all stop at 564 frames,
+# EOS at step 562, with no error and a normal completion; ~160 words still fit at
+# 36.6 s). ``max_text_chars`` does not protect against it; the chunk tripwire below does.
 _IDEAL_WORDS = 40
 _MAX_TEXT_CHARS = 2000
+
+# Chunk tripwire: a chunk that yields this many 80 ms frames (560 = 44.8 s at the model's
+# 12.5 Hz) ended at the model's ~45 s limit rather than on its own sentence end, so its
+# tail audio was cut. Measured 564 frames for fp/q8/q4 x default/zoey (2026-10-22).
+_CHUNK_FRAMES_CEILING = 560
 
 _TEMPERATURE_MIN = TEMPERATURE_MIN
 _TEMPERATURE_MAX = TEMPERATURE_MAX
@@ -229,6 +234,52 @@ def _download_voice(
             cache_dir=cache_dir,
         )
     )
+
+
+class PhononTruncationError(RuntimeError):
+    """One sentence chunk hit the model's ~45 s limit and its audio was cut off."""
+
+
+def _make_truncation_error(frames: int) -> PhononTruncationError:
+    return PhononTruncationError(
+        f"phonon: a sentence chunk hit the model's ~45 s limit ({frames} frames, "
+        f"{frames / 12.5:.1f} s) — its audio was silently truncated; failing the "
+        "response instead of reporting a clean completion (split the text into "
+        "shorter sentences)"
+    )
+
+
+def _cap_chunk_frames(chunk_fn, ceiling: int, make_error):
+    """Wrap a per-chunk generator function: pass every frame through unchanged, and once
+    the chunk is exhausted raise ``make_error(frames)`` if it yielded ``ceiling`` or more.
+    Counted PER CALL (one call per sentence chunk), never summed across chunks. Frames
+    already yielded stay yielded; an early close (barge-in) never raises."""
+
+    def wrapped(*args, **kwargs):
+        frames = 0
+        for frame in chunk_fn(*args, **kwargs):
+            frames += 1
+            yield frame
+        if frames >= ceiling:
+            raise make_error(frames)
+
+    wrapped._phonon_tripwire = True  # type: ignore[attr-defined]
+    return wrapped
+
+
+def _install_chunk_tripwire(model: Any) -> bool:
+    """Wrap ``model._generate_audio_stream_short_text`` (mlx-audio 0.6.1, pinned; the
+    only place a sentence chunk's boundary is visible) with the frame cap. Idempotent.
+    Returns False when the method is absent (an mlx-audio change), so the caller can say
+    the guard is off."""
+    fn = getattr(model, "_generate_audio_stream_short_text", None)
+    if fn is None:
+        return False
+    if not getattr(fn, "_phonon_tripwire", False):
+        model._generate_audio_stream_short_text = _cap_chunk_frames(
+            fn, _CHUNK_FRAMES_CEILING, _make_truncation_error
+        )
+    return True
 
 
 class _PhononStream(BridgedStream):
@@ -343,6 +394,11 @@ class PhononBackend:
                 "the rate contract"
             )
         self.sample_rate = int(rate)
+        if not _install_chunk_tripwire(self._loaded_model):
+            logger.warning(
+                "phonon: model has no _generate_audio_stream_short_text (mlx-audio changed?); "
+                "the ~45 s sentence-chunk truncation guard is OFF"
+            )
 
         self._voice_paths = await loop.run_in_executor(None, self._resolve_voices)
 

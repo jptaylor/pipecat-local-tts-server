@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming, 24 kHz, English). The 31M weights, tokenizer and voices are Apache-2.0
   (model card); the 40M siblings are CC-BY-NC-4.0/gated and unsupported. Canonical
   launchd port 9365, `just smoke-phonon` / `smoke-multiconn-phonon`.
+- Phonon fails a response whose sentence chunk reaches the model's ~45 s limit
+  (`response.failed`, `BACKEND_ERROR`) instead of reporting a clipped, clean completion;
+  checked per chunk via `_generate_audio_stream_short_text` (mlx-audio 0.6.1, pinned).
 - Phonon quantized-weight aliases: `--model phonon-q8` / `phonon-q4` (and `phonon` for
   the default fp weights). The pinned snapshot is converted once into
   `$XDG_CACHE_HOME/pipecat-tts-server/phonon/` and loaded from there; saves

@@ -781,3 +781,65 @@ def test_default_phonon_model_resolves_identically_through_both_paths():
     assert make_backend("phonon").model == PH.DEFAULT_PHONON_MODEL
     # An explicit --model still wins over the default.
     assert _resolve_model("phonon", "x/y") == "x/y"
+
+
+# --- ~45 s sentence-chunk tripwire ---------------------------------------------
+
+
+def _chunk_fn(*frame_counts):
+    """A fake per-chunk generator function: call N yields ``frame_counts[N]`` frames."""
+    it = iter(frame_counts)
+
+    def fn(*_a, **_k):
+        yield from range(next(it))
+
+    return fn
+
+
+def test_tripwire_passes_frames_and_stays_quiet_under_ceiling():
+    w = PH._cap_chunk_frames(_chunk_fn(5), 10, PH._make_truncation_error)
+    assert list(w()) == [0, 1, 2, 3, 4]
+
+
+def test_tripwire_yields_every_frame_then_raises_at_ceiling():
+    seen = []
+    with pytest.raises(PH.PhononTruncationError, match="45 s"):
+        for f in PH._cap_chunk_frames(_chunk_fn(10), 10, PH._make_truncation_error)():
+            seen.append(f)
+    assert seen == list(range(10))  # already-yielded audio stays yielded
+
+
+def test_tripwire_counts_per_chunk_not_across_chunks():
+    w = PH._cap_chunk_frames(_chunk_fn(6, 6, 6), 10, PH._make_truncation_error)
+    for _ in range(3):  # 18 frames in total, but never 10 in one chunk
+        assert len(list(w())) == 6
+
+
+def test_tripwire_early_close_never_raises():
+    gen = PH._cap_chunk_frames(_chunk_fn(100), 10, PH._make_truncation_error)()
+    assert next(gen) == 0
+    gen.close()  # barge-in: no exception, though the chunk would have hit the cap
+
+
+def test_install_wraps_once_and_reports_missing_method():
+    class M:
+        calls = 0
+
+        def _generate_audio_stream_short_text(self, **_k):
+            M.calls += 1
+            yield from range(PH._CHUNK_FRAMES_CEILING)
+
+    m = M()
+    assert PH._install_chunk_tripwire(m) is True
+    wrapped = m._generate_audio_stream_short_text
+    assert PH._install_chunk_tripwire(m) is True
+    assert m._generate_audio_stream_short_text is wrapped  # idempotent, not double-wrapped
+    with pytest.raises(PH.PhononTruncationError):
+        list(m._generate_audio_stream_short_text(text_to_generate="x"))
+    assert PH._install_chunk_tripwire(object()) is False
+
+
+async def test_start_warns_when_model_lacks_the_chunk_method(seams, caplog, monkeypatch):
+    with caplog.at_level("WARNING"):
+        await _started(monkeypatch)
+    assert any("truncation guard is OFF" in r.getMessage() for r in caplog.records)
