@@ -618,8 +618,11 @@ server-level `just smoke-phonon` (`latency_smoke.py`), warm HF cache, pinned rev
 `52433c46975bfa13144c56204c9f4ee1c5b148aa`. Contention caveat: an `stt_server`
 (nemotron) and a `pocket_tts` launchd agent were running but **idle (0% CPU)** during
 every run, so these are not pristine-GPU numbers; they are also **not** under active
-STT load. No concurrent-transcription run was done, so the spike's STT-contention
-numbers are not re-confirmed here.
+STT load. A separate pair of `rtf_benchmark` runs was made while Onoats (its own
+python process, ~22-33% CPU) transcribed a live 4-participant call: warm TTFB 0.02 s,
+RTF 0.04, unchanged from the idle-STT numbers. Onoats' CPU was not sampled during
+those runs, so that "active" state rests on the operator's word; the spike's own
+contention numbers were not re-read for comparison.
 
 ```sh
 uv run --extra phonon python scripts/profiling/rtf_benchmark.py --backend phonon

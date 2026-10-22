@@ -640,10 +640,18 @@ typo skipped, `invalid_config` for `hf://x` and the typo, barge-in ack ~1.1-1.3 
 utterance 2: 148 frames, 24 kHz, TTFB 0.017 s; < 0.1 s bound). Server-level `latency_smoke`: TTFB 0.021 s,
 `max_gap` 0.017 s, RTF 0.048. Recorded in `scripts/profiling/README.md` and CHANGELOG 0.7.0.
 
-**OPEN — needs your decision:** the plan requires `rtf_benchmark` "with and without a concurrent STT
-process (re-confirm the spike's contention numbers)". It was NOT done: the STT server on this host was
-idle and no active-load run was driven. Both docs say so openly. Either run it, or record a waiver
-under Review Waivers (I did not waive it).
+**STT contention run (2026-10-22, after the conduct hand-back):** `rtf_benchmark --backend phonon
+--warm 5` ran twice while Onoats was transcribing a live 4-participant call (3 remote + 1 local mic;
+the user's statement). The load process is Onoats' own python (pid 67640, ~22–33% CPU, ~8.5 GB), NOT
+`stt_server` (pid 5117, 0% CPU, idle). Result, both runs: warm TTFB 0.02 s, RTF 0.04 for the
+1-sentence, 2-sentence and 3-seg phrases (1-sentence 3.60 s audio in ~0.15 s wall; 2-sentence/3-seg
+~5.8 s in ~0.24 s); first-ever call TTFB 0.38 s (cold). No change vs the idle-STT numbers above
+(RTF 0.033–0.048). Caveats (guesses named): (a) I did not capture Onoats' CPU *during* either run: the
+first read STT at 0% only after the run and the second run's sampler wrote nothing, so "was active
+during the run" rests on the user's statement plus a ~22% sample taken just after; (b) the spike's
+contention numbers are in memory only, not re-read here, so "no change" is against the idle numbers
+in this plan, not the spike's; (c) one call's worth of load, not a worst case. Logs (scratchpad):
+`rtf_stt_active.log`, `rtf_stt_load.log`.
 
 Advisory reviewer (Opus, one pass): that one Important (above); five Minor, **not fixed** (left for the
 end-of-plan review passes):

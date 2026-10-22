@@ -21,8 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live `voices.jsonl` and changes nothing.
 - Measured on an M4 Max (warm cache, in-process `rtf_benchmark.py`): cold start 0.6 s,
   warm TTFB 0.01-0.02 s, RTF 0.04 for the default voice and a named voice; server-level
-  TTFB 0.021 s with a 0.014 s max inter-delta gap; barge-in acknowledged in ~1 ms. Not
-  measured under active STT load. Details: `scripts/profiling/README.md`.
+  TTFB 0.021 s with a 0.014 s max inter-delta gap; barge-in acknowledged in ~1 ms.
+  Re-run while a local STT app transcribed a live call: same TTFB/RTF (STT CPU not sampled
+  during the run). Details: `scripts/profiling/README.md`.
 - New smokes: `tests/smoke/phonon_cancel_smoke.py` (named voice, voice validation,
   barge-in, abrupt disconnect) and `tests/smoke/pipecat_adapter_e2e.py` (reference
   adapter in a real pipeline); `latency_smoke.py` prints `max_gap`; `reconnect_smoke.py`
