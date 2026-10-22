@@ -18,6 +18,13 @@ local path; there is NO fallback to HEAD (an unreachable pin is a startup error)
 A model with no pin entry (another repo id, or an absolute local snapshot path --
 also the recovery path if the sha disappears) loads as given with a warning.
 
+Quantized weights: ``--model phonon`` (fp, same as the default), ``phonon-q8`` and
+``phonon-q4`` are aliases (``_MODEL_ALIASES``). A quantized alias fetches the same
+pinned snapshot, then converts it ONCE with mlx-audio's ``pocket_tts`` ``convert()``
+into a cache dir keyed by pin sha / bits / group size / mlx-audio version
+(``_quantized_dir``) and loads that. Saves memory / disk / load time, not TTFB/RTF.
+The reported ``model`` stays the alias string the operator passed.
+
 Voices: ``default`` (the model's shipped voice; ``voice`` kwarg omitted) plus the
 operator-enabled catalog voices (``PIPECAT_TTS_PHONON_VOICES``, comma-separated
 slugs). Only enabled voices are downloaded (one file each, pinned voices sha) and
@@ -32,7 +39,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import threading
+from pathlib import Path
 from typing import Any
 
 from ..backend import TTSStream
@@ -68,6 +77,44 @@ def _pin_for(model_id: str) -> tuple[str, str] | None:
         if repo.casefold() == key:
             return repo, sha
     return None
+
+
+# Operator-facing ``--model`` aliases: alias -> (repo_id, quantization bits | None).
+# A small explicit table on purpose; arbitrary ``-qN`` suffixes are NOT parsed.
+_MODEL_ALIASES: dict[str, tuple[str, int | None]] = {
+    "phonon": (DEFAULT_PHONON_MODEL, None),
+    "phonon-q8": (DEFAULT_PHONON_MODEL, 8),
+    "phonon-q4": (DEFAULT_PHONON_MODEL, 4),
+}
+
+# Quantization group size handed to convert() (part of the quantized-dir key).
+Q_GROUP_SIZE = 32
+
+
+def _alias_for(model_id: str) -> tuple[str, int | None] | None:
+    """``(repo_id, bits)`` for a Phonon alias (strip + casefold), else ``None``."""
+    return _MODEL_ALIASES.get(model_id.strip().casefold())
+
+
+def _cache_root() -> Path:
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    return Path(xdg) if xdg else Path.home() / ".cache"
+
+
+def _mlx_audio_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("mlx-audio")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _quantized_dir(sha: str, bits: int) -> Path:
+    """Cache dir for one (pin, bits, group size, mlx-audio version) combination, so
+    a pin bump or an mlx-audio upgrade lands in a fresh dir instead of stale weights."""
+    key = f"{sha[:12]}-q{bits}-g{Q_GROUP_SIZE}-mlxaudio{_mlx_audio_version()}"
+    return _cache_root() / "pipecat-tts-server" / "phonon" / key
 
 
 # Mirrors mlx_audio.utils.DEFAULT_ALLOW_PATTERNS (verified in Phase 0 Q2); skips
@@ -118,6 +165,37 @@ def _snapshot_download(repo_id: str, revision: str) -> str:
     from huggingface_hub import snapshot_download  # type: ignore
 
     return str(snapshot_download(repo_id, revision=revision, allow_patterns=ALLOW_PATTERNS))
+
+
+def _quantize(snapshot_path: str, dest: str, bits: int) -> None:
+    """Quantize the snapshot at ``snapshot_path`` into ``dest`` (mlx-audio's
+    pocket_tts converter; the repo's prebuilt ``.gguf`` files do not load in MLX)."""
+    from mlx_audio.tts.models.pocket_tts.convert import convert  # type: ignore
+
+    convert(snapshot_path, dest, quantize=True, q_bits=bits, q_group_size=Q_GROUP_SIZE)
+
+
+def _ensure_quantized(snapshot_path: str, sha: str, bits: int) -> str:
+    """Return a complete quantized dir, building it if absent. Crash-safe: convert
+    into a sibling temp dir, then atomically rename; a dir that already exists (a
+    prior run or a concurrent start) is reused without converting. Any failure
+    removes the temp dir, leaves no final dir and propagates (no fp fallback)."""
+    final = _quantized_dir(sha, bits)
+    if final.is_dir():
+        return str(final)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    tmp = final.parent / f".{final.name}.tmp-{os.getpid()}-{threading.get_ident()}"
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        _quantize(snapshot_path, str(tmp), bits)
+        try:
+            os.rename(tmp, final)
+        except OSError:
+            if not final.is_dir():  # not a lost race: a real failure
+                raise
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return str(final)
 
 
 def _load_model(path: str) -> Any:
@@ -224,15 +302,27 @@ class PhononBackend:
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
 
-        pin = _pin_for(self._model_id)
+        alias = _alias_for(self._model_id)
+        bits: int | None = None
+        if alias is not None:
+            repo_id, bits = alias
+            pin = _pin_for(repo_id)
+        else:
+            pin = _pin_for(self._model_id)
         if pin is not None:
             repo, sha = pin
             # An unreachable/unknown pinned sha raises here: startup error, no HEAD fallback.
             local_path = await loop.run_in_executor(None, lambda: _snapshot_download(repo, sha))
+            if bits is not None:
+                snapshot = local_path
+                local_path = await loop.run_in_executor(
+                    None, lambda: _ensure_quantized(snapshot, sha, bits)
+                )
             logger.info(
-                "phonon: repo=%s revision=%s path=%s",
+                "phonon: repo=%s revision=%s bits=%s path=%s",
                 repo,
                 sha,
+                bits if bits is not None else "fp",
                 local_path,
             )
         else:

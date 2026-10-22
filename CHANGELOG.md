@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming, 24 kHz, English). The 31M weights, tokenizer and voices are Apache-2.0
   (model card); the 40M siblings are CC-BY-NC-4.0/gated and unsupported. Canonical
   launchd port 9365, `just smoke-phonon` / `smoke-multiconn-phonon`.
+- Phonon quantized-weight aliases: `--model phonon-q8` / `phonon-q4` (and `phonon` for
+  the default fp weights). The pinned snapshot is converted once into
+  `$XDG_CACHE_HOME/pipecat-tts-server/phonon/` and loaded from there; saves
+  memory/disk/load time, TTFB/RTF unchanged. fp stays the default.
 - `PIPECAT_TTS_PHONON_VOICES` (server env, comma-separated catalog slugs): enables
   extra named voices (one file downloaded each; unknown/unfetchable slugs are
   skipped with a warning). Validated and baked into the launchd plist for `phonon`.

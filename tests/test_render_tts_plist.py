@@ -389,3 +389,8 @@ def test_main_rejects_malformed_ws_ping(tmp_path, bad):
     proc, plist_dst = _run_main(tmp_path, {"TTS_WS_PING_TIMEOUT": bad})
     assert proc.returncode == 2
     assert not plist_dst.exists()
+
+
+def test_phonon_quant_alias_model_renders_unchanged():
+    args = _render(backend="phonon", model="phonon-q8")["ProgramArguments"]
+    assert args[args.index("--model") + 1] == "phonon-q8"

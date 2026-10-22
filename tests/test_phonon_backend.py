@@ -68,6 +68,36 @@ async def test_real_load_rate_and_capabilities(started_backend):
     assert caps["voice_count"] == len(started_backend.voices())
 
 
+@pytest.fixture(scope="module")
+async def started_q8_backend(tmp_path_factory):
+    """Real ``phonon-q8``: quantizes the pinned snapshot into a tmp cache (the
+    operator's real cache is untouched), then loads that dir. XDG_CACHE_HOME is
+    only redirected during ``start()``: HF's own cache lives under it too, and
+    leaking it would break later tests that expect the real (warm) HF cache."""
+    mp = pytest.MonkeyPatch()
+    mp.setenv(_VOICES_ENV, _NAMED)
+    backend = PH.PhononBackend(model="phonon-q8")
+    try:
+        mp.setattr(PH, "_cache_root", lambda: tmp_path_factory.mktemp("xdg"))
+        await backend.start()
+        yield backend
+    finally:
+        await backend.close()
+        mp.undo()
+
+
+@pytest.mark.parametrize("voice", [None, _NAMED])
+async def test_q8_alias_synthesizes(started_q8_backend, voice):
+    assert started_q8_backend.model == "phonon-q8"
+    assert started_q8_backend.sample_rate == 24000
+    stream = await started_q8_backend.open_stream(voice=voice, language=None, extras=None)
+    await stream.feed(_SENTENCE)
+    await stream.end()
+    chunks, nbytes = await _drain(stream)
+    assert chunks >= 2
+    assert 2.0 < nbytes / 2 / 24000 < 15.0
+
+
 async def test_hello_advertises_rate_and_voices():
     mp = pytest.MonkeyPatch()
     mp.setenv(_VOICES_ENV, _NAMED)

@@ -16,7 +16,8 @@
 #   PIPECAT_TTS_BACKEND  backend name: tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts|fish_tts|phonon (default: tone)
 #   PIPECAT_TTS_HOST     loopback host to bind (default: 127.0.0.1)
 #   PIPECAT_TTS_PORT     TCP port to bind (default: 8665 — the tone agent port)
-#   PIPECAT_TTS_MODEL    model id (optional; backend-aware fallback applies when unset)
+#   PIPECAT_TTS_MODEL    model id (optional; backend-aware fallback applies when unset;
+#                        phonon also takes the aliases phonon|phonon-q8|phonon-q4)
 #   PIPECAT_TTS_AUTH_TOKEN_FILE  path to a file with the bearer token (REQUIRED for a
 #                        non-loopback host — the renderer is fail-closed). This is the
 #                        ONLY supported way to give a launchd agent auth: launchd does

@@ -490,6 +490,21 @@ documented behaviour (protocol §7), so the smoke now honours `retry_after_ms` a
 client that does back-to-back commits must do the same. UNCHECKED: whether the reference Pipecat adapter
 (`examples/pipecat_tts_service.py`) retries on `busy`; it mentions `BUSY` only in comments I skimmed.
 
+**Scope addition (2026-10-22, user decision; NOT in the reviewed contract):** `--model` accepts the
+aliases `phonon` (fp, = the default), `phonon-q8`, `phonon-q4` (`_MODEL_ALIASES` in
+`tts_server/backends/phonon.py`; explicit table, no `-qN` parsing). A quantized alias downloads the same
+pinned snapshot, converts it once with mlx-audio's `pocket_tts` `convert(q_group_size=32)` into
+`$XDG_CACHE_HOME|~/.cache/pipecat-tts-server/phonon/<sha12>-q<bits>-g32-mlxaudio<ver>` (temp dir + atomic
+rename; failure leaves no dir and fails startup, no fp fallback) and loads that; `server.status`
+reports the alias as typed. No wire-protocol change; default behaviour unchanged. Chosen over an env var
+(invisible in `status`, a second knob) and over `:q8`/`@q8` suffixes (would force widening the plist
+`MODEL` allowlist). Verified here: the logged path is the quantized dir, on-disk weights 58.9 MB (q8) /
+40.5 MB (q4), active MLX memory after load 127 / 83 / 65 MB (fp / q8 / q4); `rtf_benchmark` warm
+TTFB 0.01-0.02 s and RTF 0.04 for all three (no TTFB/RTF difference, as Q9 found). q4 quality is still
+unjudged by ear; fp stays the default until that listen test. The 40M siblings stay out (CC-BY-NC-4.0,
+gated; official card lists 40M = 40M params / 74.6 MB q8 vs 31M = 31M / 64.5 MB; I could not read the
+40M card (no access) and have not tried loading it in mlx-audio).
+
 **Version override (2026-10-22, user decision after the conduct hand-back):** `v0.6.0` was never tagged
 or released (latest tag `v0.5.0`; main carries an unreleased `## [0.6.0]` mlx-audio entry), so this
 work ships **inside 0.6.0** (mlx-audio bump + Phonon), not 0.7.0. The contract above the marker still

@@ -639,6 +639,25 @@ run also downloads the model (~103 MB). Warm wall time is 0.12 s for a 3.4 s phr
 0.20 s for a 5.5 s phrase; first-call-per-phrase TTFB was 0.02-0.03 s. No named-voice
 TTFB penalty was observed (voice file local).
 
+### Quantized aliases (`phonon-q8`, `phonon-q4`)
+
+Compare the weight variants with the same benchmark:
+
+```sh
+for m in phonon phonon-q8 phonon-q4; do
+  uv run --extra phonon python scripts/profiling/rtf_benchmark.py --backend phonon --model $m
+done
+```
+
+Measured on an M4 Max with mlx-audio 0.6.1 by `tests/smoke/phonon_quant_probe.py`
+(not by `rtf_benchmark.py`); TTFB/RTF were identical across variants:
+
+| weights | peak memory | load | on-disk weights |
+|---|---|---|---|
+| fp (`phonon`) | 369 MB | 0.43 s | 103 MB |
+| `phonon-q8` | 284 MB | 0.04 s | 59.5 MB |
+| `phonon-q4` | 265 MB | 0.03 s | 41.1 MB |
+
 Server level (`latency_smoke.py`, default voice, one 4.9 s no-newline sentence over a
 UDS): `deltas=244 ttfb=0.021s span=0.187s total=0.208s rtf=0.043 max_gap=0.014s`.
 The adapter e2e (`pipecat_adapter_e2e.py`, default voice) measured first-audio-frame

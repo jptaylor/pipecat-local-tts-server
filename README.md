@@ -302,6 +302,20 @@ Operators are responsible for honouring each model's license.
 model's own shipped voice) always advertised. Latency/RTF: see
 the Phonon section of `scripts/profiling/README.md`.
 
+**Quantized weights.** `--model` also accepts three aliases: `phonon` (the pinned
+`gradium/phonon-31m-en`, full precision, same as the default), `phonon-q8` and
+`phonon-q4`. The quantized aliases convert the same pinned snapshot once (about a
+second) and load the result. This lowers memory, disk and load time only; TTFB and RTF
+are unchanged. The quality of `phonon-q4` has not been judged by ear; full precision
+stays the default. The converted weights are cached under
+`$XDG_CACHE_HOME/pipecat-tts-server/phonon/` (default `~/.cache/...`), keyed by pin,
+bit width and mlx-audio version, so a pin or mlx-audio change re-converts. The server
+reports the alias you passed as its `model`.
+
+```sh
+uv run python -m tts_server serve --backend phonon --model phonon-q8
+```
+
 Extra voices are chosen **ahead of time by the operator** with the server env var
 `PIPECAT_TTS_PHONON_VOICES` (comma-separated catalog slugs, e.g.
 `zoey,juniper`; no CLI flag). Only listed voices are downloaded (one file

@@ -331,6 +331,122 @@ async def test_unknown_repo_and_similar_local_path_still_unpinned(seams, monkeyp
     assert seams.load_calls == [other, local]
 
 
+# --- quantized aliases (phonon / phonon-q8 / phonon-q4) -------------------------
+
+
+class _QuantSpy:
+    """Stands in for ``_quantize``: records calls and writes a marker file."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, int]] = []
+        self.exc: Exception | None = None
+
+    def __call__(self, snapshot_path, dest, bits):
+        self.calls.append((snapshot_path, dest, bits))
+        Path(dest).mkdir(parents=True)
+        (Path(dest) / "model.safetensors").write_bytes(b"q")
+        if self.exc:
+            raise self.exc
+
+
+@pytest.fixture
+def quant(seams, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    q = _QuantSpy()
+    monkeypatch.setattr(PH, "_quantize", q)
+    monkeypatch.setattr(PH, "_mlx_audio_version", lambda: "9.9.9")
+    return q
+
+
+def _qroot(tmp_path: Path) -> Path:
+    return tmp_path / "xdg" / "pipecat-tts-server" / "phonon"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alias,bits", [("phonon-q8", 8), ("phonon-q4", 4)])
+async def test_quant_alias_quantizes_pinned_snapshot_and_loads_that_dir(
+    seams, quant, monkeypatch, tmp_path, alias, bits
+):
+    backend = await _started(monkeypatch, model=alias)
+    args, kwargs = seams.snapshot_calls[0]
+    assert _sha_in(args, kwargs) == [_MODEL_SHA]
+    assert PH.DEFAULT_PHONON_MODEL in [*args, *kwargs.values()]
+    snap = str(seams.tmp / "snapshot")
+    assert len(quant.calls) == 1
+    src, dest, got_bits = quant.calls[0]
+    assert (src, got_bits) == (snap, bits)
+    final = next(_qroot(tmp_path).iterdir())
+    assert final.name == f"{_MODEL_SHA[:12]}-q{bits}-g{PH.Q_GROUP_SIZE}-mlxaudio9.9.9"
+    assert dest != str(final) and not Path(dest).exists()  # built in a temp sibling
+    assert seams.load_calls == [str(final)]
+    assert backend.model == alias
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variant", ["PHONON-Q8", "  phonon-q8  ", "Phonon-Q8"])
+async def test_quant_alias_case_and_whitespace(seams, quant, monkeypatch, variant):
+    backend = await _started(monkeypatch, model=variant)
+    assert [c[2] for c in quant.calls] == [8]
+    assert backend.model == variant  # reported string is exactly what was passed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["phonon", "PHONON", PH.DEFAULT_PHONON_MODEL])
+async def test_fp_alias_and_repo_id_never_quantize(seams, quant, monkeypatch, tmp_path, model):
+    await _started(monkeypatch, model=model)
+    assert quant.calls == []
+    assert seams.load_calls == [str(seams.tmp / "snapshot")]
+    assert not _qroot(tmp_path).exists()
+    args, kwargs = seams.snapshot_calls[0]
+    assert _sha_in(args, kwargs) == [_MODEL_SHA]
+
+
+@pytest.mark.asyncio
+async def test_existing_quant_dir_is_reused_without_convert(seams, quant, monkeypatch):
+    await _started(monkeypatch, model="phonon-q8")
+    await _started(monkeypatch, model="phonon-q8")
+    assert len(quant.calls) == 1
+    assert seams.load_calls[0] == seams.load_calls[1]
+
+
+@pytest.mark.asyncio
+async def test_q8_and_q4_use_distinct_dirs(seams, quant, monkeypatch):
+    await _started(monkeypatch, model="phonon-q8")
+    await _started(monkeypatch, model="phonon-q4")
+    assert seams.load_calls[0] != seams.load_calls[1]
+    assert len(quant.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_quantize_failure_leaves_no_dir_and_raises(seams, quant, monkeypatch, tmp_path):
+    quant.exc = RuntimeError("convert boom")
+    with pytest.raises(RuntimeError, match="convert boom"):
+        await _started(monkeypatch, model="phonon-q8")
+    assert seams.load_calls == []  # no silent fp fallback
+    root = _qroot(tmp_path)
+    assert list(root.iterdir()) == []  # neither the final dir nor a temp leftover
+    # A retry after the failure converts again (nothing half-built was reused).
+    quant.exc = None
+    await _started(monkeypatch, model="phonon-q8")
+    assert len(quant.calls) == 2
+    assert len(seams.load_calls) == 1
+
+
+def test_quantized_dir_key_tracks_version(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(PH, "_mlx_audio_version", lambda: "1.0")
+    a = PH._quantized_dir(_MODEL_SHA, 8)
+    monkeypatch.setattr(PH, "_mlx_audio_version", lambda: "2.0")
+    assert PH._quantized_dir(_MODEL_SHA, 8) != a
+    assert PH._quantized_dir("f" * 40, 8).name.startswith("ffffffffffff-q8-")
+
+
+def test_cache_root_falls_back_to_home_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert PH._cache_root() == tmp_path / ".cache"
+
+
 # --- voices: env parsing, soft failure, cache ordering -------------------------
 
 
