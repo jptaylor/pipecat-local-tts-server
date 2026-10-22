@@ -462,12 +462,111 @@ server.)
 
 ## Progress
 
-- [ ] Phase 0: Model verification gate
+- [x] Phase 0: Model verification gate (findings below; Phase 1 not started)
 - [ ] Phase 1: Backend module, voice catalog, unit tests
 - [ ] Phase 2: Wiring — CLI, voice env var, justfile, smoke, plist renderer, docs, version
 - [ ] Phase 3: Smoke, profiling, adapter e2e
 
 ## Findings
+
+### Phase 0 (2026-10-21; `tests/smoke/phonon_phase0_gate.py`, mlx-audio 0.6.1, huggingface_hub 2.2.0, run twice, numbers stable)
+
+`GATE-SUMMARY Q1=RECORD Q2=PASS Q3=PASS Q4=PASS Q5=PASS Q6=RECORD Q7=PASS Q8=PASS`. No result forces a
+contract change; three items are flagged for a decision (see **Flags** at the end).
+
+- **Q1 (durability).** HF HEAD of `gradium/phonon-31m-en` is now `541f5752…` (moved past the
+  `5c8a65f0` commit the plan names), still `model_type: gradium_phonon_tts`, ungated; loading it on
+  0.6.1 raises `ValueError: Model type gradium_phonon_tts not supported for tts.` Pinned
+  `52433c4697` resolves to **`52433c46975bfa13144c56204c9f4ee1c5b148aa`**, ungated (unauthenticated),
+  config has no `model_type`. PyPI latest mlx-audio is still **0.6.1**; GitHub `Blaizzy/mlx-audio`
+  `main` = `7cc680b2be` has no `.py` file mentioning `gradium_phonon`. Repo pin stays 0.6.1.
+  (Searched `.py` files only; a non-Python mapping would not show.)
+- **Q2 (pin mechanism).** `snapshot_download(repo, revision=<sha>, allow_patterns=…)` returns
+  `…/snapshots/52433c46…/`; `load(local, lazy=False, strict=True)` loads (24000 Hz, ~1.1 s). Bogus sha
+  raises `RevisionNotFoundError`. `huggingface_hub` **2.2.0** (≥2.0 ✓). Files at the sha (9, 223.0 MB):
+  `.gitattributes`, `README.md`, `config.json` (2.9 KB), `default-voice.safetensors` (256 KB),
+  `model.safetensors` (102.8 MB), `model.q4k.gguf` (55.1 MB), `model.q8.gguf` (64.5 MB),
+  `tokenizer.json` (278 KB), `tokenizer.model` (65 KB). mlx-audio's `DEFAULT_ALLOW_PATTERNS` (11
+  globs) is reproduced exactly in the gate and matches **5 files / 103.4 MB** (config, default voice,
+  `model.safetensors`, both tokenizer files) — it skips the two `.gguf` files, so the pin table can
+  reuse those patterns unchanged. `HF_HUB_OFFLINE=1` + complete cache → returns the path; offline +
+  **partial** cache → raises `LocalEntryNotFoundError` (never returns an incomplete path).
+- **Q3 (signature).** `generate(text, voice=None, ref_audio=None, temperature=None, verbose=False,
+  stream=False, streaming_interval=2.0, frames_after_eos=None, **kwargs)`. `ref_audio` and
+  `frames_after_eos` both exist (negative guard is meaningful). Advertise **`["temperature"]`** only.
+  `**kwargs` additionally reads `lsd_decode_steps` / `noise_clamp` / `eos_threshold` (source-read, not
+  advertised — the `merge_extras` allowlist keeps them out). Omitting `voice` synthesizes with the
+  default voice (also `voice="default"`; backend keeps the omit rule). `verify_generate_signature`
+  warns on a stub lacking `temperature`, is silent with `**kwargs` and on the real model.
+- **Q4 (voices).** Voices repo sha **`0ee17205f254b5abc43b266c8a0f215565c352f7`**; both repos ungated
+  unauthenticated (`gated=False`). `voices.jsonl`: **102** rows, keys `age, description, filename,
+  gender, language, locale, name, voice_id`; per-language **en 37 / fr 15 / de 13 / es 25 / pt 12**.
+  Slug rule (NFKD-strip, lowercase, runs of non-alnum → `_`, strip `_`): unique, charset
+  `[a-z0-9_]+`, ids unique, no `default` collision; the per-character variant (no run-collapse) is
+  also unique. Catalog contains slug `alba`. **All 102 voices load** (`speaker_wavs`, shape
+  1×512×125) via the model's own voice path. Absolute local path accepted. A bare unknown name, bare
+  slug `alba` and bare display name `Zoey` all raise `ValueError: Unknown voice '…'. Available voices:
+  default`; an `hf://…` string is **returned unvalidated** (would be fetched) — confirms path-only
+  resolution + `_validate_voice` as the real guards. WAVs kept (below). Download cost (cold,
+  unauthenticated, sequential `hf_hub_download`): **N=1 1.07 s, N=5 4.3 s, N=37 31.4 s** (≈0.85–1.0 s per
+  file, latency-bound) vs **all 102 via one `snapshot_download(allow_patterns=voices/*.safetensors)`
+  10.4 s / 26.1 MB**. Warm `hf_hub_download(local_files_only=True)` 0.1 ms; a miss raises
+  `LocalEntryNotFoundError`. **Warm named-voice TTFB 9–11 ms vs default 10 ms** (interval 0.3 s,
+  median of 5) — see Flags.
+  - Synthesized (text: 25-word fox sentence): default 6.56 s, `zoey` 6.88 s, `juniper` 6.88 s (en-us
+    female), `easton` 6.48 s, `micah` 6.96 s (en-us male); RTF 0.033–0.035; no NaN, max |x| 0.48–0.63.
+    **Non-English caveat:** French voice `noemie` produced audio for both French text (4.96 s) and
+    English text (6.48 s) without error — whether French text is intelligible on the `-en` model is a
+    listen-test, **not yet judged by me**.
+- **Q5 (interval sweep, 25-word text, median of 3).** TTFB / RTF / chunks / max inter-arrival gap:
+  0.3 s: 10 ms / 0.034–0.036 / 22 / 15 ms; 0.5 s: 14–15 ms / 12–13 / 21 ms; 1.0 s: 24–25 ms / 7 /
+  37–39 ms; 2.0 s: 44–45 ms / 4 / 68–70 ms. Default and named voice indistinguishable. **Zero**
+  continuity violations (gap > previous chunk duration) at every interval; gaps are 1–2 orders of
+  magnitude below chunk duration. Lock **`_STREAMING_INTERVAL = 0.3`** (smallest interval; lowest TTFB;
+  `pocket_tts` precedent). Server-level confirmation stays in Phase 3.
+- **Q6 (licence, text fetched from the live repos).** Model card (`52433c46…` and HEAD identical on
+  this): front-matter `license: apache-2.0`; "The weights, tokenizer and voices in this repository are
+  released under Apache 2.0, which allows commercial use. The runtime is a separate project, licensed
+  MIT OR Apache-2.0." No LICENSE/NOTICE file in either repo. Voices repo: `license: apache-2.0` card
+  metadata only. Sibling repos checked: `gradium/phonon-40m-{en,fr,de,es,pt,multilingual}` —
+  `cc-by-nc-4.0`, `gated=auto` (verified now, so the spike claim may be quoted); `gradium/phonon-mimi`
+  apache-2.0, ungated. 40M models stay out of scope.
+- **Q7 (cancel).** Closing the generator after 1 / 2 / 5 chunks (default and named voice), then a
+  follow-up `generate` on the same model object: follow-up audio 8.56–8.88 s vs 8.88 s baseline, no
+  NaN, TTFB 9–10 ms; a named-voice cancel followed by a default-voice synth also fine. Model healthy.
+- **Q8 (long text).** Input is one continuous story with **69 unique sentences** (asserted;
+  `tests/smoke/fixtures/phonon/story_long.txt`, 5161 chars / 963 words — an earlier draft of this probe
+  looped 8 sentences, which could mask truncation, and was replaced). Nested sentence-boundary
+  prefixes, seconds-per-word vs the ~400-char reference (0.301 s/word): 516 chars 0.305 (1.01×),
+  1031 → 0.298, **2008 chars / 376 words → 112.4 s audio, 0.299**, 3003 → 0.304, 4039 chars / 744 words
+  → 226.0 s (0.304), **full 5161 chars / 963 words → 289.5 s (0.301, 1.00×)**. Marginal s/word per
+  increment 0.290–0.314, so no tail is dropped. RTF 0.033–0.034, TTFB 9–11 ms throughout. **No
+  truncation observed** to 5161 chars, so no tripwire is warranted. TTFB is flat across commit size
+  (10/40/100 words all ≈9.5 ms). Caveat: this checks duration only; no STT, so whether every word is
+  intelligibly spoken is a listen-test (`q8_story_2000.wav`, `q8_story_4000.wav`).
+  *Proposal (my choice, not measured fact):* `_MAX_TEXT_CHARS = 2000` and `ideal_words = 40`
+  (`pocket_tts` values; nothing in the data argues for different ones).
+- **WAVs** (listen set), in
+  `/private/tmp/claude-501/-Users-vr000m-Code-pipecat-ai-pipecat-local-tts-server/907c7cd4-8d31-4056-8ede-b2c7b5e80341/scratchpad/phonon_gate/`:
+  `q4_default.wav`, `q4_zoey.wav`, `q4_juniper.wav`, `q4_easton.wav`, `q4_micah.wav`,
+  `q4_nonenglish_noemie_fr_text.wav`, `q4_nonenglish_noemie_en_text.wav`, `q8_story_2000.wav`
+  (112 s), `q8_story_4000.wav` (226 s) (+ `results.json`, `run.log`). Q7 now also cancels on the
+  story prefix; its results are unchanged.
+
+**Flags (no plan text edited):**
+1. **Context claim contradicted.** The plan says named-voice TTFB ≈ 0.14 s vs 0.043 s default because
+   mlx-audio recomputes the voice prompt state per call. With a local `.safetensors` path and a
+   warm cache I measure **no named-voice penalty** (9–11 ms vs 10 ms at 0.3 s; 42–44 ms vs 45 ms at
+   2.0 s). My guess (unverified) is the spike's 0.14 s included `hf://` resolution/fetch, not prompt
+   state. Nothing in Requirements depends on it; Phase 3's "don't assert named voices < 0.1 s" is
+   merely over-cautious, and the Context bullet is stale.
+2. **Per-file sequential download is slow cold.** "One file each" costs ≈1 s/file: 37 enabled voices ≈
+   31 s at first startup vs 10.4 s for all 102 via one `snapshot_download(allow_patterns=…)`. Works as
+   specified (warm start is instant); if you want faster cold starts, a single
+   `snapshot_download(allow_patterns=[<enabled files>])` call is a drop-in alternative. Your call.
+3. **Slug rule needs one sentence in Phase 1:** run-collapse + strip `_` (what I validated), versus
+   the plan's literal "non-alphanumerics → `_`" (per-character; also unique today). Either passes;
+   pick one so the catalog table and `PIPECAT_TTS_PHONON_VOICES` regex agree.
 
 ### Review Waivers
 
