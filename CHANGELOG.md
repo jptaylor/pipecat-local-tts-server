@@ -17,8 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Phonon fails a response whose sentence chunk reaches the model's ~45 s limit
   (`response.failed`, `BACKEND_ERROR`) instead of reporting a clipped, clean completion;
   checked per chunk via `_generate_audio_stream_short_text` (mlx-audio 0.6.1, pinned).
-  Only for the pinned model and its aliases; an unpinned repo or local path starts with
-  the guard off and a warning (the ceiling is measured only for the pinned model).
+  Only for the pinned model revision and its aliases; an unpinned repo or local path, a
+  pinned revision without a measured ceiling, or an mlx-audio without the chunk method
+  starts with the guard off and a warning (the ceiling is measured only for the pinned
+  model). Clients see the generic "backend synthesis failed"; the detail is logged.
 - Phonon quantized-weight aliases: `--model phonon-q8` / `phonon-q4` (and `phonon` for
   the default fp weights). The pinned snapshot is converted once into
   `$XDG_CACHE_HOME/pipecat-tts-server/phonon/` and loaded from there; saves

@@ -309,18 +309,21 @@ unset). Latency/RTF: see the Phonon section of `scripts/profiling/README.md`.
 **Keep sentences short.** mlx-audio generates per sentence and never splits inside
 one, and the model ends a sentence chunk at about 45 s of audio. Rather than return a
 clipped response as a clean completion, the server fails it: a run-on sentence of ~200+
-words ends in `response.failed` (`BACKEND_ERROR`, "a sentence chunk hit the model's ~45 s
-limit"), after the first ~45 s of audio has already streamed. Measured 2026-10-22 on the
+words ends in `response.failed` (`BACKEND_ERROR`, with the generic client message
+"backend synthesis failed"; the "a sentence chunk hit the model's ~45 s limit" detail is
+in the server log only), after the first ~45 s of audio has already streamed. Measured 2026-10-22 on the
 full-precision weights (default voice), one-sentence run-ons of 100 / 160 / 200 / 400 words
 returned 24.8 / 36.6 / 45.1 / 45.1 s of audio, so roughly 160 words fit (approximate; it
 depends on the words). Punctuated text is unaffected: in the Phase 0 gate
 (`tests/smoke/phonon_phase0_gate.py`, recorded in the Phonon dev plan's findings) a
 2008-character, 376-word commit returned the full 112.4 s.
 `max_text_chars` does not guard this, so chunk text at sentence boundaries. The guard is
-on only for the pinned model (the default repo id and the `phonon` / `phonon-q8` /
-`phonon-q4` aliases); an unpinned `--model` (another repo id or a local path) starts
-with a warning that it is off, since the ~45 s ceiling was measured only on the pinned
-weights, so such a model can still return a clipped sentence as a clean completion.
+on only for the pinned model revision (the default repo id and the `phonon` / `phonon-q8` /
+`phonon-q4` aliases). It starts OFF, with a warning, for an unpinned `--model` (another
+repo id or a local path), for a pinned repo or revision without a measured ceiling, and
+when the installed mlx-audio lacks the chunk method; the ~45 s ceiling was measured only
+on the pinned weights, so such a model can still return a clipped sentence as a clean
+completion.
 
 **Quantized weights.** `--model` also accepts three aliases: `phonon` (the pinned
 `gradium/phonon-31m-en`, full precision, same as the default), `phonon-q8` and
