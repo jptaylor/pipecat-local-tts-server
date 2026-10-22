@@ -611,3 +611,35 @@ its per-audio-second RTF is comparable, and its cold-start warmup is variable
 for the same reason; qwen3_tts cold start roughly doubled (2.4 -> 4.5 s) — a
 single cold sample each, unexplained, watch it if launchd start-up time matters.
 
+## phonon (gradium/phonon-31m-en) harness numbers (M4 Max, mlx-audio 0.6.1, 2026-10-22)
+
+Measured with this repo's `rtf_benchmark.py --backend phonon` (in-process) and the
+server-level `just smoke-phonon` (`latency_smoke.py`), warm HF cache, pinned revision
+`52433c46975bfa13144c56204c9f4ee1c5b148aa`. Contention caveat: an `stt_server`
+(nemotron) and a `pocket_tts` launchd agent were running but **idle (0% CPU)** during
+every run, so these are not pristine-GPU numbers; they are also **not** under active
+STT load. No concurrent-transcription run was done, so the spike's STT-contention
+numbers are not re-confirmed here.
+
+```sh
+uv run --extra phonon python scripts/profiling/rtf_benchmark.py --backend phonon
+PIPECAT_TTS_PHONON_VOICES=zoey uv run --extra phonon python scripts/profiling/rtf_benchmark.py --backend phonon --voice zoey
+```
+
+| case | cold start | TTFB (warm) | RTF (warm) |
+|---|---|---|---|
+| default voice | 0.6 s | 0.01-0.02 s | 0.04 |
+| named voice (`zoey`, English) | 0.6 s | 0.02 s | 0.04 |
+
+Cold start is `start()` (load + warmup) with the weights already cached; a first-ever
+run also downloads the model (~103 MB). Warm wall time is 0.12 s for a 3.4 s phrase and
+0.20 s for a 5.5 s phrase; first-call-per-phrase TTFB was 0.02-0.03 s. No named-voice
+TTFB penalty was observed (voice file local).
+
+Server level (`latency_smoke.py`, default voice, one 4.9 s no-newline sentence over a
+UDS): `deltas=244 ttfb=0.021s span=0.187s total=0.208s rtf=0.043 max_gap=0.014s`.
+The adapter e2e (`pipecat_adapter_e2e.py`, default voice) measured first-audio-frame
+TTFB 0.045 s on the first utterance and 0.018 s on the warm second, 152 frames at
+24000 Hz. Barge-in: `response.cancelled` arrived ~1.1-1.3 ms after `response.cancel`
+(default and named voice); a fresh commit after an abrupt mid-generate disconnect returned
+full audio.

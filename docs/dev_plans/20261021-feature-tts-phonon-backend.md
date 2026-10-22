@@ -465,7 +465,7 @@ server.)
 - [x] Phase 0: Model verification gate (findings below)
 - [x] Phase 1: Backend module, voice catalog, unit tests
 - [x] Phase 2: Wiring — CLI, voice env var, justfile, smoke, plist renderer, docs, version
-- [ ] Phase 3: Smoke, profiling, adapter e2e
+- [x] Phase 3: Smoke, profiling, adapter e2e
 
 ## Findings
 
@@ -628,6 +628,35 @@ in this phase**), five Minor (**not fixed**, left for the end-of-plan review pas
   comment claims a malformed value is ignored off-phonon but only a well-formed one is tested;
   `docs/upstream/mlx-audio-phonon-model-type.md` states two things Phase 0 did not verify (the
   "following commit" and "path/name routing") — check before anyone files it.
+
+### Phase 3 (conduct, 2026-10-22)
+
+Phase test command: `tests/test_pipecat_adapter.py` 20 passed, 0 skipped (test-writer judged no change
+needed: that file is backend-agnostic fake-client tests; the deliverables are live-server scripts).
+Validation chain (all exit 0): `just smoke-phonon` (PASS=3), `just smoke-multiconn-phonon`,
+`reconnect_smoke.py --backend phonon`, `phonon_cancel_smoke.py` (status voices `["default","zoey"]`,
+typo skipped, `invalid_config` for `hf://x` and the typo, barge-in ack ~1.1-1.3 ms for default and
+`zoey`, abrupt abort then reuse OK), `pipecat_adapter_e2e.py` (utterance 1 TTFB 0.070 s, warm
+utterance 2: 148 frames, 24 kHz, TTFB 0.017 s; < 0.1 s bound). Server-level `latency_smoke`: TTFB 0.021 s,
+`max_gap` 0.017 s, RTF 0.048. Recorded in `scripts/profiling/README.md` and CHANGELOG 0.7.0.
+
+**OPEN — needs your decision:** the plan requires `rtf_benchmark` "with and without a concurrent STT
+process (re-confirm the spike's contention numbers)". It was NOT done: the STT server on this host was
+idle and no active-load run was driven. Both docs say so openly. Either run it, or record a waiver
+under Review Waivers (I did not waive it).
+
+Advisory reviewer (Opus, one pass): that one Important (above); five Minor, **not fixed** (left for the
+end-of-plan review passes):
+- `phonon_cancel_smoke.py` aborts the disconnect victim after a fixed 0.3 s sleep without confirming
+  generation is still running (could pass vacuously on a faster host); wait for a first
+  `response.audio.delta` instead.
+- Its docstring claims a "no further deltas after cancel" assertion that the code does not make
+  (it only prints the pre-ack delta count); fix the code or the docstring/README.
+- Docstring and `tests/smoke/README.md` say "abrupt TCP disconnect" but the script uses a UDS.
+- Phase 3 numbers have no run log in Findings (this section is the record); "152 frames" in the
+  profiling docs does not say which utterance it counts (a warm default-voice utterance).
+- `README.md:303` still says "the Phase 3 harness numbers are recorded there" (dev-plan wording in
+  user docs; outside Phase 3's file list); same item the Phase 2 reviewer flagged.
 
 ### Review Waivers
 

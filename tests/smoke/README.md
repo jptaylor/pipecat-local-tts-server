@@ -181,6 +181,7 @@ returned before the kill vs. after.
 ```sh
 just smoke-reconnect                              # tone (fast)
 tests/smoke/run_reconnect.sh --backend kokoro     # real voice samples
+uv run --extra phonon python tests/smoke/reconnect_smoke.py --backend phonon
 ```
 
 Design notes:
@@ -222,3 +223,30 @@ backends land — **Phase 5a `voxtral_tts`** and **Phase 5b `pocket_tts`**, both
 
 Tracked as checkboxes under Phase 5b in
 `docs/dev_plans/20260624-feature-tts-server-v1.md`.
+
+## Phonon server-level checks (named voice, barge-in, disconnect, adapter)
+
+Both scripts start their **own** phonon server on a `mktemp` socket (never the
+canonical operator socket) and tear it down. They need the `phonon` extra and a
+cached or reachable HF model.
+
+```sh
+# named voice + voice validation + barge-in + abrupt disconnect, through the real server
+uv run --extra phonon python tests/smoke/phonon_cancel_smoke.py [--voice zoey]
+
+# reference Pipecat adapter inside a real pipeline (default voice, warm utterance)
+uv run --extra examples --extra phonon python tests/smoke/pipecat_adapter_e2e.py
+```
+
+- `phonon_cancel_smoke.py` starts the server with
+  `PIPECAT_TTS_PHONON_VOICES=<english slug>,<typo'd slug>` and asserts: `server.status`
+  voices == `["default", <slug>]` (the typo is skipped, server stays up); audio for the
+  named voice; `invalid_config` for `voice="hf://x"` and for the typo'd slug; barge-in
+  (`response.cancel` mid-stream gives `response.cancelled`, then a follow-up commit returns
+  full audio, for the default and the named voice); and an abrupt TCP disconnect
+  mid-generate followed by full audio on a fresh connection.
+- `pipecat_adapter_e2e.py` drives `examples/pipecat_tts_service.py` in a Pipecat
+  pipeline with the default voice and asserts on the **second** (warm) utterance: 24 kHz,
+  at least one audio frame, first-frame TTFB < 0.1 s. The first utterance only has to
+  succeed; named voices are not asserted against the 0.1 s bound.
+- `latency_smoke.py` also prints `max_gap`, the largest inter-delta arrival gap.

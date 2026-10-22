@@ -57,6 +57,7 @@ except ImportError:  # pragma: no cover - dependency hint
 DEFAULT_VOICE = {
     "tone": "tone",
     "kokoro": "af_heart",
+    "phonon": None,  # default voice (voice omitted -> the model's shipped voice)
     # "voxtral_tts": "casual_male",
     # "pocket_tts": None,
     # "dia": None,
