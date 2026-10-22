@@ -831,13 +831,13 @@ def test_install_wraps_once_and_reports_missing_method():
             yield from range(PH._CHUNK_FRAMES_CEILING)
 
     m = M()
-    assert PH._install_chunk_tripwire(m) is True
+    assert PH._install_chunk_tripwire(m, PH._CHUNK_FRAMES_CEILING) is True
     wrapped = m._generate_audio_stream_short_text
-    assert PH._install_chunk_tripwire(m) is True
+    assert PH._install_chunk_tripwire(m, PH._CHUNK_FRAMES_CEILING) is True
     assert m._generate_audio_stream_short_text is wrapped  # idempotent, not double-wrapped
     with pytest.raises(PH.PhononTruncationError):
         list(m._generate_audio_stream_short_text(text_to_generate="x"))
-    assert PH._install_chunk_tripwire(object()) is False
+    assert PH._install_chunk_tripwire(object(), PH._CHUNK_FRAMES_CEILING) is False
 
 
 async def test_start_warns_when_model_lacks_the_chunk_method(seams, caplog, monkeypatch):
@@ -916,9 +916,57 @@ async def test_chunk_tripwire_off_for_pinned_repo_without_measured_ceiling(
     assert off and "no measured chunk-frame ceiling" in off[0]
 
 
-def test_every_measured_ceiling_is_for_a_pinned_repo():
-    """A ceiling is a model fact measured at a specific pinned revision."""
-    assert set(PH._CHUNK_FRAMES_CEILINGS) <= set(PH._REVISION_PINS)
+@pytest.mark.asyncio
+async def test_chunk_tripwire_off_when_default_pin_sha_changes(seams, monkeypatch, caplog):
+    """Regression (gauntlet r4 A): a ceiling is bound to the exact ``(repo, sha)`` it was
+    measured on. Before the fix the table was keyed by repo only, so bumping the default
+    repo's pin sha without re-measuring kept installing the old revision's 560."""
+    new_sha = "b" * 40
+    monkeypatch.setitem(PH._REVISION_PINS, PH.DEFAULT_PHONON_MODEL, new_sha)
+    seams.model = _ChunkSpyModel()
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        backend = await _started(monkeypatch)
+    fn = backend._loaded_model._generate_audio_stream_short_text
+    assert not getattr(fn, "_phonon_tripwire", False)
+    assert len(list(fn(text_to_generate="x"))) == PH._CHUNK_FRAMES_CEILING
+    off = [r.getMessage() for r in caplog.records if "truncation guard is OFF" in r.getMessage()]
+    assert off and "no measured chunk-frame ceiling" in off[0]
+    assert f"{PH.DEFAULT_PHONON_MODEL}@{new_sha}" in off[0]
+
+
+class _NFrameChunkModel(_SpyModel):
+    def __init__(self, frames):
+        super().__init__()
+        self.frames = frames
+
+    def _generate_audio_stream_short_text(self, **_k):
+        yield from range(self.frames)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("frames", "raises"), [(9, False), (10, True)])
+async def test_start_forwards_the_per_revision_ceiling(seams, monkeypatch, frames, raises):
+    """Regression (gauntlet r4 C): ``start()`` must pass the table's ceiling for the
+    resolved pin, not the module default. With the entry patched to 10, a 10-frame chunk
+    must trip and a 9-frame chunk must pass (the default 560 would pass both)."""
+    key = (PH.DEFAULT_PHONON_MODEL, PH._REVISION_PINS[PH.DEFAULT_PHONON_MODEL])
+    monkeypatch.setitem(PH._CHUNK_FRAMES_CEILINGS, key, 10)
+    seams.model = _NFrameChunkModel(frames)
+    backend = await _started(monkeypatch)
+    fn = backend._loaded_model._generate_audio_stream_short_text
+    assert getattr(fn, "_phonon_tripwire", False)
+    if raises:
+        with pytest.raises(PH.PhononTruncationError):
+            list(fn(text_to_generate="x"))
+    else:
+        assert len(list(fn(text_to_generate="x"))) == frames
+
+
+def test_every_measured_ceiling_is_for_its_exact_pinned_revision():
+    """A ceiling is a model fact measured at a specific pinned revision: every
+    ``(repo, sha)`` key must name a pinned repo pinned at that SAME sha."""
+    for repo, sha in PH._CHUNK_FRAMES_CEILINGS:
+        assert PH._REVISION_PINS.get(repo) == sha, (repo, sha)
 
 
 # --- voice path preconditions (_resolve_voices) ---------------------------------

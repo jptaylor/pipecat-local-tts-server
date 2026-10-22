@@ -155,12 +155,16 @@ _MAX_TEXT_CHARS = 2000
 # Chunk tripwire: a chunk that yields this many 80 ms frames (560 = 44.8 s at the model's
 # 12.5 Hz) ended at the model's ~45 s limit rather than on its own sentence end, so its
 # tail audio was cut. Measured 564 frames for fp/q8/q4 x default/zoey (2026-10-22).
-# Keyed per repo, separately from ``_REVISION_PINS`` (a loader-compat table): ``start()``
-# installs the tripwire only for a pinned repo that ALSO has a measured ceiling here, so
-# pinning a new repo for loader reasons never switches on an unmeasured ceiling. A new
-# repo needs its own measurement before it gets an entry.
-_CHUNK_FRAMES_CEILINGS: dict[str, int] = {DEFAULT_PHONON_MODEL: 560}
-_CHUNK_FRAMES_CEILING = _CHUNK_FRAMES_CEILINGS[DEFAULT_PHONON_MODEL]
+# Keyed by the exact ``(repo, sha)`` it was measured on, separately from ``_REVISION_PINS``
+# (a loader-compat table): ``start()`` installs the tripwire only when the pin it resolved
+# ALSO has a measured ceiling here, so pinning a new repo for loader reasons, or bumping
+# an existing repo's pin sha, never switches on an unmeasured ceiling. A new repo or a
+# new revision needs its own measurement before it gets an entry.
+# The sha is spelled out (not read from ``_REVISION_PINS``) on purpose: a pin bump must
+# not silently carry the old revision's measurement.
+_DEFAULT_CEILING_KEY = (DEFAULT_PHONON_MODEL, "52433c46975bfa13144c56204c9f4ee1c5b148aa")
+_CHUNK_FRAMES_CEILINGS: dict[tuple[str, str], int] = {_DEFAULT_CEILING_KEY: 560}
+_CHUNK_FRAMES_CEILING = _CHUNK_FRAMES_CEILINGS[_DEFAULT_CEILING_KEY]
 
 _TEMPERATURE_MIN = TEMPERATURE_MIN
 _TEMPERATURE_MAX = TEMPERATURE_MAX
@@ -274,7 +278,7 @@ def _cap_chunk_frames(chunk_fn, ceiling: int, make_error):
     return wrapped
 
 
-def _install_chunk_tripwire(model: Any, ceiling: int = _CHUNK_FRAMES_CEILING) -> bool:
+def _install_chunk_tripwire(model: Any, ceiling: int) -> bool:
     """Wrap ``model._generate_audio_stream_short_text`` (mlx-audio 0.6.1, pinned; the
     only place a sentence chunk's boundary is visible) with the frame cap. Idempotent.
     Returns False when the method is absent (an mlx-audio change), so the caller can say
@@ -449,7 +453,7 @@ class PhononBackend:
                 "the rate contract"
             )
         self.sample_rate = int(rate)
-        ceiling = _CHUNK_FRAMES_CEILINGS.get(pin[0]) if pin is not None else None
+        ceiling = _CHUNK_FRAMES_CEILINGS.get(pin) if pin is not None else None
         if pin is None:
             # The 560-frame / 12.5 Hz ceiling was measured only on the pinned model
             # (fp/q8/q4); another model could end valid chunks past it.
@@ -461,9 +465,10 @@ class PhononBackend:
             )
         elif ceiling is None:
             logger.warning(
-                "phonon: pinned repo %s has no measured chunk-frame ceiling; the ~45 s "
+                "phonon: pinned repo %s@%s has no measured chunk-frame ceiling; the ~45 s "
                 "sentence-chunk truncation guard is OFF",
                 pin[0],
+                pin[1],
             )
         elif not _install_chunk_tripwire(self._loaded_model, ceiling):
             logger.warning(
