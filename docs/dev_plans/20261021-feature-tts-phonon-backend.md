@@ -469,6 +469,14 @@ server.)
 
 ## Findings
 
+**Version override (2026-10-22, user decision after the conduct hand-back):** `v0.6.0` was never tagged
+or released (latest tag `v0.5.0`; main carries an unreleased `## [0.6.0]` mlx-audio entry), so this
+work ships **inside 0.6.0** (mlx-audio bump + Phonon), not 0.7.0. The contract above the marker still
+says "0.7.0" / "`0.6.0` → `0.7.0`" (Context, Phase 2 and Phase 3 slots, Technical Specs, Acceptance); it
+was deliberately not edited. Read every such mention as 0.6.0. Applied: `pyproject.toml` and `uv.lock`
+at `0.6.0`, the Phonon CHANGELOG entries merged into the existing `## [0.6.0]` section (dated
+2026-10-22).
+
 ### Phase 0 (2026-10-21; `tests/smoke/phonon_phase0_gate.py`, mlx-audio 0.6.1, huggingface_hub 2.2.0, run twice, numbers stable)
 
 `GATE-SUMMARY Q1=RECORD Q2=PASS Q3=PASS Q4=PASS Q5=PASS Q6=RECORD Q7=PASS Q8=PASS`. No result forces a
@@ -638,7 +646,7 @@ Validation chain (all exit 0): `just smoke-phonon` (PASS=3), `just smoke-multico
 typo skipped, `invalid_config` for `hf://x` and the typo, barge-in ack ~1.1-1.3 ms for default and
 `zoey`, abrupt abort then reuse OK), `pipecat_adapter_e2e.py` (utterance 1 TTFB 0.070 s, warm
 utterance 2: 148 frames, 24 kHz, TTFB 0.017 s; < 0.1 s bound). Server-level `latency_smoke`: TTFB 0.021 s,
-`max_gap` 0.017 s, RTF 0.048. Recorded in `scripts/profiling/README.md` and CHANGELOG 0.7.0.
+`max_gap` 0.017 s, RTF 0.048. Recorded in `scripts/profiling/README.md` and CHANGELOG 0.6.0.
 
 **STT contention run (2026-10-22, after the conduct hand-back):** `rtf_benchmark --backend phonon
 --warm 5` ran twice while Onoats was transcribing a live 4-participant call (3 remote + 1 local mic;
