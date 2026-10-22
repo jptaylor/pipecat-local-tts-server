@@ -469,6 +469,18 @@ server.)
 
 ## Findings
 
+**`/code-review xhigh --fix` (2026-10-22):** fixed: a voice path containing `@` is skipped at start
+(mlx-audio would decode it as audio and fail at synthesis); `default` in `PIPECAT_TTS_PHONON_VOICES` no
+longer logs a bogus "unknown voice" warning; `run_reconnect.sh` syncs and pins `--no-sync` for phonon
+like kokoro; protocol §6 `languages`/`extras` rows and the smoke README list phonon; `_enabled_from_env`
+parses once; two shadowing `import json` removed; CHANGELOG compare links for 0.5.0/0.6.0 (the 0.6.0
+link 404s until the tag exists). NOT fixed, left for the user: (1) a single sentence over ~170 words is
+silently clipped to 45.1 s with a normal `response.audio.done` (measured; documented in README and a code
+comment; qwen3/fish have tripwires, phonon has none, so a guard is a design decision tied to the
+deferred shared-tripwire helper); (2) a SIGKILL mid-quantize leaves a `.<key>.tmp-<pid>-<tid>` dir in the
+cache (needs a stale-age policy); (3) the plist voices regex accepts a trailing newline, same as the
+existing kokoro/ping regexes.
+
 **Deferred Minor findings fixed (2026-10-22, after the conduct hand-back):** all 14 Phase 1/2/3 Minor
 items below are fixed in one follow-up commit (hostile-env-token and `ALBA`/whitespace lean tests;
 non-vacuous status test; English `zoey` in the mlx tests and the `alba,elodie_rose` examples; pin

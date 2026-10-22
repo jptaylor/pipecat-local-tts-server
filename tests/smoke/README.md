@@ -83,11 +83,13 @@ just smoke-voxtral_tts
 just smoke-pocket_tts
 just smoke-qwen3_tts
 just smoke-fish_tts
+just smoke-phonon
 just smoke-multiconn
 just smoke-multiconn-voxtral_tts          # concurrency against voxtral
 just smoke-multiconn-pocket_tts --turns 3 # concurrency against pocket (fast backend)
 just smoke-multiconn-qwen3_tts --turns 3  # concurrency against qwen3 (fast backend, RTF≈0.25×)
 just smoke-multiconn-fish_tts --turns 3   # concurrency against fish_tts (non-streaming, RTF≈1.6-1.7×)
+just smoke-multiconn-phonon               # concurrency against phonon (fast streaming backend, RTF≈0.04×)
 ```
 
 ## Multi-connection / backpressure (`run_multiconn.sh` + `multiconn_smoke.py`)

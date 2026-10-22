@@ -302,6 +302,14 @@ Operators are responsible for honouring each model's license.
 model's own shipped voice) always advertised. Latency/RTF: see
 the Phonon section of `scripts/profiling/README.md`.
 
+**Keep sentences short.** mlx-audio generates per sentence and never splits inside
+one, and a single sentence's audio is capped at about 45 s with no error: a run-on
+sentence of 200+ words comes back clipped to exactly 45.1 s while `response.audio.done`
+still reports success (measured: about 160 words fit, 200/300/400 words all return
+45.1 s). Punctuated text is unaffected (a 400-word, 2000-character commit returns the
+full ~120 s). `max_text_chars` does not guard against this, so chunk text at sentence
+boundaries.
+
 **Quantized weights.** `--model` also accepts three aliases: `phonon` (the pinned
 `gradium/phonon-31m-en`, full precision, same as the default), `phonon-q8` and
 `phonon-q4`. The quantized aliases convert the same pinned snapshot once (about a

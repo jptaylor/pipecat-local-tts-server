@@ -662,6 +662,28 @@ async def test_hostile_and_mixed_case_env_tokens(seams, monkeypatch, caplog):
     assert "hf://x" in msgs and "../x" in msgs
 
 
+@pytest.mark.asyncio
+async def test_default_in_env_is_accepted_without_unknown_voice_warning(seams, monkeypatch, caplog):
+    """``default`` is always advertised; listing it must not warn "not in catalog"."""
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        backend = await _started(monkeypatch, voices="default,alba")
+    assert backend.voices() == ["default", "alba"]
+    assert not [r for r in caplog.records if "default" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_voice_path_containing_at_sign_is_skipped_at_start(seams, monkeypatch, caplog):
+    """mlx-audio's pocket_tts decides "is this a .safetensors file" from the text before
+    the first '@', so a voice path with '@' is decoded as audio and fails at synthesis
+    (DecodeError). It must be skipped with a warning at start, not advertised."""
+    seams.tmp = seams.tmp / "a@b"
+    seams.tmp.mkdir()
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        backend = await _started(monkeypatch, voices="alba")
+    assert backend.voices() == ["default"]
+    assert any("'@'" in r.getMessage() and "alba" in r.getMessage() for r in caplog.records)
+
+
 # --- server-level: status voices + commit validation ---------------------------
 
 

@@ -45,7 +45,6 @@ from pathlib import Path
 from typing import Any
 
 from ..backend import TTSStream
-from ..env import env_str_set
 from . import phonon_voices
 from ._bridge_stream import BridgedStream
 from ._extras_util import (
@@ -143,7 +142,11 @@ _STREAMING_INTERVAL = 0.3
 _BRIDGE_MAXSIZE = 32
 
 # Chosen defaults, not model facts (pocket_tts values; Phase 0 Q8 saw no
-# truncation to 5161 chars).
+# truncation to 5161 chars of PUNCTUATED text). Known limit, NOT guarded here:
+# mlx-audio generates per sentence chunk and never splits inside a sentence, and one
+# chunk's audio is capped at ~45 s with no error (measured 2026-10-22: single
+# run-on sentences of 200/300/400 words all return exactly 45.1 s, i.e. silently
+# clipped; ~160 words still fit). ``max_text_chars`` does not protect against it.
 _IDEAL_WORDS = 40
 _MAX_TEXT_CHARS = 2000
 
@@ -260,16 +263,13 @@ class _PhononStream(BridgedStream):
 
 
 def _enabled_from_env() -> list[str]:
-    """Enabled slugs from ``PIPECAT_TTS_PHONON_VOICES`` in the operator's order,
-    duplicates collapsed. Membership/normalisation uses the shared
-    ``env_str_set`` helper (Kokoro's); the raw value only supplies the order."""
-    wanted = env_str_set(VOICES_ENV)
-    if not wanted:
-        return []
+    """Enabled slugs from ``PIPECAT_TTS_PHONON_VOICES`` in the operator's order:
+    stripped, lowercased, blanks and duplicates dropped (same normalisation as
+    ``env_str_set``, but ordered, which a set cannot be)."""
     ordered: list[str] = []
     for tok in os.environ.get(VOICES_ENV, "").split(","):
         tok = tok.strip().lower()
-        if tok in wanted and tok not in ordered:
+        if tok and tok not in ordered:
             ordered.append(tok)
     return ordered
 
@@ -362,6 +362,8 @@ class PhononBackend:
         paths: dict[str, str | None] = {phonon_voices.DEFAULT_VOICE: None}
         resolved, unknown = phonon_voices.resolve_enabled(self._enabled_voices)
         for name in unknown:
+            if name == phonon_voices.DEFAULT_VOICE:
+                continue  # always advertised; listing it explicitly is harmless
             logger.warning(
                 "phonon: %s: unknown voice %r skipped (not in catalog)", VOICES_ENV, name
             )
@@ -373,6 +375,18 @@ class PhononBackend:
             if not os.path.isabs(path) or not os.path.isfile(path):
                 logger.warning(
                     "phonon: voice %r resolved to %r which is not an absolute existing file; skipped",
+                    slug,
+                    path,
+                )
+                continue
+            if "@" in path:
+                # mlx-audio's pocket_tts takes everything after '@' in a voice path as a
+                # revision suffix when deciding whether it is a ``.safetensors`` file, so a
+                # path with '@' (e.g. an HF cache under such a directory) is decoded as audio
+                # and fails at synthesis time. Fail here, at start, instead.
+                logger.warning(
+                    "phonon: voice %r resolved to %r which contains '@' and cannot be loaded "
+                    "by mlx-audio; skipped (move the HF cache to a path without '@')",
                     slug,
                     path,
                 )

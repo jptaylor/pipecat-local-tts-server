@@ -401,7 +401,6 @@ def _phonon_refresh_diff() -> tuple[list[str], list[str], list[str]]:
     ``phonon._download_voice`` seam) and return ``(added, removed, changed)`` slug lists
     against the bundled table. Read-only: nothing in the package is modified, and the
     fetch goes to a throwaway cache dir so the operator's HF cache is untouched too."""
-    import json
     import tempfile
 
     from .backends import phonon, phonon_voices
@@ -440,8 +439,6 @@ def _cmd_voices(args: argparse.Namespace) -> None:
     if args.language:
         rows = [r for r in rows if r["language"] == args.language]
     if args.json:
-        import json
-
         print(json.dumps(rows))
     else:
         print(f"{'slug':<28} {'lang':<5} {'enabled':<8} cached")
