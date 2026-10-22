@@ -553,6 +553,30 @@ contract change; three items are flagged for a decision (see **Flags** at the en
   (112 s), `q8_story_4000.wav` (226 s) (+ `results.json`, `run.log`). Q7 now also cancels on the
   story prefix; its results are unchanged.
 
+- **Q9 (weight variants; follow-up probe, `tests/smoke/phonon_quant_probe.py`, one subprocess per
+  variant, 2 warm-ups + 5 reps, default voice and Zoey, 0.3 s interval).**
+  - **Repo GGUFs do not load.** `model.q8.gguf` / `model.q4k.gguf` are valid GGUF v3 (185 tensors) but
+    MLX's reader rejects both (`mx.load` → `[load_gguf] gguf_init failed`). Through mlx-audio `load()`
+    the symptom is `Missing 173 parameters`. Cause not diagnosed; my guess is a tensor type or
+    metadata layout MLX's GGUF reader does not support (the files target Gradium's own runtime).
+  - **Local quantization works.** mlx-audio's `pocket_tts.convert.convert(snapshot, dest,
+    quantize=True, q_bits=8|4, q_group_size=32)` takes ~0.7 s and writes a loadable dir.
+
+    | variant | disk | load | after-load mem | peak mem | TTFB (default/Zoey, ms) | RTF |
+    |---|---|---|---|---|---|---|
+    | safetensors (fp) | 223 MB snapshot (103 MB weights) | 0.43 s | 103 MB | 369 MB | 8.9–9.1 / 9.1–10.0 | 0.033–0.037 |
+    | mlx q8 | 59.5 MB | 0.04 s | 59 MB | 284 MB | 8.3–8.4 / 8.7–8.8 | 0.033–0.034 |
+    | mlx q4 | 41.1 MB | 0.03 s | 40 MB | 265 MB | 8.5–8.8 / 8.7–9.2 | 0.032–0.035 |
+
+    TTFB and RTF are the same within noise across all three (RTF ≪ 1, TTFB ≈ one chunk of compute).
+    Quantization buys memory/disk/load time only. No NaN, no gap violations in any run. Audio
+    duration for the same text drifts slightly (Zoey short: 3.04 s fp → 2.96 s q8 → 2.80 s q4;
+    default medium 14.48 → 14.48 → 14.32 s), so q4 changes prosody/pacing a little. **Quality is
+    unjudged: listen-test needed.**
+  - WAVs in `…/scratchpad/phonon_quant2/`: `quant_{safetensors,mlx_q8,mlx_q4}_{default,zoey}.wav`.
+  - Implication (not applied): a weights selector would be a local-quantize step (or a pre-quantized
+    dir passed via `--model`), not a GGUF download. Contract change, so the plan is not edited.
+
 **Flags (no plan text edited):**
 1. **Context claim contradicted.** The plan says named-voice TTFB ≈ 0.14 s vs 0.043 s default because
    mlx-audio recomputes the voice prompt state per call. With a local `.safetensors` path and a
