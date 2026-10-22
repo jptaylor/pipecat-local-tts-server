@@ -191,6 +191,7 @@ Endpoint precedence (server and client both): **URI > socket > host+port**. The
 | `TTS_WS_DEFAULT_SOCKET` | client | Explicit fallback socket for `status` when nothing else is set. |
 | `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer token the server requires (optional auth). |
 | `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to advertise after installing their extra G2P package. See [Kokoro language support](#kokoro-language-support-advertised--synthesizable). |
+| `PIPECAT_TTS_PHONON_VOICES` | server | Comma-separated Phonon catalog slugs (e.g. `zoey,juniper`) to advertise + download; `default` is always advertised. Unknown/unfetchable slugs are warned and skipped. Baked into the plist for the `phonon` backend only. |
 | `TTS_WS_PING_INTERVAL` | server | Keepalive ping period in seconds (default `20`). A disable token (`none`/`off`/`disable`/`disabled` or any zero) disables pings. |
 | `TTS_WS_PING_TIMEOUT` | server | Seconds to wait for a pong before closing (default `120`). A disable token (`none`/`off`/`disable`/`disabled` or any zero) disables the timeout (keeps pings, never closes on a slow pong — reintroduces the idle-leak below). |
 

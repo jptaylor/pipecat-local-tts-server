@@ -896,6 +896,31 @@ async def test_chunk_tripwire_installed_iff_pinned_and_method_present(
         assert "no revision pin" in off[0]
 
 
+@pytest.mark.asyncio
+async def test_chunk_tripwire_off_for_pinned_repo_without_measured_ceiling(
+    seams, monkeypatch, caplog
+):
+    """Regression (gauntlet r3 A): the tripwire gate must read the per-repo measured
+    ceiling table, not the loader-compat ``_REVISION_PINS``. Before the fix, pinning a
+    second repo (for loader reasons) switched the tripwire on with the default model's
+    unmeasured ceiling."""
+    other = "gradium/phonon-31m-fr"
+    monkeypatch.setitem(PH._REVISION_PINS, other, "a" * 40)
+    seams.model = _ChunkSpyModel()
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        backend = await _started(monkeypatch, model=other)
+    fn = backend._loaded_model._generate_audio_stream_short_text
+    assert not getattr(fn, "_phonon_tripwire", False)
+    assert len(list(fn(text_to_generate="x"))) == PH._CHUNK_FRAMES_CEILING
+    off = [r.getMessage() for r in caplog.records if "truncation guard is OFF" in r.getMessage()]
+    assert off and "no measured chunk-frame ceiling" in off[0]
+
+
+def test_every_measured_ceiling_is_for_a_pinned_repo():
+    """A ceiling is a model fact measured at a specific pinned revision."""
+    assert set(PH._CHUNK_FRAMES_CEILINGS) <= set(PH._REVISION_PINS)
+
+
 # --- voice path preconditions (_resolve_voices) ---------------------------------
 
 
