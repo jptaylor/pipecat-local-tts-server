@@ -5,7 +5,8 @@ Starts its OWN phonon server on a mktemp socket (never the operator's canonical
 one), runs ``examples/pipecat_tts_service.py::LocalTTSService`` inside a real
 Pipecat pipeline, speaks two utterances with the DEFAULT voice and asserts on the
 SECOND (warm) one: 24 kHz, >= 1 audio frame, first-audio-frame TTFB < 0.1 s. The
-first utterance only has to succeed. Named voices are not asserted against 0.1 s.
+first utterance only has to succeed. Any ErrorFrame fails the run, including the
+ones the TTS service pushes UPSTREAM (caught by a tap placed before the service). Named voices are not asserted against 0.1 s.
 
 Usage (needs both extras):
   uv run --extra examples --extra phonon python tests/smoke/pipecat_adapter_e2e.py
@@ -45,13 +46,32 @@ EXPECTED_RATE = 24000
 TTFB_BOUND = 0.1
 
 
+class _ErrorTap(FrameProcessor):
+    """Sits UPSTREAM of the TTS service and records the ErrorFrames it pushes.
+
+    Pipecat's ``TTSService`` routes an ``ErrorFrame`` yielded by ``run_tts``
+    through ``push_error_frame``, which pushes it UPSTREAM — a downstream sink
+    never sees it, so an utterance that streams some audio and then fails would
+    otherwise pass."""
+
+    def __init__(self, errors: list[str]) -> None:
+        super().__init__()
+        self.errors = errors
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if isinstance(frame, ErrorFrame):
+            self.errors.append(str(frame.error))
+        await self.push_frame(frame, direction)
+
+
 class _Sink(FrameProcessor):
     """Records per-utterance timing: queue time -> first audio frame -> stopped."""
 
-    def __init__(self) -> None:
+    def __init__(self, errors: list[str]) -> None:
         super().__init__()
         self.utterances: list[dict] = []
-        self.errors: list[str] = []
+        self.errors = errors  # shared with the upstream ``_ErrorTap``
         self.on_stopped: asyncio.Queue[None] = asyncio.Queue()
         self.t_sent = 0.0
 
@@ -75,9 +95,13 @@ class _Sink(FrameProcessor):
 
 
 async def _run(sock: str, timeout: float) -> int:
-    sink = _Sink()
-    tts = LocalTTSService(socket_path=sock)
-    task = PipelineTask(Pipeline([tts, sink]))
+    return await _run_pipeline(LocalTTSService(socket_path=sock), timeout)
+
+
+async def _run_pipeline(tts: FrameProcessor, timeout: float) -> int:
+    errors: list[str] = []
+    sink = _Sink(errors)
+    task = PipelineTask(Pipeline([_ErrorTap(errors), tts, sink]))
     runner = PipelineRunner(handle_sigint=False)
     runner_task = asyncio.create_task(runner.run(task))
     try:

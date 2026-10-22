@@ -68,29 +68,37 @@ async def test_real_load_rate_and_capabilities(started_backend):
     assert caps["voice_count"] == len(started_backend.voices())
 
 
-@pytest.fixture(scope="module")
-async def started_q8_backend(tmp_path_factory):
-    """Real ``phonon-q8``: quantizes the pinned snapshot into a tmp cache (the
-    operator's real cache is untouched), then loads that dir. XDG_CACHE_HOME is
-    only redirected during ``start()``: HF's own cache lives under it too, and
-    leaking it would break later tests that expect the real (warm) HF cache."""
+@pytest.fixture(scope="module", params=["phonon-q8", "phonon-q4"])
+async def started_quant_backend(request, tmp_path_factory):
+    """Real quantized alias (``phonon-q8`` and ``phonon-q4``): quantizes the pinned
+    snapshot into a tmp cache root, then loads that dir. Only ``PH._cache_root``
+    is redirected (the operator's real cache is untouched); XDG_CACHE_HOME is NOT
+    set, since HF's own cache lives under it and redirecting it would break the
+    warm-HF-cache load. Yields ``(backend, cache_root)``."""
     mp = pytest.MonkeyPatch()
     mp.setenv(_VOICES_ENV, _NAMED)
-    backend = PH.PhononBackend(model="phonon-q8")
+    backend = PH.PhononBackend(model=request.param)
+    root = tmp_path_factory.mktemp("xdg")
     try:
-        mp.setattr(PH, "_cache_root", lambda: tmp_path_factory.mktemp("xdg"))
+        mp.setattr(PH, "_cache_root", lambda: root)
         await backend.start()
-        yield backend
+        yield backend, root
     finally:
         await backend.close()
         mp.undo()
 
 
 @pytest.mark.parametrize("voice", [None, _NAMED])
-async def test_q8_alias_synthesizes(started_q8_backend, voice):
-    assert started_q8_backend.model == "phonon-q8"
-    assert started_q8_backend.sample_rate == 24000
-    stream = await started_q8_backend.open_stream(voice=voice, language=None, extras=None)
+async def test_quant_alias_synthesizes(started_quant_backend, voice):
+    backend, root = started_quant_backend
+    bits = PH._MODEL_ALIASES[backend.model][1]
+    assert backend.model in ("phonon-q8", "phonon-q4")
+    # The conversion really ran at this bit width, into the redirected cache.
+    assert [
+        d.name for d in (root / "pipecat-tts-server" / "phonon").iterdir() if f"-q{bits}-" in d.name
+    ], "no quantized dir for this alias"
+    assert backend.sample_rate == 24000
+    stream = await backend.open_stream(voice=voice, language=None, extras=None)
     await stream.feed(_SENTENCE)
     await stream.end()
     chunks, nbytes = await _drain(stream)

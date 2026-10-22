@@ -366,76 +366,17 @@ def _cmd_status(args: argparse.Namespace) -> None:
         print(f"  pid: {pid}")
 
 
-def _phonon_catalog_rows() -> list[dict]:
-    """Rows for ``voices``: ``slug``/``language``/``enabled``/``cached`` per catalog voice.
-
-    ``cached`` is probed through ``phonon._download_voice(..., local_files_only=True)``
-    (the download seam; a cache miss raises and counts as not cached). If
-    ``huggingface_hub`` is not installed the probe cannot tell, so ``cached`` is
-    ``None`` (unknown), not ``False``. Looked up via the module attribute so tests
-    can patch it.
-    """
-    from .backends import phonon, phonon_voices
-
-    enabled = set(phonon._enabled_from_env())
-    rows = []
-    for slug, _vid, lang in phonon_voices.VOICE_CATALOG:
-        try:
-            phonon._download_voice(
-                phonon_voices.VOICES_REPO,
-                phonon_voices.voice_filename(slug),
-                phonon_voices.VOICES_REPO_SHA,
-                local_files_only=True,
-            )
-            cached: bool | None = True
-        except ImportError:
-            cached = None  # no huggingface_hub: unknown, not "not cached"
-        except Exception:
-            cached = False
-        rows.append({"slug": slug, "language": lang, "enabled": slug in enabled, "cached": cached})
-    return rows
-
-
-def _phonon_refresh_diff() -> tuple[list[str], list[str], list[str]]:
-    """Fetch the current ``voices.jsonl`` (revision ``main``, via the
-    ``phonon._download_voice`` seam) and return ``(added, removed, changed)`` slug lists
-    against the bundled table. Read-only: nothing in the package is modified, and the
-    fetch goes to a throwaway cache dir so the operator's HF cache is untouched too."""
-    import tempfile
-
-    from .backends import phonon, phonon_voices
-
-    live: dict[str, tuple[str, str]] = {}
-    with tempfile.TemporaryDirectory(prefix="phonon-voices-refresh-") as tmp:
-        path = phonon._download_voice(
-            phonon_voices.VOICES_REPO,
-            "voices.jsonl",
-            "main",
-            local_files_only=False,
-            cache_dir=tmp,
-        )
-        text = Path(path).read_text()
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        live[phonon_voices.slugify(str(row["name"]))] = (
-            str(row["voice_id"]),
-            str(row["language"]),
-        )
-    bundled = {s: (i, lang) for s, i, lang in phonon_voices.VOICE_CATALOG}
-    added = sorted(set(live) - set(bundled))
-    removed = sorted(set(bundled) - set(live))
-    changed = sorted(s for s in set(live) & set(bundled) if live[s] != bundled[s])
-    return added, removed, changed
-
-
 def _cmd_voices(args: argparse.Namespace) -> None:
-    """``voices`` subcommand: list (and optionally ``--refresh``-diff) the catalog."""
+    """``voices`` subcommand: list (and optionally ``--refresh``-diff) the catalog.
+
+    Formatting only; the catalog logic lives in ``backends.phonon`` (lean at module
+    load — it imports ``huggingface_hub`` only inside its download seam)."""
     if args.backend != "phonon":
         print(f"tts_server: no voice catalog for backend {args.backend!r}", file=sys.stderr)
         raise SystemExit(2)
-    rows = _phonon_catalog_rows()
+    from .backends import phonon
+
+    rows = phonon.voice_catalog_rows()
     if args.language:
         rows = [r for r in rows if r["language"] == args.language]
     if args.json:
@@ -450,18 +391,20 @@ def _cmd_voices(args: argparse.Namespace) -> None:
             )
     if args.refresh:
         try:
-            added, removed, changed = _phonon_refresh_diff()
+            drift = phonon.voice_catalog_drift(phonon.fetch_live_voice_catalog())
         except Exception as e:
             print(f"tts_server: --refresh failed: {e}", file=sys.stderr)
             raise SystemExit(1)
+        out = sys.stderr if args.json else sys.stdout
         print(
-            f"refresh: {len(added)} added, {len(removed)} removed, {len(changed)} changed "
-            "vs the bundled catalog (nothing modified)",
-            file=sys.stderr if args.json else sys.stdout,
+            "refresh: "
+            + ", ".join(f"{len(items)} {label}" for label, items in drift.items())
+            + " vs the bundled catalog (nothing modified)",
+            file=out,
         )
-        for label, slugs in (("added", added), ("removed", removed), ("changed", changed)):
-            for s in slugs:
-                print(f"  {label}: {s}", file=sys.stderr if args.json else sys.stdout)
+        for label, items in drift.items():
+            for item in items:
+                print(f"  {label}: {item}", file=out)
 
 
 def build_parser() -> argparse.ArgumentParser:

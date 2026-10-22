@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import threading
 from typing import ClassVar
 
 import pytest
@@ -402,6 +403,139 @@ async def test_bridge_worker_cancelled_while_blocked_on_lock_never_generates():
     # The lock ends up free: the worker either never took it, or took and
     # released it in its finally without generating.
     assert metal_lock.acquire(blocking=False), "Metal lock leaked by the cancelled worker"
+    metal_lock.release()
+
+
+async def _drive_bridge(factory, *, exit_path, metal_lock, worker_done):
+    """Drive ``stream_generate`` to one exit path; return the consumer's error."""
+    from tts_server.backends._stream_util import stream_generate
+
+    loop = asyncio.get_running_loop()
+    cancel = threading.Event()
+    agen = stream_generate(
+        factory,
+        loop=loop,
+        metal_lock=metal_lock,
+        cancel=cancel,
+        maxsize=2,
+        worker_done=worker_done,
+    )
+    error: BaseException | None = None
+    n = 0
+    try:
+        async for _pcm in agen:
+            n += 1
+            if exit_path == "cancel_midstream" and n == 2:
+                cancel.set()  # barge-in: the consumer stops reading
+                break
+    except Exception as exc:
+        error = exc
+    finally:
+        await agen.aclose()
+    done = await loop.run_in_executor(None, worker_done.wait, 5.0)
+    assert done, "worker_done must be set once the worker exits"
+    return error
+
+
+class _ResultAudioRaises:
+    """A result whose ``.audio`` raises: a worker error OUTSIDE the generator,
+    which leaves the generator suspended (like a cancel does)."""
+
+    @property
+    def audio(self):
+        raise ValueError("bad audio")
+
+
+@pytest.mark.parametrize("shape", ["plain", "wrapped"])
+@pytest.mark.parametrize(
+    "exit_path", ["exhausted", "cancel_midstream", "consumer_side_error", "gen_raises"]
+)
+async def test_bridge_generator_cleanup_runs_under_metal_lock(exit_path, shape):
+    """Regression (gauntlet r1 #1): a generator's ``finally`` must run while the
+    worker still holds the Metal lock (and before ``worker_done``), on EVERY
+    worker exit path. mlx-audio pocket_tts ``generate()`` (pocket_tts, phonon)
+    restores ``self.temp`` in its ``finally``; if that ran after the lock
+    release, a barged-in request's ``temperature`` could leak into the next
+    commit on the shared model. Pre-fix, ``cancel_midstream`` and
+    ``consumer_side_error`` ran the ``finally`` only when the worker frame died —
+    after the release. ``wrapped`` mirrors the pass-through wrappers qwen3_tts /
+    fish_tts put around ``model.generate()``.
+    """
+    metal_lock = threading.Lock()
+    worker_done = threading.Event()
+    seen: list[tuple[bool, bool]] = []
+
+    def _inner():
+        try:
+            for i in range(1000):
+                if exit_path == "gen_raises" and i == 2:
+                    raise RuntimeError("generate() failed")
+                if exit_path == "consumer_side_error" and i == 2:
+                    yield _ResultAudioRaises()
+                yield [0.1, 0.1]
+                if exit_path == "exhausted" and i == 3:
+                    return
+        finally:
+            seen.append((metal_lock.locked(), worker_done.is_set()))
+
+    def _wrapped():
+        for result in _inner():
+            yield result
+
+    factory = _inner if shape == "plain" else _wrapped
+    error = await _drive_bridge(
+        factory, exit_path=exit_path, metal_lock=metal_lock, worker_done=worker_done
+    )
+
+    expected_error = {"consumer_side_error": ValueError, "gen_raises": RuntimeError}
+    if exit_path in expected_error:
+        assert isinstance(error, expected_error[exit_path]), error
+    else:
+        assert error is None, error
+    assert seen == [(True, False)], (
+        f"generator finally must run once under the lock, before worker_done: {seen}"
+    )
+    assert metal_lock.acquire(blocking=False), "Metal lock leaked"
+    metal_lock.release()
+
+
+async def test_bridge_cancel_with_plain_iterator_has_no_close():
+    """A factory returning a plain iterator (no ``close``) is still a valid
+    bridge input: cancel mid-stream must neither raise nor leak the lock."""
+    metal_lock = threading.Lock()
+    worker_done = threading.Event()
+    error = await _drive_bridge(
+        lambda: iter([[0.1, 0.1]] * 1000),
+        exit_path="cancel_midstream",
+        metal_lock=metal_lock,
+        worker_done=worker_done,
+    )
+    assert error is None, error
+    assert metal_lock.acquire(blocking=False), "Metal lock leaked"
+    metal_lock.release()
+
+
+async def test_bridge_cancel_generator_close_raises_still_releases_lock(caplog):
+    """A generator whose cleanup raises on ``close()`` must not wedge the
+    worker: the lock is still released, ``worker_done`` still set, and the
+    failure is logged rather than surfaced to the (already gone) consumer."""
+    metal_lock = threading.Lock()
+    worker_done = threading.Event()
+
+    def _gen():
+        try:
+            while True:
+                yield [0.1, 0.1]
+        finally:
+            raise RuntimeError("cleanup failed")  # noqa: B012
+
+    with caplog.at_level("ERROR", logger="tts_server.backends._stream_util"):
+        error = await _drive_bridge(
+            _gen, exit_path="cancel_midstream", metal_lock=metal_lock, worker_done=worker_done
+        )
+    assert error is None, error
+    assert "closing the synthesis generator failed" in caplog.text
+    assert metal_lock.acquire(blocking=False), "Metal lock leaked"
     metal_lock.release()
 
 

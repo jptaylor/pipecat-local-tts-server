@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import threading
 from pathlib import Path
@@ -323,6 +324,86 @@ def _enabled_from_env() -> list[str]:
         if tok and tok not in ordered:
             ordered.append(tok)
     return ordered
+
+
+def voice_catalog_rows() -> list[dict]:
+    """Rows for ``voices``: ``slug``/``language``/``enabled``/``cached`` per catalog voice.
+
+    ``cached`` is probed through ``_download_voice(..., local_files_only=True)``
+    (the download seam; a cache miss raises and counts as not cached). If
+    ``huggingface_hub`` is not installed the probe cannot tell, so ``cached`` is
+    ``None`` (unknown), not ``False``. The seam is looked up as a module global
+    at call time so tests can patch it.
+    """
+    enabled = set(_enabled_from_env())
+    rows = []
+    for slug, _vid, lang in phonon_voices.VOICE_CATALOG:
+        try:
+            _download_voice(
+                phonon_voices.VOICES_REPO,
+                phonon_voices.voice_filename(slug),
+                phonon_voices.VOICES_REPO_SHA,
+                local_files_only=True,
+            )
+            cached: bool | None = True
+        except ImportError:
+            cached = None  # no huggingface_hub: unknown, not "not cached"
+        except Exception:
+            cached = False
+        rows.append({"slug": slug, "language": lang, "enabled": slug in enabled, "cached": cached})
+    return rows
+
+
+def voice_catalog_drift(live_rows: list[dict]) -> dict[str, list[str]]:
+    """Diff live ``voices.jsonl`` rows against the bundled catalog.
+
+    Returns ``added`` / ``removed`` / ``changed`` slug lists, plus the live rows
+    that break the catalog invariants (unique slugs in ``[a-z0-9_]+``, never the
+    reserved ``default``): ``duplicate`` (a slug produced by more than one live
+    row; the first row is the one diffed) and ``invalid`` (the raw names whose
+    slug is empty or reserved). All five count as drift; none is collapsed.
+    """
+    live: dict[str, tuple[str, str]] = {}
+    duplicate: list[str] = []
+    invalid: list[str] = []
+    for row in live_rows:
+        name = str(row["name"])
+        slug = phonon_voices.slugify(name)
+        if not re.fullmatch(r"[a-z0-9_]+", slug) or slug == phonon_voices.DEFAULT_VOICE:
+            invalid.append(repr(name))
+            continue
+        if slug in live:
+            if slug not in duplicate:
+                duplicate.append(slug)
+            continue
+        live[slug] = (str(row["voice_id"]), str(row["language"]))
+    bundled = {s: (i, lang) for s, i, lang in phonon_voices.VOICE_CATALOG}
+    return {
+        "added": sorted(set(live) - set(bundled)),
+        "removed": sorted(set(bundled) - set(live)),
+        "changed": sorted(s for s in set(live) & set(bundled) if live[s] != bundled[s]),
+        "duplicate": sorted(duplicate),
+        "invalid": invalid,
+    }
+
+
+def fetch_live_voice_catalog() -> list[dict]:
+    """Fetch the current ``voices.jsonl`` (revision ``main``, via the
+    ``_download_voice`` seam) as parsed rows. Read-only: the fetch goes to a
+    throwaway cache dir so the operator's HF cache is untouched."""
+    import json
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="phonon-voices-refresh-") as tmp:
+        path = _download_voice(
+            phonon_voices.VOICES_REPO,
+            "voices.jsonl",
+            "main",
+            local_files_only=False,
+            cache_dir=tmp,
+        )
+        text = Path(path).read_text()
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
 class PhononBackend:

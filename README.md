@@ -293,21 +293,28 @@ Operators are responsible for honouring each model's license.
 
 > **Phonon**: the model card for `gradium/phonon-31m-en` states the weights,
 > tokenizer and voices are released under Apache-2.0, which allows commercial
-> use. The larger `gradium/phonon-40m-*` siblings are **CC-BY-NC-4.0 and gated**;
-> they are not supported here (the backend targets the 31M English model only).
+> use. The larger `gradium/phonon-40m-*` siblings are **CC-BY-NC-4.0 and gated**
+> (their Hugging Face card metadata as of 2026-10-21, recorded in the Phonon dev plan's
+> Phase 0 findings; re-check the cards before relying on it); they are not supported
+> here (the backend targets the 31M English model only).
 
 ### Phonon capabilities and voice selection
 
-`phonon` is `streaming:true`, 24 kHz, `languages: ["en"]`, with `default` (the
-model's own shipped voice) always advertised. Latency/RTF: see
-the Phonon section of `scripts/profiling/README.md`.
+`phonon` is `streaming:true`, 24 kHz, `languages: ["en"]`, `max_text_chars: 2000`,
+with `default` (the model's own shipped voice) always advertised; `voice_count` is
+`default` plus the enabled voices that resolved (1 when `PIPECAT_TTS_PHONON_VOICES` is
+unset). Latency/RTF: see the Phonon section of `scripts/profiling/README.md`.
 
 **Keep sentences short.** mlx-audio generates per sentence and never splits inside
 one, and the model ends a sentence chunk at about 45 s of audio. Rather than return a
 clipped response as a clean completion, the server fails it: a run-on sentence of ~200+
 words ends in `response.failed` (`BACKEND_ERROR`, "a sentence chunk hit the model's ~45 s
-limit"), after the first ~45 s of audio has already streamed. About 160 words fit; punctuated
-text is unaffected (a 400-word, 2000-character commit returns the full ~120 s).
+limit"), after the first ~45 s of audio has already streamed. Measured 2026-10-22 on the
+full-precision weights (default voice), one-sentence run-ons of 100 / 160 / 200 / 400 words
+returned 24.8 / 36.6 / 45.1 / 45.1 s of audio, so roughly 160 words fit (approximate; it
+depends on the words). Punctuated text is unaffected: in the Phase 0 gate
+(`tests/smoke/phonon_phase0_gate.py`, recorded in the Phonon dev plan's findings) a
+2008-character, 376-word commit returned the full 112.4 s.
 `max_text_chars` does not guard this, so chunk text at sentence boundaries.
 
 **Quantized weights.** `--model` also accepts three aliases: `phonon` (the pinned
@@ -336,7 +343,7 @@ non-English voices log a warning):
 ```sh
 uv run python -m tts_server voices                  # slug, lang, enabled, cached (? = unknown, no huggingface_hub)
 uv run python -m tts_server voices --language en
-uv run python -m tts_server voices --refresh        # diff live voices.jsonl; changes nothing
+uv run python -m tts_server voices --refresh        # diff live voices.jsonl (added/removed/changed, duplicate/invalid slugs); changes nothing
 PIPECAT_TTS_PHONON_VOICES=zoey,juniper just smoke-phonon
 ```
 

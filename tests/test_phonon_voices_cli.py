@@ -199,6 +199,107 @@ def test_refresh_identical_catalog_reports_zero(cache, monkeypatch, capsys):
     assert "0 added, 0 removed, 0 changed" in out
 
 
+def _bundled_rows() -> list[dict]:
+    return [{"name": s, "voice_id": i, "language": lang} for s, i, lang in PV.VOICE_CATALOG]
+
+
+_Z_SLUG, _Z_ID, _Z_LANG = next(r for r in PV.VOICE_CATALOG if r[0] == "zoey")
+
+
+@pytest.mark.parametrize(
+    ("extra_rows", "expected"),
+    [
+        # A clean catalog: no drift in any category.
+        ([], {}),
+        # A new valid name is ``added`` under its slug.
+        ([{"name": "Brand New", "voice_id": "v1", "language": "en"}], {"added": ["brand_new"]}),
+        # Same slug again (case-folded): a collision, reported — never collapsed.
+        ([{"name": "ZOEY", "voice_id": _Z_ID, "language": _Z_LANG}], {"duplicate": ["zoey"]}),
+        # A colliding row with DIFFERENT data must not silently overwrite the
+        # first row (which is what gets diffed): duplicate, not changed.
+        ([{"name": "Zoey", "voice_id": "other", "language": "fr"}], {"duplicate": ["zoey"]}),
+        # Two new rows colliding with each other: added once, duplicate once.
+        (
+            [
+                {"name": "New One", "voice_id": "a", "language": "en"},
+                {"name": "new-one", "voice_id": "b", "language": "en"},
+            ],
+            {"added": ["new_one"], "duplicate": ["new_one"]},
+        ),
+        # An empty slug and the reserved ``default`` are invalid, not added.
+        ([{"name": "", "voice_id": "e", "language": "en"}], {"invalid": ["''"]}),
+        ([{"name": "Default", "voice_id": "d", "language": "en"}], {"invalid": ["'Default'"]}),
+    ],
+)
+def test_refresh_drift_reports_every_invariant_break(extra_rows, expected):
+    """Regression (gauntlet r1 #8): live rows are no longer assigned into a dict
+    keyed by slug without checks. A slug collision overwrote the first row and an
+    empty/reserved slug was kept, so drift was under-reported. Every category is
+    asserted in every case, so a cell can only pass with exactly its own drift."""
+    drift = PH.voice_catalog_drift(_bundled_rows() + extra_rows)
+    keys = ("added", "removed", "changed", "duplicate", "invalid")
+    assert list(drift) == list(keys)
+    assert drift == {k: expected.get(k, []) for k in keys}
+
+
+def test_refresh_drift_whole_state_space_at_once():
+    """Every row kind in one live table: unchanged, changed, removed, added,
+    duplicate (same and different data), empty and reserved."""
+    bundled = _bundled_rows()
+    removed, changed = bundled[0], bundled[1]
+    live = [dict(r, language="xx") if r is changed else r for r in bundled[1:]]
+    live += [
+        {"name": "Brand New", "voice_id": "v1", "language": "en"},
+        {"name": "ZOEY", "voice_id": "other", "language": "fr"},
+        {"name": "Zoey", "voice_id": _Z_ID, "language": _Z_LANG},
+        {"name": "", "voice_id": "e", "language": "en"},
+        {"name": "DEFAULT", "voice_id": "d", "language": "en"},
+    ]
+    assert PH.voice_catalog_drift(live) == {
+        "added": ["brand_new"],
+        "removed": [removed["name"]],
+        "changed": [changed["name"]],
+        "duplicate": ["zoey"],
+        "invalid": ["''", "'DEFAULT'"],
+    }
+
+
+def test_refresh_cli_prints_duplicate_and_invalid(cache, monkeypatch, capsys):
+    _c, _calls, live = cache
+    live.extend(_bundled_rows())
+    live.append({"name": "Zoey", "voice_id": "other", "language": "fr"})
+    live.append({"name": "Default", "voice_id": "d", "language": "en"})
+    code, out, _ = _run(monkeypatch, capsys, "--refresh")
+    assert code == 0
+    assert "0 added, 0 removed, 0 changed, 1 duplicate, 1 invalid" in out
+    assert "  duplicate: zoey" in out
+    assert "  invalid: 'Default'" in out
+    # --json keeps stdout pure JSON; the refresh report goes to stderr.
+    code, out, err = _run(monkeypatch, capsys, "--json", "--refresh")
+    assert code == 0
+    json.loads(out)
+    assert "1 duplicate, 1 invalid" in err
+
+
+def test_voices_cli_uses_only_public_phonon_api():
+    """Regression (gauntlet r1 #2): the CLI layer only formats; catalog logic
+    lives in ``backends.phonon`` behind public functions. No ``phonon._private``
+    attribute access from ``__main__`` (a rename there would break the CLI
+    silently)."""
+    import ast
+
+    tree = ast.parse(Path(M.__file__).read_text())
+    private = sorted(
+        f"phonon.{n.attr}"
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Attribute)
+        and isinstance(n.value, ast.Name)
+        and n.value.id == "phonon"
+        and n.attr.startswith("_")
+    )
+    assert private == []
+
+
 def test_refresh_fetch_failure_exits_1(cache, monkeypatch, capsys):
     def boom(*a, **k):
         if k.get("local_files_only"):

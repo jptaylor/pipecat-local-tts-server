@@ -650,7 +650,12 @@ done
 ```
 
 Measured on an M4 Max with mlx-audio 0.6.1 by `tests/smoke/phonon_quant_probe.py`
-(not by `rtf_benchmark.py`); TTFB/RTF were identical across variants:
+(not by `rtf_benchmark.py`); TTFB/RTF were identical across variants. To reproduce
+(usage line from the probe's docstring):
+
+```sh
+uv run --extra pocket_tts python tests/smoke/phonon_quant_probe.py --out-dir <dir>
+```
 
 | weights | peak memory | load | on-disk weights |
 |---|---|---|---|
@@ -665,3 +670,9 @@ TTFB 0.045 s on the first utterance and 0.018 s on the warm second, at
 24000 Hz. Barge-in: `response.cancelled` arrived ~1.1-1.3 ms after `response.cancel`
 (default and named voice); a fresh commit after an abrupt mid-generate disconnect returned
 full audio.
+
+```sh
+just smoke-phonon                                                     # latency_smoke.py (server level)
+uv run --extra examples --extra phonon python tests/smoke/pipecat_adapter_e2e.py
+uv run --extra phonon python tests/smoke/phonon_cancel_smoke.py [--voice zoey]   # barge-in + abrupt disconnect
+```

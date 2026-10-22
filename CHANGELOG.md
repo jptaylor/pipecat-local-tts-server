@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`phonon` backend** (extra `phonon`; `gradium/phonon-31m-en`, pinned revision,
   streaming, 24 kHz, English). The 31M weights, tokenizer and voices are Apache-2.0
-  (model card); the 40M siblings are CC-BY-NC-4.0/gated and unsupported. Canonical
+  (model card); the 40M siblings are CC-BY-NC-4.0/gated per their Hugging Face card
+  metadata (checked 2026-10-21) and unsupported. Canonical
   launchd port 9365, `just smoke-phonon` / `smoke-multiconn-phonon`.
 - Phonon fails a response whose sentence chunk reaches the model's ~45 s limit
   (`response.failed`, `BACKEND_ERROR`) instead of reporting a clipped, clean completion;
@@ -25,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped with a warning). Validated and baked into the launchd plist for `phonon`.
 - `python -m tts_server voices [--backend phonon] [--language] [--json] [--refresh]`:
   lists the bundled 102-voice catalog (enabled/cached columns; `cached` is `?`/`null` without `huggingface_hub`); `--refresh` diffs the
-  live `voices.jsonl` and changes nothing.
+  live `voices.jsonl` (added/removed/changed, plus duplicate and invalid/reserved slugs) and changes nothing.
 - Measured on an M4 Max (warm cache, in-process `rtf_benchmark.py`): cold start 0.6 s,
   warm TTFB 0.01-0.02 s, RTF 0.04 for the default voice and a named voice; server-level
   TTFB 0.021 s with a 0.014 s max inter-delta gap; barge-in acknowledged in ~1 ms.
