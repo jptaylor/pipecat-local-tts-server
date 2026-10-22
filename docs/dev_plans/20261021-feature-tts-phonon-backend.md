@@ -462,8 +462,8 @@ server.)
 
 ## Progress
 
-- [x] Phase 0: Model verification gate (findings below; Phase 1 not started)
-- [ ] Phase 1: Backend module, voice catalog, unit tests
+- [x] Phase 0: Model verification gate (findings below)
+- [x] Phase 1: Backend module, voice catalog, unit tests
 - [ ] Phase 2: Wiring — CLI, voice env var, justfile, smoke, plist renderer, docs, version
 - [ ] Phase 3: Smoke, profiling, adapter e2e
 
@@ -591,6 +591,22 @@ contract change; three items are flagged for a decision (see **Flags** at the en
 3. **Slug rule needs one sentence in Phase 1:** run-collapse + strip `_` (what I validated), versus
    the plan's literal "non-alphanumerics → `_`" (per-character; also unique today). Either passes;
    pick one so the catalog table and `PIPECAT_TTS_PHONON_VOICES` regex agree.
+
+### Phase 1 (conduct, 2026-10-22)
+
+Phase test command: 64 passed, 0 skipped (lean 36, mlx-gated 9, import-safety 28 incl. the 2 new
+modules). Advisory reviewer (Opus, one pass): no Critical/Important; four Minor, **not fixed in this
+phase** (left for the end-of-plan review passes):
+1. No lean test for hostile/mixed-case `PIPECAT_TTS_PHONON_VOICES` tokens (`hf://x`, `../x`, `ALBA`,
+   trailing comma); the backend lowercases and catalog-gates them, so it is safe but unproven.
+2. `test_server_status_voices_and_rejects_hf_voice` can pass vacuously if the event stream ends
+   before an error event arrives.
+3. The mlx-gated named-voice tests use `alba` (a Spanish voice) with English text; Phase 0 used
+   English voices (e.g. `zoey`). `test_hello_advertises_rate_and_voices` asserts no voices.
+4. The pin lookup is by exact string, so `--model Gradium/phonon-31m-en` (case/trailing-slash variant)
+   bypasses the pin and loads HEAD with only a warning.
+Conductor notes: Flags 2 and 3 above (per-file voice download, slug rule) were implemented as the
+plan's literal text, not the alternatives; no weights selector was added (Q9 is not in the contract).
 
 ### Review Waivers
 

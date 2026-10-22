@@ -2017,6 +2017,12 @@ kokoro = [
     { name = "mlx-audio" },
     { name = "websockets" },
 ]
+phonon = [
+    { name = "huggingface-hub" },
+    { name = "mlx-audio" },
+    { name = "requests" },
+    { name = "websockets" },
+]
 pocket-tts = [
     { name = "mlx-audio" },
     { name = "requests" },
@@ -2043,15 +2049,18 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "huggingface-hub", marker = "extra == 'phonon'", specifier = ">=2.0" },
     { name = "misaki", extras = ["en"], marker = "extra == 'kokoro'" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'voxtral-tts'", specifier = ">=1.11,<2" },
     { name = "mlx-audio", marker = "extra == 'dia'", specifier = "==0.6.1" },
     { name = "mlx-audio", marker = "extra == 'fish-tts'", specifier = "==0.6.1" },
     { name = "mlx-audio", marker = "extra == 'kokoro'", specifier = "==0.6.1" },
+    { name = "mlx-audio", marker = "extra == 'phonon'", specifier = "==0.6.1" },
     { name = "mlx-audio", marker = "extra == 'pocket-tts'", specifier = "==0.6.1" },
     { name = "mlx-audio", marker = "extra == 'qwen3-tts'", specifier = "==0.6.1" },
     { name = "mlx-audio", marker = "extra == 'voxtral-tts'", specifier = "==0.6.1" },
     { name = "pipecat-ai", marker = "extra == 'examples'", specifier = "==1.4.0" },
+    { name = "requests", marker = "extra == 'phonon'" },
     { name = "requests", marker = "extra == 'pocket-tts'" },
     { name = "websockets", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'client'", specifier = ">=13.0" },
@@ -2059,11 +2068,12 @@ requires-dist = [
     { name = "websockets", marker = "extra == 'examples'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'fish-tts'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'kokoro'", specifier = ">=13.0" },
+    { name = "websockets", marker = "extra == 'phonon'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'pocket-tts'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'qwen3-tts'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'voxtral-tts'", specifier = ">=13.0" },
 ]
-provides-extras = ["client", "kokoro", "voxtral-tts", "pocket-tts", "dia", "qwen3-tts", "fish-tts", "examples"]
+provides-extras = ["client", "kokoro", "voxtral-tts", "pocket-tts", "dia", "qwen3-tts", "fish-tts", "phonon", "examples"]
 
 [package.metadata.requires-dev]
 dev = [
