@@ -253,3 +253,8 @@ uv run --extra examples --extra phonon python tests/smoke/pipecat_adapter_e2e.py
   at least one audio frame, first-frame TTFB < 0.1 s. The first utterance only has to
   succeed; named voices are not asserted against the 0.1 s bound.
 - `latency_smoke.py` also prints `max_gap`, the largest inter-delta arrival gap.
+- `phonon_quant_probe.py` is not a server check: it loads each weight variant of the
+  pinned snapshot in its own subprocess (no server, no socket) and records load time,
+  peak memory, TTFB and RTF for the default voice and Zoey. Results are in the Phonon
+  section of `scripts/profiling/README.md`.
+  `uv run --extra pocket_tts python tests/smoke/phonon_quant_probe.py --out-dir <dir>`

@@ -38,8 +38,8 @@ class BridgedStream:
     ``model.generate(text, **extras)`` generator through the shared
     ``_stream_util`` bridge.
 
-    NOT limited to segment-level backends: 3 of the 6 current subclasses
-    (pocket_tts, voxtral_tts, qwen3_tts) advertise ``streaming:true`` and ARE
+    NOT limited to segment-level backends: 4 of the 7 current subclasses
+    (pocket_tts, voxtral_tts, qwen3_tts, phonon) advertise ``streaming:true`` and ARE
     sub-segment-streaming — their ``_gen_factory`` yields native sub-segment
     chunks, not one result per whole segment/batch. The other 3 (dia,
     fish_tts, kokoro) advertise ``streaming:false`` and yield one result per
@@ -65,8 +65,9 @@ class BridgedStream:
         self._text = ""
         self._cancel = threading.Event()
         self._external_cancel = False
-        # Set by the bridge worker as its final act (lock released + EOF
-        # enqueued). ``wait_closed()`` awaits it so the server can hold a
+        # Set by the bridge worker as its final act (generator closed under the
+        # lock, then lock released + EOF enqueued). ``wait_closed()`` awaits it
+        # so the server can hold a
         # commit's scheduler slot until the worker has truly exited and the
         # Metal lock is free — segments can be long, so this is load-bearing
         # for the cancel/Metal-lock semantics (dia.py's original rationale).
@@ -88,7 +89,8 @@ class BridgedStream:
 
     async def wait_closed(self, timeout: float | None = None) -> None:
         """Block (up to ``timeout`` seconds) until the synthesis worker has
-        exited and released the Metal lock. Segments can be long, so a
+        closed the generator (under the lock, so its cleanup has finished),
+        released the Metal lock and exited. Segments can be long, so a
         cancelled commit's ``generate()`` runs to its yield boundary before
         the lock frees; the server awaits this before freeing the slot so
         admission / ``queue_depth`` does not advertise free capacity while

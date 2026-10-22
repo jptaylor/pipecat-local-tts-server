@@ -6,7 +6,8 @@ pt 12). Each row is ``(slug, voice_id, language)``; the voice file lives at
 ``voices/<voice_id>.safetensors`` in the voices repo. Slugs are the display name
 NFKD-stripped of diacritics, lowercased, each non-alphanumeric character -> ``_``
 (unique after slugging; asserted by the catalog tests). ``default`` is reserved
-for the model's own shipped voice and is never a catalog slug.
+for the model's own shipped voice and is never a catalog slug. The slug rule
+(``SLUG_RE`` + the reserved name) is defined once here as ``is_valid_slug``.
 
 The catalog is separate from the operator's *enabled set*
 (``PIPECAT_TTS_PHONON_VOICES``): only enabled voices are advertised/downloaded.
@@ -135,6 +136,48 @@ def slugify(name: str) -> str:
     decomposed = unicodedata.normalize("NFKD", name)
     stripped = "".join(c for c in decomposed if not unicodedata.combining(c)).lower()
     return re.sub(r"[^a-z0-9]", "_", stripped)
+
+
+# Catalog slug charset (full match). With the reserved ``DEFAULT_VOICE`` this is
+# the whole slug rule; ``is_valid_slug`` is the single place it is applied.
+SLUG_RE = re.compile(r"[a-z0-9_]+")
+
+
+def is_valid_slug(slug: str) -> bool:
+    """True for a non-empty ``[a-z0-9_]+`` slug that is not the reserved ``default``."""
+    return SLUG_RE.fullmatch(slug) is not None and slug != DEFAULT_VOICE
+
+
+def voice_catalog_drift(live_rows: list[dict]) -> dict[str, list[str]]:
+    """Diff live ``voices.jsonl`` rows against the bundled catalog.
+
+    Returns ``added`` / ``removed`` / ``changed`` slug lists, plus the live rows
+    that break the catalog invariants (unique slugs passing ``is_valid_slug``):
+    ``duplicate`` (a slug produced by more than one live row; the first row is the
+    one diffed) and ``invalid`` (the raw names whose slug is empty or reserved).
+    All five count as drift; none is collapsed.
+    """
+    live: dict[str, tuple[str, str]] = {}
+    duplicate: list[str] = []
+    invalid: list[str] = []
+    for row in live_rows:
+        name = str(row["name"])
+        slug = slugify(name)
+        if not is_valid_slug(slug):
+            invalid.append(repr(name))
+            continue
+        if slug in live:
+            if slug not in duplicate:
+                duplicate.append(slug)
+            continue
+        live[slug] = (str(row["voice_id"]), str(row["language"]))
+    return {
+        "added": sorted(set(live) - set(_BY_SLUG)),
+        "removed": sorted(set(_BY_SLUG) - set(live)),
+        "changed": sorted(s for s in set(live) & set(_BY_SLUG) if live[s] != _BY_SLUG[s]),
+        "duplicate": sorted(duplicate),
+        "invalid": invalid,
+    }
 
 
 def voice_id(slug: str) -> str:

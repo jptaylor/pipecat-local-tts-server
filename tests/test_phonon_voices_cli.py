@@ -236,7 +236,7 @@ def test_refresh_drift_reports_every_invariant_break(extra_rows, expected):
     keyed by slug without checks. A slug collision overwrote the first row and an
     empty/reserved slug was kept, so drift was under-reported. Every category is
     asserted in every case, so a cell can only pass with exactly its own drift."""
-    drift = PH.voice_catalog_drift(_bundled_rows() + extra_rows)
+    drift = PV.voice_catalog_drift(_bundled_rows() + extra_rows)
     keys = ("added", "removed", "changed", "duplicate", "invalid")
     assert list(drift) == list(keys)
     assert drift == {k: expected.get(k, []) for k in keys}
@@ -255,7 +255,7 @@ def test_refresh_drift_whole_state_space_at_once():
         {"name": "", "voice_id": "e", "language": "en"},
         {"name": "DEFAULT", "voice_id": "d", "language": "en"},
     ]
-    assert PH.voice_catalog_drift(live) == {
+    assert PV.voice_catalog_drift(live) == {
         "added": ["brand_new"],
         "removed": [removed["name"]],
         "changed": [changed["name"]],
@@ -283,21 +283,61 @@ def test_refresh_cli_prints_duplicate_and_invalid(cache, monkeypatch, capsys):
 
 def test_voices_cli_uses_only_public_phonon_api():
     """Regression (gauntlet r1 #2): the CLI layer only formats; catalog logic
-    lives in ``backends.phonon`` behind public functions. No ``phonon._private``
-    attribute access from ``__main__`` (a rename there would break the CLI
-    silently)."""
+    lives in ``backends.phonon`` / ``backends.phonon_voices`` behind public
+    functions. No ``phonon._private`` / ``phonon_voices._private`` attribute
+    access from ``__main__`` (a rename there would break the CLI silently)."""
     import ast
 
     tree = ast.parse(Path(M.__file__).read_text())
     private = sorted(
-        f"phonon.{n.attr}"
+        f"{n.value.id}.{n.attr}"
         for n in ast.walk(tree)
         if isinstance(n, ast.Attribute)
         and isinstance(n.value, ast.Name)
-        and n.value.id == "phonon"
+        and n.value.id in ("phonon", "phonon_voices")
         and n.attr.startswith("_")
     )
     assert private == []
+
+
+def test_drift_lives_in_the_stdlib_catalog_module():
+    """Regression (gauntlet r2 A): the drift diff is pure catalog logic, so it lives
+    next to ``slugify`` in the stdlib-only ``phonon_voices`` (not in ``phonon``,
+    which carries the download seam) and applies the ONE slug rule there."""
+    assert not hasattr(PH, "voice_catalog_drift")
+    assert PV.voice_catalog_drift.__module__ == PV.__name__
+
+
+@pytest.mark.parametrize(
+    ("slug", "valid"),
+    [
+        ("zoey", True),
+        ("captain_silas_blackwater", True),
+        ("a1_", True),
+        ("_", True),
+        ("", False),  # empty (e.g. slugify(""))
+        ("default", False),  # reserved for the model's own voice
+        ("Zoey", False),  # not lowercased
+        ("a-b", False),  # outside the charset
+        ("a b", False),
+        ("lucía", False),  # not NFKD-stripped
+        ("zoey\n", False),  # full match, not a prefix match
+    ],
+)
+def test_slug_rule_whole_state_space(slug, valid):
+    """The single slug rule (charset ``SLUG_RE`` + reserved ``default``), and the
+    drift check agrees with it cell for cell: a live row whose name slugs to
+    ``slug`` is ``invalid`` exactly when the rule rejects it."""
+    assert PV.is_valid_slug(slug) is valid
+    drift = PV.voice_catalog_drift(
+        _bundled_rows() + [{"name": slug, "voice_id": "v", "language": "en"}]
+    )
+    if PV.slugify(slug) == slug:  # only names that slug to themselves map 1:1
+        assert (drift["invalid"] == [repr(slug)]) is (not valid)
+
+
+def test_every_bundled_slug_passes_the_slug_rule():
+    assert all(PV.is_valid_slug(s) for s, _i, _l in PV.VOICE_CATALOG)
 
 
 def test_refresh_fetch_failure_exits_1(cache, monkeypatch, capsys):

@@ -16,7 +16,8 @@ which mlx-audio 0.6.1 cannot load. A repo in ``_REVISION_PINS`` is therefore
 fetched with ``snapshot_download(revision=<sha>)`` and loaded from the returned
 local path; there is NO fallback to HEAD (an unreachable pin is a startup error).
 A model with no pin entry (another repo id, or an absolute local snapshot path --
-also the recovery path if the sha disappears) loads as given with a warning.
+also the recovery path if the sha disappears) loads as given with a warning, and
+without the ~45 s chunk tripwire (its ceiling is measured only for the pinned model).
 
 Quantized weights: ``--model phonon`` (fp, same as the default), ``phonon-q8`` and
 ``phonon-q4`` are aliases (``_MODEL_ALIASES``). A quantized alias fetches the same
@@ -39,7 +40,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import shutil
 import threading
 from pathlib import Path
@@ -147,13 +147,15 @@ _BRIDGE_MAXSIZE = 32
 # and never splits inside a sentence, and the model ends a chunk at ~45 s of audio
 # (measured 2026-10-22: run-on sentences of 200/300/400 words all stop at 564 frames,
 # EOS at step 562, with no error and a normal completion; ~160 words still fit at
-# 36.6 s). ``max_text_chars`` does not protect against it; the chunk tripwire below does.
+# 36.6 s). ``max_text_chars`` does not protect against it; the chunk tripwire below does
+# (pinned model only).
 _IDEAL_WORDS = 40
 _MAX_TEXT_CHARS = 2000
 
 # Chunk tripwire: a chunk that yields this many 80 ms frames (560 = 44.8 s at the model's
 # 12.5 Hz) ended at the model's ~45 s limit rather than on its own sentence end, so its
-# tail audio was cut. Measured 564 frames for fp/q8/q4 x default/zoey (2026-10-22).
+# tail audio was cut. Measured 564 frames for fp/q8/q4 x default/zoey (2026-10-22), so
+# ``start()`` installs it only for a model resolved through ``_REVISION_PINS``.
 _CHUNK_FRAMES_CEILING = 560
 
 _TEMPERATURE_MIN = TEMPERATURE_MIN
@@ -354,43 +356,11 @@ def voice_catalog_rows() -> list[dict]:
     return rows
 
 
-def voice_catalog_drift(live_rows: list[dict]) -> dict[str, list[str]]:
-    """Diff live ``voices.jsonl`` rows against the bundled catalog.
-
-    Returns ``added`` / ``removed`` / ``changed`` slug lists, plus the live rows
-    that break the catalog invariants (unique slugs in ``[a-z0-9_]+``, never the
-    reserved ``default``): ``duplicate`` (a slug produced by more than one live
-    row; the first row is the one diffed) and ``invalid`` (the raw names whose
-    slug is empty or reserved). All five count as drift; none is collapsed.
-    """
-    live: dict[str, tuple[str, str]] = {}
-    duplicate: list[str] = []
-    invalid: list[str] = []
-    for row in live_rows:
-        name = str(row["name"])
-        slug = phonon_voices.slugify(name)
-        if not re.fullmatch(r"[a-z0-9_]+", slug) or slug == phonon_voices.DEFAULT_VOICE:
-            invalid.append(repr(name))
-            continue
-        if slug in live:
-            if slug not in duplicate:
-                duplicate.append(slug)
-            continue
-        live[slug] = (str(row["voice_id"]), str(row["language"]))
-    bundled = {s: (i, lang) for s, i, lang in phonon_voices.VOICE_CATALOG}
-    return {
-        "added": sorted(set(live) - set(bundled)),
-        "removed": sorted(set(bundled) - set(live)),
-        "changed": sorted(s for s in set(live) & set(bundled) if live[s] != bundled[s]),
-        "duplicate": sorted(duplicate),
-        "invalid": invalid,
-    }
-
-
 def fetch_live_voice_catalog() -> list[dict]:
     """Fetch the current ``voices.jsonl`` (revision ``main``, via the
     ``_download_voice`` seam) as parsed rows. Read-only: the fetch goes to a
-    throwaway cache dir so the operator's HF cache is untouched."""
+    throwaway cache dir so the operator's HF cache is untouched. Diff the result
+    with ``phonon_voices.voice_catalog_drift`` (pure catalog logic, no seam)."""
     import json
     import tempfile
 
@@ -475,7 +445,16 @@ class PhononBackend:
                 "the rate contract"
             )
         self.sample_rate = int(rate)
-        if not _install_chunk_tripwire(self._loaded_model):
+        if pin is None:
+            # The 560-frame / 12.5 Hz ceiling was measured only on the pinned model
+            # (fp/q8/q4); another model could end valid chunks past it.
+            logger.warning(
+                "phonon: model %r has no revision pin; the ~45 s sentence-chunk truncation "
+                "guard is OFF (its ceiling is measured only for %s)",
+                self._model_id,
+                DEFAULT_PHONON_MODEL,
+            )
+        elif not _install_chunk_tripwire(self._loaded_model):
             logger.warning(
                 "phonon: model has no _generate_audio_stream_short_text (mlx-audio changed?); "
                 "the ~45 s sentence-chunk truncation guard is OFF"
@@ -494,8 +473,9 @@ class PhononBackend:
 
     def _resolve_voices(self) -> dict[str, str | None]:
         """``default`` first, then each enabled catalog voice that resolved to an
-        existing absolute local file. Unknown / unfetchable names are skipped with
-        a warning (never fatal, never substituted)."""
+        existing absolute local ``.safetensors`` file with no '@' in its path.
+        Unknown / unfetchable / unusable names are skipped with a warning (never
+        fatal, never substituted)."""
         paths: dict[str, str | None] = {phonon_voices.DEFAULT_VOICE: None}
         resolved, unknown = phonon_voices.resolve_enabled(self._enabled_voices)
         for name in unknown:
@@ -512,6 +492,16 @@ class PhononBackend:
             if not os.path.isabs(path) or not os.path.isfile(path):
                 logger.warning(
                     "phonon: voice %r resolved to %r which is not an absolute existing file; skipped",
+                    slug,
+                    path,
+                )
+                continue
+            if not path.endswith(".safetensors"):
+                # generate(voice=...) only ever gets a voice-embedding file; mlx-audio's
+                # check is the same case-sensitive suffix test, anything else it would
+                # try to decode as audio.
+                logger.warning(
+                    "phonon: voice %r resolved to %r which is not a .safetensors file; skipped",
                     slug,
                     path,
                 )

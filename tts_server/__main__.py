@@ -370,11 +370,12 @@ def _cmd_voices(args: argparse.Namespace) -> None:
     """``voices`` subcommand: list (and optionally ``--refresh``-diff) the catalog.
 
     Formatting only; the catalog logic lives in ``backends.phonon`` (lean at module
-    load — it imports ``huggingface_hub`` only inside its download seam)."""
+    load — it imports ``huggingface_hub`` only inside its download seam) and the
+    stdlib-only ``backends.phonon_voices`` (the drift diff)."""
     if args.backend != "phonon":
         print(f"tts_server: no voice catalog for backend {args.backend!r}", file=sys.stderr)
         raise SystemExit(2)
-    from .backends import phonon
+    from .backends import phonon, phonon_voices
 
     rows = phonon.voice_catalog_rows()
     if args.language:
@@ -391,7 +392,7 @@ def _cmd_voices(args: argparse.Namespace) -> None:
             )
     if args.refresh:
         try:
-            drift = phonon.voice_catalog_drift(phonon.fetch_live_voice_catalog())
+            drift = phonon_voices.voice_catalog_drift(phonon.fetch_live_voice_catalog())
         except Exception as e:
             print(f"tts_server: --refresh failed: {e}", file=sys.stderr)
             raise SystemExit(1)

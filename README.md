@@ -315,7 +315,11 @@ returned 24.8 / 36.6 / 45.1 / 45.1 s of audio, so roughly 160 words fit (approxi
 depends on the words). Punctuated text is unaffected: in the Phase 0 gate
 (`tests/smoke/phonon_phase0_gate.py`, recorded in the Phonon dev plan's findings) a
 2008-character, 376-word commit returned the full 112.4 s.
-`max_text_chars` does not guard this, so chunk text at sentence boundaries.
+`max_text_chars` does not guard this, so chunk text at sentence boundaries. The guard is
+on only for the pinned model (the default repo id and the `phonon` / `phonon-q8` /
+`phonon-q4` aliases); an unpinned `--model` (another repo id or a local path) starts
+with a warning that it is off, since the ~45 s ceiling was measured only on the pinned
+weights, so such a model can still return a clipped sentence as a clean completion.
 
 **Quantized weights.** `--model` also accepts three aliases: `phonon` (the pinned
 `gradium/phonon-31m-en`, full precision, same as the default), `phonon-q8` and

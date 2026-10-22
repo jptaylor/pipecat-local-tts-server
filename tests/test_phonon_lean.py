@@ -208,7 +208,8 @@ def test_catalog_counts_match_phase0():
 def test_catalog_slugs_unique_charset_and_default_reserved():
     slugs = [s for s, _i, _l in _catalog()]
     assert len(set(slugs)) == len(slugs)
-    assert all(re.fullmatch(r"[a-z0-9_]+", s) for s in slugs)
+    assert all(PV.SLUG_RE.fullmatch(s) for s in slugs)  # the one slug rule (phonon_voices)
+    assert all(PV.is_valid_slug(s) for s in slugs)
     assert "default" not in slugs
     assert "alba" in slugs  # real catalog slug (not the pocket voice)
 
@@ -843,3 +844,122 @@ async def test_start_warns_when_model_lacks_the_chunk_method(seams, caplog, monk
     with caplog.at_level("WARNING"):
         await _started(monkeypatch)
     assert any("truncation guard is OFF" in r.getMessage() for r in caplog.records)
+
+
+class _ChunkSpyModel(_SpyModel):
+    """A model that HAS the private per-chunk method, yielding exactly the ceiling."""
+
+    def _generate_audio_stream_short_text(self, **_k):
+        yield from range(PH._CHUNK_FRAMES_CEILING)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_method", [True, False])
+@pytest.mark.parametrize(
+    ("model", "pinned"),
+    [
+        (None, True),  # the default repo id
+        ("phonon", True),
+        ("phonon-q8", True),
+        ("phonon-q4", True),
+        ("  Gradium/phonon-31m-en/ ", True),
+        ("gradium/phonon-31m-fr", False),  # unpinned repo
+        ("LOCAL", False),  # absolute local snapshot path
+    ],
+)
+async def test_chunk_tripwire_installed_iff_pinned_and_method_present(
+    seams, quant, monkeypatch, caplog, tmp_path, model, pinned, has_method
+):
+    """Regression (gauntlet r2 D): the 560-frame / 12.5 Hz ceiling is measured only on
+    the pinned model, so an unpinned repo or local path must NOT get the tripwire even
+    when it exposes ``_generate_audio_stream_short_text`` (before the fix it was
+    wrapped unconditionally). Whole state space: pinned x method present; the guard is
+    on only in the (pinned, present) cell and every other cell warns "guard is OFF"."""
+    seams.model = _ChunkSpyModel() if has_method else _SpyModel()
+    if model == "LOCAL":
+        model = str(tmp_path / "gradium" / "phonon-31m-en")
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        backend = await _started(monkeypatch, model=model)
+    m = backend._loaded_model
+    fn = getattr(m, "_generate_audio_stream_short_text", None)
+    wrapped = bool(getattr(fn, "_phonon_tripwire", False))
+    assert wrapped is (pinned and has_method)
+    if has_method:
+        if wrapped:
+            with pytest.raises(PH.PhononTruncationError):
+                list(fn(text_to_generate="x"))
+        else:  # unwrapped: the same ceiling-length chunk passes through untouched
+            assert len(list(fn(text_to_generate="x"))) == PH._CHUNK_FRAMES_CEILING
+    off = [r.getMessage() for r in caplog.records if "truncation guard is OFF" in r.getMessage()]
+    assert bool(off) is (not wrapped)
+    if not pinned:
+        assert "no revision pin" in off[0]
+
+
+# --- voice path preconditions (_resolve_voices) ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kind", "kept"),
+    [
+        ("ok", True),
+        ("relative", False),
+        ("missing", False),
+        ("directory", False),
+        ("at_sign", False),
+        ("no_suffix", False),  # e.g. /etc/passwd
+        ("wav", False),
+        ("suffix_not_last", False),
+        ("upper_suffix", False),  # mlx-audio's suffix check is case-sensitive
+    ],
+)
+def test_resolve_voices_path_preconditions_whole_state_space(
+    monkeypatch, tmp_path, caplog, kind, kept
+):
+    """Regression (gauntlet r2 E): a resolved voice path is kept only if it is
+    absolute, an existing file, '@'-free AND ends in ``.safetensors``; before the fix
+    a non-``.safetensors`` file (the ``no_suffix``/``wav``/... cells) was stored and
+    later forwarded to ``generate(voice=...)``."""
+    paths = {
+        "ok": tmp_path / "v" / "x.safetensors",
+        "relative": Path("v") / "x.safetensors",
+        "missing": tmp_path / "nope.safetensors",
+        "directory": tmp_path / "d.safetensors",
+        "at_sign": tmp_path / "a@b" / "x.safetensors",
+        "no_suffix": tmp_path / "passwd",
+        "wav": tmp_path / "x.wav",
+        "suffix_not_last": tmp_path / "x.safetensors.bak",
+        "upper_suffix": tmp_path / "x.SAFETENSORS",
+    }
+    path = paths[kind]
+    if kind == "directory":
+        path.mkdir()
+    elif kind not in ("relative", "missing"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    monkeypatch.setattr(PH, "_download_voice", lambda *_a, **_k: str(path))
+    backend = PH.PhononBackend(enabled_voices=["zoey"])
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        got = backend._resolve_voices()
+    assert got == ({"default": None, "zoey": str(path)} if kept else {"default": None})
+    skipped = [
+        r for r in caplog.records if "zoey" in r.getMessage() and "skipped" in r.getMessage()
+    ]
+    assert bool(skipped) is (not kept)
+
+
+@pytest.mark.asyncio
+async def test_non_safetensors_voice_path_never_reaches_generate(seams, monkeypatch, caplog):
+    """End to end: a download seam returning a real non-voice file (``passwd``) is
+    skipped at start, never advertised, and never forwarded to ``generate()``."""
+    bogus = seams.tmp / "passwd"
+    bogus.write_text("root:x:0:0")
+    monkeypatch.setattr(PH, "_download_voice", lambda *_a, **_k: str(bogus))
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        backend = await _started(monkeypatch, voices="zoey")
+    assert backend.voices() == ["default"]
+    assert str(bogus) not in backend._voice_paths.values()
+    with pytest.raises(ValueError):
+        await backend.open_stream(voice="zoey", language=None, extras=None)
+    assert all(c.get("voice") != str(bogus) for c in backend._loaded_model.calls)
+    assert any(".safetensors" in r.getMessage() for r in caplog.records)
