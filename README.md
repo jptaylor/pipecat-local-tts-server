@@ -300,11 +300,11 @@ Operators are responsible for honouring each model's license.
 
 `phonon` is `streaming:true`, 24 kHz, `languages: ["en"]`, with `default` (the
 model's own shipped voice) always advertised. Latency/RTF: see
-`scripts/profiling/README.md` (the Phase 3 harness numbers are recorded there).
+the Phonon section of `scripts/profiling/README.md`.
 
 Extra voices are chosen **ahead of time by the operator** with the server env var
 `PIPECAT_TTS_PHONON_VOICES` (comma-separated catalog slugs, e.g.
-`alba,elodie_rose`; no CLI flag). Only listed voices are downloaded (one file
+`zoey,juniper`; no CLI flag). Only listed voices are downloaded (one file
 each) and advertised; an unknown or unfetchable slug is warned about and skipped,
 and a client asking for a skipped voice gets `invalid_config`. For a launchd agent,
 export it when running `just tts-install phonon` (it is validated and baked into
@@ -312,10 +312,10 @@ the plist). The catalog is 102 voices (en/fr/de/es/pt; the model is English, so
 non-English voices log a warning):
 
 ```sh
-uv run python -m tts_server voices                  # slug, lang, enabled, cached
+uv run python -m tts_server voices                  # slug, lang, enabled, cached (? = unknown, no huggingface_hub)
 uv run python -m tts_server voices --language en
 uv run python -m tts_server voices --refresh        # diff live voices.jsonl; changes nothing
-PIPECAT_TTS_PHONON_VOICES=alba,elodie_rose just smoke-phonon
+PIPECAT_TTS_PHONON_VOICES=zoey,juniper just smoke-phonon
 ```
 
 ### Voxtral TTS capabilities (as shipped)
@@ -401,8 +401,8 @@ seconds for a full turn, bounded by `drain_timeout_seconds`), so the *next*
 commit can't start synthesizing until then. To free the lock sooner for
 back-to-back commits, **chunk at sentence/newline boundaries** — incremental
 commits also shorten the first-segment generate that dominates TTFB. The
-server's hard guarantee is "no more audio after `response.cancelled`". (See the
-dev plan's *Phase 3 live smoke run* for the measured RTF / per-segment latency.)
+server's hard guarantee is "no more audio after `response.cancelled`". (See
+`scripts/profiling/README.md` for the measured RTF / per-segment latency.)
 
 ### Qwen3-TTS capabilities (as shipped)
 

@@ -57,6 +57,19 @@ _REVISION_PINS: dict[str, str] = {
     DEFAULT_PHONON_MODEL: "52433c46975bfa13144c56204c9f4ee1c5b148aa",
 }
 
+
+def _pin_for(model_id: str) -> tuple[str, str] | None:
+    """``(canonical_repo_id, sha)`` for a pinned repo, else ``None``. The key is
+    normalised (strip, trailing slashes, casefold) for this lookup ONLY, so
+    ``Gradium/phonon-31m-en`` / ``gradium/phonon-31m-en/`` cannot bypass the pin;
+    local paths and unknown repos still miss and load as given."""
+    key = model_id.strip().rstrip("/").casefold()
+    for repo, sha in _REVISION_PINS.items():
+        if repo.casefold() == key:
+            return repo, sha
+    return None
+
+
 # Mirrors mlx_audio.utils.DEFAULT_ALLOW_PATTERNS (verified in Phase 0 Q2); skips
 # the two ``.gguf`` files MLX cannot load.
 ALLOW_PATTERNS = [
@@ -211,15 +224,14 @@ class PhononBackend:
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
 
-        sha = _REVISION_PINS.get(self._model_id)
-        if sha is not None:
+        pin = _pin_for(self._model_id)
+        if pin is not None:
+            repo, sha = pin
             # An unreachable/unknown pinned sha raises here: startup error, no HEAD fallback.
-            local_path = await loop.run_in_executor(
-                None, lambda: _snapshot_download(self._model_id, sha)
-            )
+            local_path = await loop.run_in_executor(None, lambda: _snapshot_download(repo, sha))
             logger.info(
                 "phonon: repo=%s revision=%s path=%s",
-                self._model_id,
+                repo,
                 sha,
                 local_path,
             )

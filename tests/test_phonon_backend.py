@@ -30,7 +30,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _STORY = _REPO_ROOT / "tests" / "smoke" / "fixtures" / "phonon" / "story_long.txt"
 _SENTENCE = "The quick brown fox jumps over the lazy dog and then keeps on running for a while."
 _VOICES_ENV = "PIPECAT_TTS_PHONON_VOICES"
-_NAMED = "alba"  # a real catalog slug (not the pocket voice)
+_NAMED = "zoey"  # a real ENGLISH catalog slug (the model is -en)
 
 
 @pytest.fixture(scope="module")
@@ -73,9 +73,18 @@ async def test_hello_advertises_rate_and_voices():
     mp.setenv(_VOICES_ENV, _NAMED)
     try:
         backend = PH.PhononBackend()
-        async with running_server(backend) as srv, connected_client(srv) as (_c, hello):
+        async with running_server(backend) as srv, connected_client(srv) as (client, hello):
             assert hello["audio"]["rate"] == 24000
             assert hello["capabilities"]["streaming"] is True
+            assert hello["capabilities"]["voice_count"] == 2
+            # hello carries only the count; the names are in server.status.
+            await client.status()
+            status = None
+            async for ev in client.events():
+                if ev.get("type") == "server.status":
+                    status = ev
+                    break
+            assert status["voices"] == ["default", _NAMED]
     finally:
         mp.undo()
 

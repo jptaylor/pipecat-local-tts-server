@@ -321,9 +321,21 @@ def test_main_rejects_too_many_phonon_voices(tmp_path):
 
 @pytest.mark.parametrize("backend", ["kokoro", "tone"])
 def test_main_ignores_phonon_voices_on_other_backends_with_warning(tmp_path, backend):
-    # A malformed value is also ignored (not rejected) off-phonon: only a warning.
+    # A well-formed value is ignored off-phonon with a warning (malformed: next test).
     proc, plist_dst = _run_main(
         tmp_path, {"BACKEND": backend, "PIPECAT_TTS_PHONON_VOICES": "alba,elodie_rose"}
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "PIPECAT_TTS_PHONON_VOICES" in proc.stderr and "ignored" in proc.stderr
+    plist = plistlib.loads(plist_dst.read_bytes())
+    assert "PIPECAT_TTS_PHONON_VOICES" not in plist["EnvironmentVariables"]
+
+
+@pytest.mark.parametrize("backend", ["kokoro", "tone"])
+def test_main_ignores_malformed_phonon_voices_on_other_backends(tmp_path, backend):
+    # Off-phonon the value is never validated: ignored with a warning, not rejected.
+    proc, plist_dst = _run_main(
+        tmp_path, {"BACKEND": backend, "PIPECAT_TTS_PHONON_VOICES": "alba;rm -rf /"}
     )
     assert proc.returncode == 0, proc.stderr
     assert "PIPECAT_TTS_PHONON_VOICES" in proc.stderr and "ignored" in proc.stderr

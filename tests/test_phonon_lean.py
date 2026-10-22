@@ -307,6 +307,30 @@ async def test_non_table_model_warns_and_loads_as_given(seams, monkeypatch, capl
     assert any(r.levelno >= logging.WARNING for r in caplog.records)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "variant",
+    ["Gradium/phonon-31m-en", "gradium/phonon-31m-en/", "  GRADIUM/Phonon-31M-EN// "],
+)
+async def test_pin_applies_to_normalised_model_variants(seams, monkeypatch, variant):
+    await _started(monkeypatch, model=variant)
+    assert len(seams.snapshot_calls) == 1
+    args, kwargs = seams.snapshot_calls[0]
+    assert _sha_in(args, kwargs) == [_MODEL_SHA]
+    assert PH.DEFAULT_PHONON_MODEL in [*args, *kwargs.values()]
+    assert seams.load_calls == [str(seams.tmp / "snapshot")]
+
+
+@pytest.mark.asyncio
+async def test_unknown_repo_and_similar_local_path_still_unpinned(seams, monkeypatch, tmp_path):
+    other = "gradium/phonon-31m-fr"
+    await _started(monkeypatch, model=other)
+    local = str(tmp_path / "gradium" / "phonon-31m-en")
+    await _started(monkeypatch, model=local)
+    assert seams.snapshot_calls == []
+    assert seams.load_calls == [other, local]
+
+
 # --- voices: env parsing, soft failure, cache ordering -------------------------
 
 
@@ -508,6 +532,20 @@ def test_validate_extras():
     assert backend.validate_extras({"ref_audio": "x"}) is None  # unadvertised: ignored here
 
 
+@pytest.mark.asyncio
+async def test_hostile_and_mixed_case_env_tokens(seams, monkeypatch, caplog):
+    """Only catalog slugs resolve (lowercased/stripped); everything else is
+    warned + skipped and never reaches the download seam."""
+    raw = "hf://x,../x, ALBA ,, ZoEy ,"
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        backend = await _started(monkeypatch, voices=raw)
+    assert backend.voices() == ["default", "alba", "zoey"]
+    ids = {s: i for s, i, _l in _catalog()}
+    assert {c["id"] for c in seams.voice_calls} == {ids["alba"], ids["zoey"]}
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "hf://x" in msgs and "../x" in msgs
+
+
 # --- server-level: status voices + commit validation ---------------------------
 
 
@@ -529,11 +567,14 @@ async def test_server_status_voices_and_rejects_hf_voice(seams, monkeypatch):
 
         await client.append("hi")
         await client.commit(voice="hf://x")
+        error = None
         async for ev in client.events():
             if ev.get("type") == "error":
-                assert ev["error"]["code"] == "invalid_config"
+                error = ev
                 break
             assert ev.get("type") != "response.audio.delta"
+        assert error is not None, "stream ended without an error event"
+        assert error["error"]["code"] == "invalid_config"
 
 
 # --- lazy-import ----------------------------------------------------------------

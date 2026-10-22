@@ -242,9 +242,10 @@ uv run --extra examples --extra phonon python tests/smoke/pipecat_adapter_e2e.py
   `PIPECAT_TTS_PHONON_VOICES=<english slug>,<typo'd slug>` and asserts: `server.status`
   voices == `["default", <slug>]` (the typo is skipped, server stays up); audio for the
   named voice; `invalid_config` for `voice="hf://x"` and for the typo'd slug; barge-in
-  (`response.cancel` mid-stream gives `response.cancelled`, then a follow-up commit returns
-  full audio, for the default and the named voice); and an abrupt TCP disconnect
-  mid-generate followed by full audio on a fresh connection.
+  (`response.cancel` mid-stream gives `response.cancelled`, zero deltas in the 0.5 s after
+  it, then a follow-up commit returns full audio, for the default and the named voice); and
+  an abrupt client-side disconnect (transport abort on the Unix socket, after the victim's
+  first delta) mid-generate followed by full audio on a fresh connection.
 - `pipecat_adapter_e2e.py` drives `examples/pipecat_tts_service.py` in a Pipecat
   pipeline with the default voice and asserts on the **second** (warm) utterance: 24 kHz,
   at least one audio frame, first-frame TTFB < 0.1 s. The first utterance only has to

@@ -25,7 +25,7 @@
 #                        renderer rejects an install where it is set without the file.
 #   PIPECAT_TTS_KOKORO_EXTRA_LANGS  comma-separated ISO codes (e.g. ja,zh); baked into
 #                        the agent's plist EnvironmentVariables so it survives launchd.
-#   PIPECAT_TTS_PHONON_VOICES  comma-separated Phonon catalog slugs (e.g. alba,elodie_rose);
+#   PIPECAT_TTS_PHONON_VOICES  comma-separated Phonon catalog slugs (e.g. zoey,juniper);
 #                        baked into the plist (phonon backend only; ignored with a
 #                        warning otherwise). List with: python -m tts_server voices
 #   TTS_WS_PING_INTERVAL / TTS_WS_PING_TIMEOUT  websocket keepalive overrides (seconds);

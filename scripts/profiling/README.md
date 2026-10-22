@@ -642,7 +642,7 @@ TTFB penalty was observed (voice file local).
 Server level (`latency_smoke.py`, default voice, one 4.9 s no-newline sentence over a
 UDS): `deltas=244 ttfb=0.021s span=0.187s total=0.208s rtf=0.043 max_gap=0.014s`.
 The adapter e2e (`pipecat_adapter_e2e.py`, default voice) measured first-audio-frame
-TTFB 0.045 s on the first utterance and 0.018 s on the warm second, 152 frames at
+TTFB 0.045 s on the first utterance and 0.018 s on the warm second, at
 24000 Hz. Barge-in: `response.cancelled` arrived ~1.1-1.3 ms after `response.cancel`
 (default and named voice); a fresh commit after an abrupt mid-generate disconnect returned
 full audio.

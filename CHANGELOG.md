@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extra named voices (one file downloaded each; unknown/unfetchable slugs are
   skipped with a warning). Validated and baked into the launchd plist for `phonon`.
 - `python -m tts_server voices [--backend phonon] [--language] [--json] [--refresh]`:
-  lists the bundled 102-voice catalog (enabled/cached columns); `--refresh` diffs the
+  lists the bundled 102-voice catalog (enabled/cached columns; `cached` is `?`/`null` without `huggingface_hub`); `--refresh` diffs the
   live `voices.jsonl` and changes nothing.
 - Measured on an M4 Max (warm cache, in-process `rtf_benchmark.py`): cold start 0.6 s,
   warm TTFB 0.01-0.02 s, RTF 0.04 for the default voice and a named voice; server-level

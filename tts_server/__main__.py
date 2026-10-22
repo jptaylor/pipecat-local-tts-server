@@ -370,8 +370,10 @@ def _phonon_catalog_rows() -> list[dict]:
     """Rows for ``voices``: ``slug``/``language``/``enabled``/``cached`` per catalog voice.
 
     ``cached`` is probed through ``phonon._download_voice(..., local_files_only=True)``
-    (the download seam; a cache miss -- or no ``huggingface_hub`` installed -- raises
-    and counts as not cached). Looked up via the module attribute so tests can patch it.
+    (the download seam; a cache miss raises and counts as not cached). If
+    ``huggingface_hub`` is not installed the probe cannot tell, so ``cached`` is
+    ``None`` (unknown), not ``False``. Looked up via the module attribute so tests
+    can patch it.
     """
     from .backends import phonon, phonon_voices
 
@@ -385,7 +387,9 @@ def _phonon_catalog_rows() -> list[dict]:
                 phonon_voices.VOICES_REPO_SHA,
                 local_files_only=True,
             )
-            cached = True
+            cached: bool | None = True
+        except ImportError:
+            cached = None  # no huggingface_hub: unknown, not "not cached"
         except Exception:
             cached = False
         rows.append({"slug": slug, "language": lang, "enabled": slug in enabled, "cached": cached})
@@ -444,7 +448,8 @@ def _cmd_voices(args: argparse.Namespace) -> None:
         for r in rows:
             print(
                 f"{r['slug']:<28} {r['language']:<5} "
-                f"{'yes' if r['enabled'] else 'no':<8} {'yes' if r['cached'] else 'no'}"
+                f"{'yes' if r['enabled'] else 'no':<8} "
+                f"{'?' if r['cached'] is None else 'yes' if r['cached'] else 'no'}"
             )
     if args.refresh:
         try:

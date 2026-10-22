@@ -469,6 +469,27 @@ server.)
 
 ## Findings
 
+**Deferred Minor findings fixed (2026-10-22, after the conduct hand-back):** all 14 Phase 1/2/3 Minor
+items below are fixed in one follow-up commit (hostile-env-token and `ALBA`/whitespace lean tests;
+non-vacuous status test; English `zoey` in the mlx tests and the `alba,elodie_rose` examples; pin
+lookup normalised via `_pin_for` so `Gradium/phonon-31m-en` and a trailing slash can't bypass the pin;
+`voices` shows `cached: ?`/`null` when `huggingface_hub` is missing; render-plist off-phonon test;
+cancel smoke waits for a first delta and now asserts no delta after `response.cancelled`; "Phase 3"
+wording and "152 frames" removed from user docs; protocol `voice_count` wording; TCP→UDS wording;
+upstream note's two unverified claims removed/marked). Not run as a review: the end-of-plan passes
+still apply.
+
+**New finding while verifying the cancel-smoke assertions (not in the plan):** a commit sent
+immediately after `response.audio.done` or a barge-in ack can get a transient `busy` (`retry_after_ms`
+250). Cause (read, not guessed): `PER_CONNECTION_INFLIGHT_MAX = 1` and the scheduler frees the slot only
+after the backend worker releases the GPU lock (`server.py` `_dispatch_drain`), which can be just after
+the client sees `done`. Measured: with Onoats transcribing, 4 of 25 smoke runs hit it (5 retries total),
+and one earlier 10-run batch failed on it twice (a barge-in follow-up and a post-abort commit; the
+second was not confirmed as `busy` because the check hid the error text, which it now prints). This is
+documented behaviour (protocol §7), so the smoke now honours `retry_after_ms` and prints each retry. A
+client that does back-to-back commits must do the same. UNCHECKED: whether the reference Pipecat adapter
+(`examples/pipecat_tts_service.py`) retries on `busy`; it mentions `BUSY` only in comments I skimmed.
+
 **Version override (2026-10-22, user decision after the conduct hand-back):** `v0.6.0` was never tagged
 or released (latest tag `v0.5.0`; main carries an unreleased `## [0.6.0]` mlx-audio entry), so this
 work ships **inside 0.6.0** (mlx-audio bump + Phonon), not 0.7.0. The contract above the marker still

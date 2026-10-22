@@ -4,15 +4,15 @@ Draft only; not filed. The maintainer decides whether to open it.
 
 ## Problem
 
-`gradium/phonon-31m-en` at HEAD (and the commit following the pinned one) sets
+`gradium/phonon-31m-en` at HEAD sets
 `model_type: gradium_phonon_tts` in `config.json`. `mlx_audio.tts.utils.load()` in
 mlx-audio 0.6.1 (latest on PyPI at the time of writing) and on `main` raises:
 
     ValueError: Model type gradium_phonon_tts not supported for tts.
 
 The Phonon model is supported by mlx-audio's `pocket_tts` module (PR #1049, first
-released in 0.6.1), but only when `config.json` carries no `model_type` (the loader
-then falls back to path/name routing to `pocket_tts`).
+released in 0.6.1), but only when `config.json` carries no `model_type` (how the
+loader then routes that checkpoint to `pocket_tts`, e.g. by path/name, is unverified).
 
 ## Workaround in this repo
 

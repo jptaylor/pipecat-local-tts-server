@@ -64,7 +64,7 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9._:\-]+$")
 # ``ja,zh``). Validated before being baked into the plist's EnvironmentVariables.
 _EXTRA_LANGS_RE = re.compile(r"^[A-Za-z]{2,8}(,[A-Za-z]{2,8})*$")
 # PIPECAT_TTS_PHONON_VOICES — comma-separated Phonon catalog slugs (lowercase
-# alphanumerics + ``_``, e.g. ``alba,elodie_rose``). Strict allowlist like the
+# alphanumerics + ``_``, e.g. ``zoey,juniper``). Strict allowlist like the
 # Kokoro one; the backend soft-skips unknown slugs, so this only blocks hostile /
 # malformed values (spaces, URLs, path separators) before they reach the plist.
 _PHONON_VOICES_RE = re.compile(r"^[a-z0-9_]{1,64}(,[a-z0-9_]{1,64}){0,127}$")
@@ -282,7 +282,7 @@ def main() -> None:
         elif not _PHONON_VOICES_RE.match(phonon_voices):
             print(
                 f"error: PIPECAT_TTS_PHONON_VOICES={phonon_voices!r} rejected by "
-                "allowlist (comma-separated catalog slugs, e.g. alba,elodie_rose)",
+                "allowlist (comma-separated catalog slugs, e.g. zoey,juniper)",
                 file=sys.stderr,
             )
             sys.exit(2)

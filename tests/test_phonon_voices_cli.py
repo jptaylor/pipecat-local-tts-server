@@ -110,6 +110,17 @@ def test_cached_column_flips_when_voice_file_present(cache, monkeypatch, capsys)
     assert sum(r["cached"] for r in by_slug.values()) == 1
 
 
+def test_cached_unknown_when_huggingface_hub_missing(cache, monkeypatch, capsys):
+    def no_hub(*a, **k):
+        raise ImportError("No module named 'huggingface_hub'")
+
+    monkeypatch.setattr(PH, "_download_voice", no_hub)
+    _, out, _ = _run(monkeypatch, capsys, "--json")
+    assert all(r["cached"] is None for r in json.loads(out))
+    _, out, _ = _run(monkeypatch, capsys)
+    assert all(line.split()[-1] == "?" for line in out.splitlines()[1:])
+
+
 def test_enabled_column_follows_env(cache, monkeypatch, capsys):
     slug = PV.VOICE_CATALOG[0][0]
     monkeypatch.setenv(PH.VOICES_ENV, slug)
