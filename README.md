@@ -56,6 +56,10 @@ uv add "pipecat-local-tts-server[qwen3_tts]"
 # under the Fish Audio Research License — free for research/non-commercial
 # use, commercial use requires a separate agreement (business@fish.audio).
 uv add "pipecat-local-tts-server[fish_tts]"
+
+# Phonon backend — streaming:true, fast, English (Apple Silicon;
+# mlx-audio==0.6.1). The 31M weights, tokenizer and voices are Apache-2.0.
+uv add "pipecat-local-tts-server[phonon]"
 ```
 
 From source (development):
@@ -88,6 +92,10 @@ uv sync --extra qwen3_tts
 # <|speaker:N|> style control (Apple Silicon; mlx-audio==0.6.1). Weights are
 # under the Fish Audio Research License; see "Backends & licenses".
 uv sync --extra fish_tts
+
+# Phonon backend — streaming:true, fast, English (Apple Silicon; mlx-audio==0.6.1).
+# Apache-2.0 31M weights/tokenizer/voices; see "Backends & licenses".
+uv sync --extra phonon
 
 # the reference Pipecat adapter example (pulls the Pipecat framework)
 uv sync --extra examples
@@ -131,6 +139,7 @@ and `scripts/install_tts_agent.sh` resolve each backend to this canonical map:
 | dia | `pipecat.tts-server.dia` | 9065 |
 | qwen3_tts | `pipecat.tts-server.qwen3_tts` | 9165 |
 | fish_tts | `pipecat.tts-server.fish_tts` | 9265 |
+| phonon | `pipecat.tts-server.phonon` | 9365 |
 
 ```sh
 # install + start the kokoro agent on 127.0.0.1:8765 (runs at login, KeepAlive)
@@ -268,6 +277,7 @@ Operators are responsible for honouring each model's license.
 | `dia` | `dia` | `false` | mlx-community/Dia-1.6B-fp16 | Apache-2.0 (commercial-safe) |
 | `qwen3_tts` | `qwen3_tts` | `true` | mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 | apache-2.0 (HF card tag; no LICENSE file in the repo) |
 | `fish_tts` | `fish_tts` | `false` | mlx-community/fish-audio-s2-pro | **Fish Audio Research License (non-commercial; commercial requires separate agreement)** |
+| `phonon` | `phonon` | `true` | gradium/phonon-31m-en | Apache-2.0 (weights, tokenizer and voices; commercial use allowed) |
 
 > **Kokoro is the default commercial-safe backend.** `voxtral_tts` weights are
 > **CC-BY-NC** — do not use them in a commercial deployment. `pocket_tts`
@@ -280,6 +290,33 @@ Operators are responsible for honouring each model's license.
 > revocable — **no commercial rights are granted** without a separate written
 > license agreement from Fish Audio (contact: `business@fish.audio`). See
 > *fish_tts capabilities* below.
+
+> **Phonon**: the model card for `gradium/phonon-31m-en` states the weights,
+> tokenizer and voices are released under Apache-2.0, which allows commercial
+> use. The larger `gradium/phonon-40m-*` siblings are **CC-BY-NC-4.0 and gated**;
+> they are not supported here (the backend targets the 31M English model only).
+
+### Phonon capabilities and voice selection
+
+`phonon` is `streaming:true`, 24 kHz, `languages: ["en"]`, with `default` (the
+model's own shipped voice) always advertised. Latency/RTF: see
+`scripts/profiling/README.md` (the Phase 3 harness numbers are recorded there).
+
+Extra voices are chosen **ahead of time by the operator** with the server env var
+`PIPECAT_TTS_PHONON_VOICES` (comma-separated catalog slugs, e.g.
+`alba,elodie_rose`; no CLI flag). Only listed voices are downloaded (one file
+each) and advertised; an unknown or unfetchable slug is warned about and skipped,
+and a client asking for a skipped voice gets `invalid_config`. For a launchd agent,
+export it when running `just tts-install phonon` (it is validated and baked into
+the plist). The catalog is 102 voices (en/fr/de/es/pt; the model is English, so
+non-English voices log a warning):
+
+```sh
+uv run python -m tts_server voices                  # slug, lang, enabled, cached
+uv run python -m tts_server voices --language en
+uv run python -m tts_server voices --refresh        # diff live voices.jsonl; changes nothing
+PIPECAT_TTS_PHONON_VOICES=alba,elodie_rose just smoke-phonon
+```
 
 ### Voxtral TTS capabilities (as shipped)
 

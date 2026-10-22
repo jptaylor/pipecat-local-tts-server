@@ -58,6 +58,7 @@ jobs:
             tests/test_qwen3_lean.py \
             tests/test_fish_lean.py \
             tests/test_phonon_lean.py \
+            tests/test_phonon_voices_cli.py \
             tests/test_status.py \
             tests/test_auth.py \
             tests/test_resource_limits.py \

@@ -53,7 +53,8 @@ _resolve backend:
       dia)         printf '%s\n' "pipecat.tts-server.dia"         "127.0.0.1" "9065" ;;
       qwen3_tts)   printf '%s\n' "pipecat.tts-server.qwen3_tts"   "127.0.0.1" "9165" ;;
       fish_tts)    printf '%s\n' "pipecat.tts-server.fish_tts"    "127.0.0.1" "9265" ;;
-      *) echo "error: unknown backend '$backend' (valid: tone, kokoro, voxtral_tts, pocket_tts, dia, qwen3_tts, fish_tts)" >&2; exit 1 ;;
+      phonon)      printf '%s\n' "pipecat.tts-server.phonon"      "127.0.0.1" "9365" ;;
+      *) echo "error: unknown backend '$backend' (valid: tone, kokoro, voxtral_tts, pocket_tts, dia, qwen3_tts, fish_tts, phonon)" >&2; exit 1 ;;
     esac
 
 # Extract the serve endpoint from an installed agent's plist ProgramArguments.
@@ -194,7 +195,7 @@ tts-status target=(cache_dir / "tts.sock"):
       exec uv run python -m tts_server status --socket-path "$target" --timeout "$timeout"
     fi
     case "$target" in
-      tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts|fish_tts)
+      tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts|fish_tts|phonon)
         resolved=$(just _resolve "$target") || exit 1
         # One field per line; three reads keep this bash-3.2-compatible.
         { read -r label; read -r host; read -r port; } <<<"$resolved"
@@ -398,6 +399,12 @@ smoke-qwen3_tts *args:
 smoke-fish_tts *args:
     tests/smoke/run_smoke.sh --backend fish_tts {{args}}
 
+# Phonon backend (streaming:true, fast). WAV round-trip + TTFB/cadence + 24000 Hz
+# rate assertion. Auto-syncs the phonon extra if missing (Apache-2.0 31M weights;
+# see README "Backends & licenses").
+smoke-phonon *args:
+    tests/smoke/run_smoke.sh --backend phonon {{args}}
+
 # Two clients interleaving through one backend: fairness + max-buffer + 429/BUSY.
 smoke-multiconn *args:
     tests/smoke/run_multiconn.sh {{args}}
@@ -417,6 +424,10 @@ smoke-multiconn-qwen3_tts *args:
 # Multi-connection concurrency against the non-streaming fish_tts backend.
 smoke-multiconn-fish_tts *args:
     tests/smoke/run_multiconn.sh --backend fish_tts {{args}}
+
+# Multi-connection concurrency against the streaming phonon backend.
+smoke-multiconn-phonon *args:
+    tests/smoke/run_multiconn.sh --backend phonon {{args}}
 
 # Crash-restart-reconnect: SIGKILL the server, restart, client reconnects w/ backoff.
 smoke-reconnect *args:

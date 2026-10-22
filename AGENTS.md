@@ -26,6 +26,7 @@ uv sync --extra pocket_tts  # Pocket TTS — streaming:true (mlx-audio==0.6.1); 
 uv sync --extra dia         # dia DIALOGUE — streaming:false, voice_count:0 (mlx-audio==0.6.1); Apache-2.0 weights
 uv sync --extra qwen3_tts   # Qwen3-TTS — streaming:true, 9 speakers (mlx-audio==0.6.1); apache-2.0 card tag
 uv sync --extra fish_tts    # Fish Audio S2 Pro — streaming:false, voice_count:0 (mlx-audio==0.6.1); Fish Audio Research License (non-commercial)
+uv sync --extra phonon      # Phonon — streaming:true, English, `default` + operator-enabled voices (mlx-audio==0.6.1); Apache-2.0 31M weights
 uv sync --extra examples    # reference Pipecat adapter (pins pipecat-ai==1.4.0)
 ```
 
@@ -35,8 +36,9 @@ Endpoint precedence everywhere: **URI > socket > host+port**.
 
 | Subcommand | Flags | Notes |
 |---|---|---|
-| `serve` (default) | `--backend {tone,kokoro,voxtral_tts,pocket_tts,dia,qwen3_tts,fish_tts}` (default `tone`), `--model <id>`, `--socket-path`, `--host`, `--port`, `--auth-token-file <path>`, `--log-level <LEVEL>` (default `INFO`) | Runs the server. `--model` defaults per backend (Kokoro repo for `kokoro`; none for `tone`). No `--uri` (the listener is built from socket-path/host+port). |
+| `serve` (default) | `--backend {tone,kokoro,voxtral_tts,pocket_tts,dia,qwen3_tts,fish_tts,phonon}` (default `tone`), `--model <id>`, `--socket-path`, `--host`, `--port`, `--auth-token-file <path>`, `--log-level <LEVEL>` (default `INFO`) | Runs the server. `--model` defaults per backend (Kokoro repo for `kokoro`; none for `tone`). No `--uri` (the listener is built from socket-path/host+port). |
 | `status` | `--socket-path`, `--host`, `--port`, `--uri <ws://…>`, `--auth-token-file`, `--timeout <s>` (default `3.0`), `--json` | Preflight health probe: handshake + `server.status`, prints backend/model/rate/caps/queue-depth/voices/uptime/pid. Exits non-zero if unreachable. `--json` emits raw `hello`+`status`. |
+| `voices` | `--backend <name>` (default `phonon`; any other exits non-zero), `--language <code>`, `--json`, `--refresh` | Lists the bundled Phonon voice catalog (slug, language, enabled via `PIPECAT_TTS_PHONON_VOICES`, cached in the HF cache). `--refresh` diffs the live `voices.jsonl` and changes nothing. Never talks to a server. |
 
 A plaintext `--auth-token` flag is **intentionally unsupported** (`ps` exposure) —
 use `--auth-token-file`.
@@ -50,6 +52,7 @@ use `--auth-token-file`.
 | `TTS_WS_DEFAULT_SOCKET` | client | Explicit fallback socket for `status` when nothing else is set. |
 | `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer the server requires (optional auth). |
 | `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to re-advertise after installing their extra G2P package. |
+| `PIPECAT_TTS_PHONON_VOICES` | server | Comma-separated Phonon catalog slugs (e.g. `alba,elodie_rose`) to advertise + download; `default` is always advertised. Unknown/unfetchable slugs are warned and skipped. Baked into the plist for the `phonon` backend only. |
 | `TTS_WS_PING_INTERVAL` / `TTS_WS_PING_TIMEOUT` | server | Keepalive ping period / pong timeout (seconds). Defaults `20` / `120`: ping kept, pong timeout **large but finite** so GIL-holding Metal compute can't trip a `1011` mid-generation *and* a dead idle peer is still reaped (~140s). a disable token (`none`/`off`/`disable`/`disabled` or any zero) disables a knob (disabling the timeout reintroduces the idle-peer leak). Mirror knobs on `TTSClient(ping_interval=, ping_timeout=)`. |
 
 CLI flags and env vars are **trusted** inputs; untrusted input is websocket
@@ -66,7 +69,7 @@ CI splits into a **lean** job (client-only, asserts no mlx/numpy import; runs an
 explicit allow-list of lean test files — extend it when adding a lean test), an
 **examples** job (pinned pipecat-ai), and a **macOS smoke** job (`--all-extras`;
 verifies every backend extra resolves and its module imports — kokoro / voxtral_tts
-/ pocket_tts / dia / qwen3_tts / fish_tts — does not run synthesis). See
+/ pocket_tts / dia / qwen3_tts / fish_tts / phonon — does not run synthesis). See
 `.github/workflows/test.yml`.
 
 A separate **release** workflow (`.github/workflows/release.yml`) runs only when a
@@ -89,9 +92,9 @@ Publishing (OIDC — no token). A plain merge or tag push does not trigger it.
 | `just tts-stop <backend>` | Send SIGTERM (`launchctl kill`; KeepAlive restarts it). |
 | `just tts-logs <backend>` | Tail the agent's stdout+stderr logs. |
 | `just smoke-tone` / `smoke-kokoro` / `smoke-multilingual` | Live end-to-end smoke (starts a real server on an isolated socket). |
-| `just smoke-voxtral_tts` / `smoke-pocket_tts` / `smoke-dia` / `smoke-qwen3_tts` / `smoke-fish_tts` | Per-backend live smoke (WAV round-trip + TTFB/cadence, or rate assertion for the non-streaming backends). |
+| `just smoke-voxtral_tts` / `smoke-pocket_tts` / `smoke-dia` / `smoke-qwen3_tts` / `smoke-fish_tts` / `smoke-phonon` | Per-backend live smoke (WAV round-trip + TTFB/cadence, or rate assertion for the non-streaming backends). |
 | `just smoke-multiconn` / `smoke-reconnect` | Multi-connection fairness / reconnect smoke. |
-| `just smoke-multiconn-voxtral_tts` / `-pocket_tts` / `-qwen3_tts` / `-fish_tts` | Per-backend multi-connection fairness smoke. |
+| `just smoke-multiconn-voxtral_tts` / `-pocket_tts` / `-qwen3_tts` / `-fish_tts` / `-phonon` | Per-backend multi-connection fairness smoke. |
 
 Smoke scripts start their own server on a `mktemp` socket and tear it down — they
 **never** touch the canonical operator socket.

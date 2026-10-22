@@ -16,7 +16,8 @@ Invariants asserted here:
     ``generate()``: ``voice`` is omitted (default) or an absolute existing
     ``.safetensors`` path.
 
-Dual-wire assertions (argparse choice, ``_resolve_model``) are Phase 2.
+Dual-wire assertions (argparse choice, ``_resolve_model``) are at the bottom
+(Phase 2).
 """
 
 from __future__ import annotations
@@ -579,3 +580,25 @@ def test_default_model_constant_importable_lean():
         "from tts_server.backends.phonon import DEFAULT_PHONON_MODEL\n"
         "assert DEFAULT_PHONON_MODEL == 'gradium/phonon-31m-en'\n"
     )
+
+
+# --- dual-wire (Phase 2): argparse choice + _resolve_model + make_backend ------
+
+
+def test_phonon_is_accepted_backend_choice():
+    """argparse must accept ``--backend phonon`` (not just ``make_backend``)."""
+    from tts_server.__main__ import build_parser
+
+    args = build_parser().parse_args(["serve", "--backend", "phonon"])
+    assert args.backend == "phonon"
+
+
+def test_default_phonon_model_resolves_identically_through_both_paths():
+    """``_resolve_model`` and ``make_backend`` fallback must agree."""
+    from tts_server.__main__ import _resolve_model
+    from tts_server.backends import make_backend
+
+    assert _resolve_model("phonon", None) == PH.DEFAULT_PHONON_MODEL
+    assert make_backend("phonon").model == PH.DEFAULT_PHONON_MODEL
+    # An explicit --model still wins over the default.
+    assert _resolve_model("phonon", "x/y") == "x/y"

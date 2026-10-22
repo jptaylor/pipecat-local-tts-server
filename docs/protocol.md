@@ -142,7 +142,10 @@ model / `voice_count:0` on the Base variant, full-word language codes — see RE
 *Backends & licenses* and *Qwen3-TTS capabilities*), `fish_tts` (`streaming:false`,
 `voice_count:0`, Fish Audio Research License — non-commercial; commercial use
 requires a separate agreement — see README → *Backends & licenses* and *fish_tts
-capabilities*), and the dependency-free `tone` reference. Kokoro example
+capabilities*), `phonon` (`streaming:true`, 24 kHz, English only, `default` plus
+operator-enabled voices via `PIPECAT_TTS_PHONON_VOICES` so `voice_count` is
+1 + enabled; Apache-2.0 31M weights — see README → *Backends & licenses* and
+*Phonon capabilities and voice selection*), and the dependency-free `tone` reference. Kokoro example
 (fields VERIFIED via `scripts/verify_mlx_tts_api.py --load`, 2026-06-24, mlx-audio 0.4.4):
 
 ```jsonc

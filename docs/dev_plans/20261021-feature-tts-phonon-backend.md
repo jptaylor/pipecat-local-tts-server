@@ -464,7 +464,7 @@ server.)
 
 - [x] Phase 0: Model verification gate (findings below)
 - [x] Phase 1: Backend module, voice catalog, unit tests
-- [ ] Phase 2: Wiring — CLI, voice env var, justfile, smoke, plist renderer, docs, version
+- [x] Phase 2: Wiring — CLI, voice env var, justfile, smoke, plist renderer, docs, version
 - [ ] Phase 3: Smoke, profiling, adapter e2e
 
 ## Findings
@@ -607,6 +607,27 @@ phase** (left for the end-of-plan review passes):
    bypasses the pin and loads HEAD with only a warning.
 Conductor notes: Flags 2 and 3 above (per-file voice download, slug rule) were implemented as the
 plan's literal text, not the alternatives; no weights selector was added (Q9 is not in the contract).
+
+### Phase 2 (conduct, 2026-10-22)
+
+Phase test command: 111 passed, 0 skipped (139 with the Phase 1 files); validation `just smoke-phonon`:
+PASS=3 FAIL=0 (rate 24000, WAV round-trip, latency cadence). The plan's Commit A/B/C landed as ONE
+phase commit (conduct commits per phase); the Commit-A enumerations are mutually consistent
+(asserted by `test_justfile_recipes.py`). Advisory reviewer (Opus, one pass): one Important (**fixed
+in this phase**), five Minor (**not fixed**, left for the end-of-plan review passes):
+- Important (fixed): `voices --refresh` fetched `voices.jsonl` into the operator's HF cache via the
+  shared `_download_voice` seam, and the test exempted that file from its byte-identity check.
+  Fix: `_download_voice` gained an optional `cache_dir`; `_phonon_refresh_diff` fetches into a
+  `TemporaryDirectory`; the test now asserts the whole cache tree is byte-identical (no exemption)
+  and that the fetch used a dir outside the cache.
+- Minor: README/CHANGELOG say "Phase 3 harness numbers" and point at numbers `scripts/profiling/README.md`
+  does not yet hold (Phase 3 should add them or the wording should go); `docs/protocol.md` says
+  `voice_count` is "1 + enabled" (should be "1 + the enabled voices that resolved"); `voices` shows
+  `cached: no` for everything when `huggingface_hub` is absent (ImportError counted as not cached);
+  README and `install_tts_agent.sh` examples use `alba` (Spanish voice) on the English model; a test
+  comment claims a malformed value is ignored off-phonon but only a well-formed one is tested;
+  `docs/upstream/mlx-audio-phonon-model-type.md` states two things Phase 0 did not verify (the
+  "following commit" and "path/name routing") — check before anyone files it.
 
 ### Review Waivers
 

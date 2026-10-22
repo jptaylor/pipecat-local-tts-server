@@ -113,8 +113,17 @@ def _load_model(path: str) -> Any:
     return load(path, lazy=False, strict=True)
 
 
-def _download_voice(repo_id: str, filename: str, revision: str, *, local_files_only: bool) -> str:
-    """Fetch one voice file; with ``local_files_only`` a cache miss raises."""
+def _download_voice(
+    repo_id: str,
+    filename: str,
+    revision: str,
+    *,
+    local_files_only: bool,
+    cache_dir: str | None = None,
+) -> str:
+    """Fetch one voice file; with ``local_files_only`` a cache miss raises.
+    ``cache_dir`` redirects the fetch away from the shared HF cache (used by
+    ``voices --refresh`` so a live look never writes into the operator's cache)."""
     from huggingface_hub import hf_hub_download  # type: ignore
 
     return str(
@@ -123,6 +132,7 @@ def _download_voice(repo_id: str, filename: str, revision: str, *, local_files_o
             filename,
             revision=revision,
             local_files_only=local_files_only,
+            cache_dir=cache_dir,
         )
     )
 
