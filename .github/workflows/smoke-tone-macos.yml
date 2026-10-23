@@ -47,3 +47,20 @@ jobs:
         run: brew install just
       - name: Smoke (phonon backend, isolated socket)
         run: just smoke-phonon
+
+  # The repo's own in-process benchmark (no server, no socket, no audio device).
+  rtf-benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: RTF benchmark (phonon)
+        run: uv run --extra phonon python scripts/profiling/rtf_benchmark.py --backend phonon
