@@ -142,12 +142,13 @@ struct ServiceDetailView: View {
 
 struct StatusBadge: View {
     let model: ServiceModel
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         let (text, color) = descriptor
         HStack(spacing: 4) {
             StatusDot(color: color, pulsing: model.phase == .running)
-            Text(text).font(.system(size: 10.5, weight: .medium)).foregroundStyle(color)
+            Text(text).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(color.legible(in: scheme))
         }
     }
 

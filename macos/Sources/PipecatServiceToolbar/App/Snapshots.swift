@@ -131,9 +131,17 @@
         }
 
         static func render(_ app: AppModel, to url: URL, dark: Bool) {
+            // SNAPSHOT_BACKDROP=r,g,b (0-255) approximates a translucent panel over a
+            // coloured wallpaper, for checking contrast.
+            let backdrop: Color = {
+                let parts = (ProcessInfo.processInfo.environment["SNAPSHOT_BACKDROP"] ?? "")
+                    .split(separator: ",").compactMap { Double($0) }
+                guard parts.count == 3 else { return Color(nsColor: .windowBackgroundColor) }
+                return Color(red: parts[0] / 255, green: parts[1] / 255, blue: parts[2] / 255)
+            }()
             let root = PanelView()
                 .environment(app)
-                .background(Color(nsColor: .windowBackgroundColor))
+                .background(backdrop)
             let host = NSHostingView(rootView: root)
             host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             let size = host.fittingSize

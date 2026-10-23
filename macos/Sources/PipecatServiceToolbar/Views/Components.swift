@@ -20,6 +20,27 @@ extension Service {
     }
 }
 
+extension Color {
+    /// This tint shaded for text on the panel's translucent material: deepened in
+    /// light mode and lifted in dark mode, so a bright tint like systemGreen
+    /// stays readable over any wallpaper. `.secondary` becomes a strong grey.
+    func legible(in scheme: ColorScheme) -> Color {
+        if self == .secondary { return Color.primary.opacity(0.78) }
+        return scheme == .dark ? mix(with: .white, by: 0.18) : mix(with: .black, by: 0.38)
+    }
+
+    /// A darker fill for white text on a solid control.
+    var deepened: LinearGradient {
+        LinearGradient(colors: [mix(with: .black, by: 0.08), mix(with: .black, by: 0.24)], startPoint: .top, endPoint: .bottom)
+    }
+
+    /// The translucent wash behind tinted text.
+    func wash(in scheme: ColorScheme) -> Color {
+        if self == .secondary { return Color.primary.opacity(scheme == .dark ? 0.14 : 0.08) }
+        return opacity(scheme == .dark ? 0.24 : 0.16)
+    }
+}
+
 enum Pasteboard {
     static func copy(_ text: String) {
         NSPasteboard.general.clearContents()
@@ -31,14 +52,15 @@ enum Pasteboard {
 struct Badge: View {
     let text: String
     var color: Color = .secondary
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         Text(text)
             .font(.system(size: 9.5, weight: .semibold))
             .padding(.horizontal, 5)
             .padding(.vertical, 1.5)
-            .foregroundStyle(color)
-            .background(color.opacity(0.14), in: Capsule())
+            .foregroundStyle(color.legible(in: scheme))
+            .background(color.wash(in: scheme), in: Capsule())
     }
 }
 
@@ -90,12 +112,7 @@ struct LicenceBadge: View {
     let licence: WeightsLicence
 
     var body: some View {
-        Text(licence.label)
-            .font(.system(size: 9.5, weight: .semibold))
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
-            .foregroundStyle(color)
-            .background(color.opacity(0.14), in: Capsule())
+        Badge(text: licence.label, color: color)
             .help(licence.detail)
     }
 
@@ -128,8 +145,10 @@ struct StatusDot: View {
 /// App Store style capsule button ("Get", "Start", "Stop").
 struct PillButtonStyle: ButtonStyle {
     var tint: Color = .accentColor
+    /// Solid fill with white text, for a row's primary action.
     var prominent = false
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var scheme
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -137,11 +156,16 @@ struct PillButtonStyle: ButtonStyle {
             .lineLimit(1)
             .padding(.horizontal, 12)
             .frame(minWidth: 54, minHeight: 22)
-            .foregroundStyle(prominent ? Color.white : tint)
+            .foregroundStyle(prominent ? Color.white : tint.legible(in: scheme))
             .background(
-                Capsule().fill(prominent ? AnyShapeStyle(tint.gradient) : AnyShapeStyle(tint.opacity(0.15)))
+                Capsule().fill(prominent ? AnyShapeStyle(tint.deepened) : AnyShapeStyle(tint.wash(in: scheme)))
             )
-            .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
+            .overlay(
+                Capsule().strokeBorder(
+                    prominent ? Color.white.opacity(0.18) : tint.legible(in: scheme).opacity(0.22), lineWidth: 0.5)
+            )
+            .shadow(color: prominent ? tint.opacity(0.25) : .clear, radius: 1.5, y: 0.5)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.4)
             .contentShape(Capsule())
     }
 }
@@ -150,21 +174,23 @@ struct PillButtonStyle: ButtonStyle {
 struct WideButtonStyle: ButtonStyle {
     var tint: Color = .accentColor
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var scheme
 
     func makeBody(configuration: Configuration) -> some View {
+        let plain = tint == .secondary
         configuration.label
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(tint == .secondary ? Color.primary : Color.white)
+            .foregroundStyle(plain ? Color.primary : Color.white)
             .frame(maxWidth: .infinity, minHeight: 32)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(tint == .secondary ? AnyShapeStyle(Color.primary.opacity(0.1)) : AnyShapeStyle(tint.gradient))
+                    .fill(plain ? AnyShapeStyle(Color.primary.opacity(scheme == .dark ? 0.14 : 0.09)) : AnyShapeStyle(tint.deepened))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.white.opacity(tint == .secondary ? 0 : 0.15), lineWidth: 0.5)
+                    .strokeBorder(plain ? Color.primary.opacity(0.1) : Color.white.opacity(0.15), lineWidth: 0.5)
             )
-            .shadow(color: tint == .secondary ? .clear : tint.opacity(0.25), radius: 3, y: 1)
+            .shadow(color: plain ? .clear : tint.opacity(0.25), radius: 3, y: 1)
             .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.4)
             .contentShape(RoundedRectangle(cornerRadius: 8))
     }

@@ -368,7 +368,7 @@ struct CatalogAction: View {
             ProgressRing(fraction: stage == .model ? model.installFraction : nil) { model.cancelInstall() }
                 .frame(width: 54)
         case .installed:
-            Button("Start") { model.start() }.buttonStyle(PillButtonStyle(tint: .green))
+            Button("Start") { model.start() }.buttonStyle(PillButtonStyle(tint: .green, prominent: true))
         case .running:
             Button("Stop") { model.stop() }.buttonStyle(PillButtonStyle(tint: .secondary))
         case .failed(let failure):
