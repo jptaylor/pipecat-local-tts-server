@@ -1,3 +1,6 @@
+# BACKUP (inactive): lives outside .github/workflows so it never runs. To re-enable:
+#   git mv .github/ci-backup/smoke-tone-macos.yml .github/workflows/
+# 2026-10-23: tone smoke, phonon smoke and rtf_benchmark all PASSED on macos-14 + macos-latest.
 name: smoke-tone-macos
 
 # Throwaway repro: does the tone backend serve PCM on a headless GitHub macOS
