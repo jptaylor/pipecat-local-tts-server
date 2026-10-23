@@ -28,6 +28,9 @@ struct PanelView: View {
             }
         }
         .frame(width: Self.width, height: Self.height)
+        // Opaque, not the menu's translucent material: text contrast then
+        // depends only on light/dark mode, never on the wallpaper behind it.
+        .background(Color(nsColor: .windowBackgroundColor))
         .clipped()
         .animation(.snappy(duration: 0.28), value: app.page)
     }
@@ -92,7 +95,7 @@ struct RunningView: View {
                 } label: {
                     Image(systemName: "arrow.down.circle.dotted")
                         .font(.system(size: 15))
-                        .foregroundStyle(.blue)
+                        .legibleTint(.blue)
                         .symbolEffect(.pulse)
                 }
                 .buttonStyle(.plain)
@@ -186,8 +189,8 @@ struct RunningRow: View {
                 StatusDot(color: .orange)
                 Text("Stopping…").foregroundStyle(.secondary)
             case .failed(let failure):
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).imageScale(.small)
-                Text(failure.title).foregroundStyle(.red)
+                Image(systemName: "exclamationmark.triangle.fill").legibleTint(.red).imageScale(.small)
+                Text(failure.title).legibleTint(.red)
             default:
                 EmptyView()
             }
@@ -307,7 +310,7 @@ struct CatalogSubtitle: View {
             case .notInstalled:
                 Text(availableText).foregroundStyle(.secondary)
             case .needsModel:
-                Text("Model not downloaded").foregroundStyle(.orange)
+                Text("Model not downloaded").legibleTint(.orange)
             case .installing(let stage):
                 Text(installingText(stage)).foregroundStyle(.secondary).monospacedDigit()
             case .installed:
@@ -322,8 +325,8 @@ struct CatalogSubtitle: View {
             case .removing:
                 Text("Deleting…").foregroundStyle(.secondary)
             case .failed(let failure):
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).imageScale(.small)
-                Text(failure.title).foregroundStyle(.red)
+                Image(systemName: "exclamationmark.triangle.fill").legibleTint(.red).imageScale(.small)
+                Text(failure.title).legibleTint(.red)
             }
         }
         .font(.system(size: 11))
@@ -496,7 +499,7 @@ struct SetupBanner: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Image(systemName: "exclamationmark.triangle.fill").legibleTint(.orange)
             VStack(alignment: .leading, spacing: 4) {
                 Text(message).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
                 Button("Try Again") { Task { await app.bootstrap() } }
@@ -517,7 +520,7 @@ struct StaleLayoutBanner: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
+            Image(systemName: "arrow.triangle.2.circlepath").legibleTint(.orange)
             Text("Environments from another app version were found.")
                 .font(.system(size: 11.5))
             Spacer()

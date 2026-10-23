@@ -25,6 +25,7 @@ extension Color {
     /// light mode and lifted in dark mode, so a bright tint like systemGreen
     /// stays readable over any wallpaper. `.secondary` becomes a strong grey.
     func legible(in scheme: ColorScheme) -> Color {
+        if self == .primary { return self }
         if self == .secondary { return Color.primary.opacity(0.78) }
         return scheme == .dark ? mix(with: .white, by: 0.18) : mix(with: .black, by: 0.38)
     }
@@ -38,6 +39,22 @@ extension Color {
     func wash(in scheme: ColorScheme) -> Color {
         if self == .secondary { return Color.primary.opacity(scheme == .dark ? 0.14 : 0.08) }
         return opacity(scheme == .dark ? 0.24 : 0.16)
+    }
+}
+
+extension View {
+    /// Coloured text or symbols, shaded to stay readable in light and dark mode.
+    func legibleTint(_ color: Color) -> some View {
+        modifier(LegibleTint(color: color))
+    }
+}
+
+private struct LegibleTint: ViewModifier {
+    let color: Color
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(color.legible(in: scheme))
     }
 }
 
@@ -57,6 +74,8 @@ struct Badge: View {
     var body: some View {
         Text(text)
             .font(.system(size: 9.5, weight: .semibold))
+            .lineLimit(1)
+            .fixedSize()
             .padding(.horizontal, 5)
             .padding(.vertical, 1.5)
             .foregroundStyle(color.legible(in: scheme))
@@ -292,7 +311,13 @@ struct InfoRow<Value: View>: View {
 struct CopyButton: View {
     let text: String
     var help = "Copy"
-    @State private var copied = false
+    @State private var copied: Bool
+
+    init(text: String, help: String = "Copy", copied: Bool = false) {
+        self.text = text
+        self.help = help
+        _copied = State(initialValue: copied)  // `copied: true` only for snapshots
+    }
 
     var body: some View {
         Button {
@@ -303,12 +328,22 @@ struct CopyButton: View {
                 withAnimation(.snappy) { copied = false }
             }
         } label: {
-            Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(copied ? Color.green : Color.secondary)
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: 20, height: 20)
-                .contentShape(Rectangle())
+            Group {
+                if copied {
+                    // White on a solid green disc: readable on any background.
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, Color.green.mix(with: .black, by: 0.22))
+                        .transition(.scale.combined(with: .opacity))
+                } else {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 20, height: 20)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(help)

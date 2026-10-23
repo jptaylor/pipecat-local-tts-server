@@ -22,7 +22,7 @@ struct ServiceDetailView: View {
                     if let warning = model.warning {
                         Label(warning, systemImage: "exclamationmark.circle")
                             .font(.system(size: 11.5))
-                            .foregroundStyle(.orange)
+                            .legibleTint(.orange)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if model.isRunning, let tryIt = model.ttsTryIt {
@@ -251,7 +251,7 @@ struct FailureCard: View {
         VStack(alignment: .leading, spacing: 8) {
             Label(failure.title, systemImage: "exclamationmark.triangle.fill")
                 .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(.red)
+                .legibleTint(.red)
             Text(failure.message)
                 .font(.system(size: 12))
                 .fixedSize(horizontal: false, vertical: true)
@@ -342,11 +342,11 @@ struct TryItCard: View {
                 if session.overLimit {
                     Text("Too long for one request")
                         .font(.system(size: 11))
-                        .foregroundStyle(.orange)
+                        .legibleTint(.orange)
                 }
                 Spacer()
                 Image(systemName: "waveform")
-                    .foregroundStyle(Color.accentColor)
+                    .legibleTint(.accentColor)
                     .symbolEffect(.variableColor.iterative, isActive: session.phase == .speaking)
                     .opacity(session.phase == .speaking ? 1 : 0)
                 if session.phase == .connecting {
@@ -372,7 +372,7 @@ struct TryItCard: View {
             if case .failed(let message) = session.phase {
                 Label(message, systemImage: "exclamationmark.circle")
                     .font(.system(size: 11.5))
-                    .foregroundStyle(.red)
+                    .legibleTint(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -391,7 +391,7 @@ struct ConnectionCard: View {
             CopyRow(label: "Environment", value: info.environment(port: model.port))
             Text(footnote)
                 .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -442,7 +442,7 @@ struct DetailsCard: View {
                 }
             }
             InfoRow(label: "Licence") {
-                Text(model.info.licence.label).foregroundStyle(model.info.licence.isRestrictive ? .orange : .primary)
+                Text(model.info.licence.label).legibleTint(model.info.licence.isRestrictive ? .orange : .primary)
             }
             if model.info.licence != .none, model.info.licence != .system {
                 Text(model.info.licence.detail)
@@ -532,7 +532,7 @@ struct RemoveSection: View {
                     Label("Delete…", systemImage: "trash").font(.system(size: 12))
                 }
                 .buttonStyle(.borderless)
-                .foregroundStyle(.red)
+                .legibleTint(.red)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -592,7 +592,7 @@ struct STTTryItCard: View {
                         }
                     }
                     .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                 }
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -606,7 +606,7 @@ struct STTTryItCard: View {
             if case .failed(let message) = session.phase {
                 Label(message, systemImage: "exclamationmark.circle")
                     .font(.system(size: 11.5))
-                    .foregroundStyle(.red)
+                    .legibleTint(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

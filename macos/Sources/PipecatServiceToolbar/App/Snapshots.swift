@@ -22,6 +22,9 @@
                 }
             }
             renderMenuBar(to: dir)
+            for dark in [false, true] {
+                renderView(CopyStatesStrip(), to: dir.appending(path: "copy-states-\(dark ? "dark" : "light").png"), dark: dark)
+            }
             print("snapshots written to \(dir.path)")
             return true
         }
@@ -128,6 +131,49 @@
             }
             NSGraphicsContext.restoreGraphicsState()
             try? rep.representation(using: .png, properties: [:])?.write(to: dir.appending(path: "menubar.png"))
+        }
+
+        static func renderView<V: View>(_ view: V, to url: URL, dark: Bool) {
+            let host = NSHostingView(rootView: view.padding(12).background(Color(nsColor: .windowBackgroundColor)))
+            host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            let size = host.fittingSize
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.appearance = host.appearance
+            window.contentView = host
+            host.frame = NSRect(origin: .zero, size: size)
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: url)
+        }
+
+        /// The Connect card's copy row, before and after copying, plus the tinted text styles.
+        struct CopyStatesStrip: View {
+            var body: some View {
+                VStack(alignment: .leading, spacing: 10) {
+                    CopyRow(label: "Pipecat service", value: #"LocalTTSService(host="127.0.0.1", port=9365)"#)
+                    HStack(spacing: 14) {
+                        CopyButton(text: "x")
+                        CopyButton(text: "x", copied: true)
+                        Text("Model download failed").legibleTint(.red)
+                        Text("Model not downloaded").legibleTint(.orange)
+                    }
+                    .font(.system(size: 11))
+                    HStack(spacing: 8) {
+                        Badge(text: "Default", color: .accentColor)
+                        LicenceBadge(licence: .ccByNC)
+                        LicenceBadge(licence: .researchOnly)
+                        LicenceBadge(licence: .apache2)
+                    }
+                    HStack(spacing: 8) {
+                        Button("Start") {}.buttonStyle(PillButtonStyle(tint: .green, prominent: true))
+                        Button("Get") {}.buttonStyle(PillButtonStyle())
+                        Button("Retry") {}.buttonStyle(PillButtonStyle(tint: .red))
+                    }
+                }
+                .frame(width: 360)
+            }
         }
 
         static func render(_ app: AppModel, to url: URL, dark: Bool) {
