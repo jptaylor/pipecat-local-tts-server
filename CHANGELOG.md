@@ -5,6 +5,26 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Reference Pipecat adapter retries a commit rejected with `busy`, honouring the
+  server's `retry_after_ms` (+ up to 25% jitter), up to `busy_retries` (default 3)
+  within `busy_retry_budget_s` (default 3.0 s) of total waiting. Only the commit is
+  re-sent (the server keeps the buffered text on `busy`); a barge-in during the wait
+  cancels and clears. Past either bound it drops the utterance as before;
+  `busy_retries=0` restores the previous behaviour exactly.
+
+### Fixed
+
+- `scripts/render_tts_plist.py` validated values with `re.match` against `^…$`, where
+  `$` also matches before a trailing newline (`"zoey\n"` passed). Every validated value
+  now uses `fullmatch`.
+- Phonon removes orphaned quantize temp directories (`.<name>.tmp-<pid>-<tid>`, left by
+  a crash during the first conversion of an alias) when a quantized alias starts, but
+  only real directories with that exact name pattern that are more than an hour old.
+
 ## [0.6.0] - 2026-10-22
 
 ### Added
