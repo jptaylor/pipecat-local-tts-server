@@ -27,3 +27,23 @@ jobs:
         run: system_profiler SPAudioDataType || true
       - name: Smoke (tone backend, isolated socket)
         run: just smoke-tone
+
+  # Does an mlx backend load on a virtualised runner (Metal GPU)? Downloads the
+  # 31M Phonon weights from the HF Hub; auto-syncs the phonon extra.
+  smoke-phonon:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install just
+        run: brew install just
+      - name: Smoke (phonon backend, isolated socket)
+        run: just smoke-phonon
