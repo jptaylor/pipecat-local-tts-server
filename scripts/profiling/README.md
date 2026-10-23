@@ -676,3 +676,29 @@ just smoke-phonon                                                     # latency_
 uv run --extra examples --extra phonon python tests/smoke/pipecat_adapter_e2e.py
 uv run --extra phonon python tests/smoke/phonon_cancel_smoke.py [--voice zoey]   # barge-in + abrupt disconnect
 ```
+
+## Shared-bridge change A/B: `main` vs `feature/tts-phonon-backend` (2026-10-22)
+
+The phonon branch changed the shared bridge (`_stream_util`/`_bridge_stream`): the worker now
+`close()`s the synthesis generator under the Metal lock, before releasing it (affects every
+backend). `rtf_benchmark.py --warm 2` (`--warm 1` for dia), `main` @ `a3f1192` vs the branch,
+run sequentially and interleaved per backend on an M4 Max, mlx-audio 0.6.1. NOT pristine: an idle
+`stt_server`, a `pocket_tts` launchd agent and Onoats were running. `main`'s source was run inside
+the branch's venv (`PYTHONPATH`), so only `tts_server/` differs. Median over warm runs:
+
+| backend | load s main / branch | TTFB s main / branch | RTF main / branch |
+|---|---|---|---|
+| kokoro | 2.5 / 2.5 | 0.10 / 0.11 | 0.03 / 0.03 |
+| pocket_tts | 1.0 / 0.8 | 0.03 / 0.02 | 0.06 / 0.06 |
+| qwen3_tts | 4.7 / 3.8 | 0.12 / 0.12 | 0.26 / 0.26 |
+| fish_tts | 4.3 / 6.4 | 9.9 / 8.1 | 1.50 / 1.42 |
+| voxtral_tts | 2.7 / 3.6 | 0.41 / 0.50 | 1.17 / 1.33 |
+| dia | 24 / 26 | 24.9 / 22.8 | 2.15 / 2.35 |
+| phonon (branch only) | 0.9 | 0.02 | 0.05 |
+
+No regression. voxtral_tts read worse on the branch in the first pass; two reversed-order
+re-runs were indistinguishable (RTF 1.66-1.83 branch vs 1.62-1.94 main, TTFB 0.60-0.79 vs
+0.62-0.73), with both trees at RTF ~1.7 as machine load rose (the cause is inferred; load was not
+sampled). The generator close runs after the last chunk, so it cannot delay TTFB. dia output length
+is non-deterministic (one warm repeat), and load times are single samples. The `pocket_tts` and
+`fish_tts` mlx-gated backend tests also pass on the branch (6 and 7).

@@ -343,7 +343,9 @@ Extra voices are chosen **ahead of time by the operator** with the server env va
 `PIPECAT_TTS_PHONON_VOICES` (comma-separated catalog slugs, e.g.
 `zoey,juniper`; no CLI flag). Only listed voices are downloaded (one file
 each) and advertised; an unknown or unfetchable slug is warned about and skipped,
-and a client asking for a skipped voice gets `invalid_config`. For a launchd agent,
+and a client asking for a skipped voice gets `invalid_config`. A resolved voice file
+must be an absolute, existing `.safetensors` path (no `@`) or it is skipped the same
+way. For a launchd agent,
 export it when running `just tts-install phonon` (it is validated and baked into
 the plist). The catalog is 102 voices (en/fr/de/es/pt; the model is English, so
 non-English voices log a warning):

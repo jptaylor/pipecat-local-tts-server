@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PIPECAT_TTS_PHONON_VOICES` (server env, comma-separated catalog slugs): enables
   extra named voices (one file downloaded each; unknown/unfetchable slugs are
   skipped with a warning). Validated and baked into the launchd plist for `phonon`.
+  A resolved voice file must be an absolute, existing path ending in `.safetensors`
+  (no `@`); anything else is skipped with a warning.
 - `python -m tts_server voices [--backend phonon] [--language] [--json] [--refresh]`:
   lists the bundled 102-voice catalog (enabled/cached columns; `cached` is `?`/`null`
   without `huggingface_hub`); `--refresh` diffs the live `voices.jsonl`
@@ -51,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (415 passed, 2 skipped), every live smoke (`just smoke-*`, multiconn, reconnect) and an
   A/B `rtf_benchmark.py` run against 0.4.4 under identical conditions: no
   steady-state TTFB/RTF regression on any backend (see `scripts/profiling/README.md`).
+- Shared synthesis bridge (`_stream_util.py`): the worker now closes the synthesis
+  generator before releasing the Metal lock, so an upstream generator's cleanup (for
+  example `pocket_tts` restoring its sampling state) finishes before the next commit can
+  take the lock. Affects every bridged backend; previously this ran only after the lock
+  was released on a cancel.
 - `pocket_tts` extra now declares `requests` explicitly: mlx-audio 0.6.1's
   `pocket_tts` module imports it without declaring it.
 - Existing `uv.lock` environments need `uv sync` to pick up the new pin.
