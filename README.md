@@ -56,6 +56,10 @@ uv add "pipecat-local-tts-server[qwen3_tts]"
 # under the Fish Audio Research License — free for research/non-commercial
 # use, commercial use requires a separate agreement (business@fish.audio).
 uv add "pipecat-local-tts-server[fish_tts]"
+
+# Phonon backend — streaming:true, fast, English (Apple Silicon;
+# mlx-audio==0.6.1). The 31M weights, tokenizer and voices are Apache-2.0.
+uv add "pipecat-local-tts-server[phonon]"
 ```
 
 From source (development):
@@ -88,6 +92,10 @@ uv sync --extra qwen3_tts
 # <|speaker:N|> style control (Apple Silicon; mlx-audio==0.6.1). Weights are
 # under the Fish Audio Research License; see "Backends & licenses".
 uv sync --extra fish_tts
+
+# Phonon backend — streaming:true, fast, English (Apple Silicon; mlx-audio==0.6.1).
+# Apache-2.0 31M weights/tokenizer/voices; see "Backends & licenses".
+uv sync --extra phonon
 
 # the reference Pipecat adapter example (pulls the Pipecat framework)
 uv sync --extra examples
@@ -131,6 +139,7 @@ and `scripts/install_tts_agent.sh` resolve each backend to this canonical map:
 | dia | `pipecat.tts-server.dia` | 9065 |
 | qwen3_tts | `pipecat.tts-server.qwen3_tts` | 9165 |
 | fish_tts | `pipecat.tts-server.fish_tts` | 9265 |
+| phonon | `pipecat.tts-server.phonon` | 9365 |
 
 ```sh
 # install + start the kokoro agent on 127.0.0.1:8765 (runs at login, KeepAlive)
@@ -182,6 +191,7 @@ Endpoint precedence (server and client both): **URI > socket > host+port**. The
 | `TTS_WS_DEFAULT_SOCKET` | client | Explicit fallback socket for `status` when nothing else is set. |
 | `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer token the server requires (optional auth). |
 | `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to advertise after installing their extra G2P package. See [Kokoro language support](#kokoro-language-support-advertised--synthesizable). |
+| `PIPECAT_TTS_PHONON_VOICES` | server | Comma-separated Phonon catalog slugs (e.g. `zoey,juniper`) to advertise + download; `default` is always advertised. Unknown/unfetchable slugs are warned and skipped. Baked into the plist for the `phonon` backend only. |
 | `TTS_WS_PING_INTERVAL` | server | Keepalive ping period in seconds (default `20`). A disable token (`none`/`off`/`disable`/`disabled` or any zero) disables pings. |
 | `TTS_WS_PING_TIMEOUT` | server | Seconds to wait for a pong before closing (default `120`). A disable token (`none`/`off`/`disable`/`disabled` or any zero) disables the timeout (keeps pings, never closes on a slow pong — reintroduces the idle-leak below). |
 
@@ -268,6 +278,7 @@ Operators are responsible for honouring each model's license.
 | `dia` | `dia` | `false` | mlx-community/Dia-1.6B-fp16 | Apache-2.0 (commercial-safe) |
 | `qwen3_tts` | `qwen3_tts` | `true` | mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 | apache-2.0 (HF card tag; no LICENSE file in the repo) |
 | `fish_tts` | `fish_tts` | `false` | mlx-community/fish-audio-s2-pro | **Fish Audio Research License (non-commercial; commercial requires separate agreement)** |
+| `phonon` | `phonon` | `true` | gradium/phonon-31m-en | Apache-2.0 (weights, tokenizer and voices; commercial use allowed) |
 
 > **Kokoro is the default commercial-safe backend.** `voxtral_tts` weights are
 > **CC-BY-NC** — do not use them in a commercial deployment. `pocket_tts`
@@ -280,6 +291,71 @@ Operators are responsible for honouring each model's license.
 > revocable — **no commercial rights are granted** without a separate written
 > license agreement from Fish Audio (contact: `business@fish.audio`). See
 > *fish_tts capabilities* below.
+
+> **Phonon**: the model card for `gradium/phonon-31m-en` states the weights,
+> tokenizer and voices are released under Apache-2.0, which allows commercial
+> use. The larger `gradium/phonon-40m-*` siblings are **CC-BY-NC-4.0 and gated**
+> (their Hugging Face card metadata as of 2026-10-21, recorded in the Phonon dev plan's
+> Phase 0 findings; re-check the cards before relying on it); they are not supported
+> here (the backend targets the 31M English model only).
+
+### Phonon capabilities and voice selection
+
+`phonon` is `streaming:true`, 24 kHz, `languages: ["en"]`, `max_text_chars: 2000`,
+with `default` (the model's own shipped voice) always advertised; `voice_count` is
+`default` plus the enabled voices that resolved (1 when `PIPECAT_TTS_PHONON_VOICES` is
+unset). Latency/RTF: see the Phonon section of `scripts/profiling/README.md`.
+
+**Keep sentences short.** mlx-audio generates per sentence and never splits inside
+one, and the model ends a sentence chunk at about 45 s of audio. Rather than return a
+clipped response as a clean completion, the server fails it: a run-on sentence of ~200+
+words ends in `response.failed` (`BACKEND_ERROR`, with the generic client message
+"backend synthesis failed"; the "a sentence chunk hit the model's ~45 s limit" detail is
+in the server log only), after the first ~45 s of audio has already streamed. Measured 2026-10-22 on the
+full-precision weights (default voice), one-sentence run-ons of 100 / 160 / 200 / 400 words
+returned 24.8 / 36.6 / 45.1 / 45.1 s of audio, so roughly 160 words fit (approximate; it
+depends on the words). Punctuated text is unaffected: in the Phase 0 gate
+(`tests/smoke/phonon_phase0_gate.py`, recorded in the Phonon dev plan's findings) a
+2008-character, 376-word commit returned the full 112.4 s.
+`max_text_chars` does not guard this, so chunk text at sentence boundaries. The guard is
+on only for the pinned model revision (the default repo id and the `phonon` / `phonon-q8` /
+`phonon-q4` aliases). It starts OFF, with a warning, for an unpinned `--model` (another
+repo id or a local path), for a pinned repo or revision without a measured ceiling, and
+when the installed mlx-audio lacks the chunk method; the ~45 s ceiling was measured only
+on the pinned weights, so such a model can still return a clipped sentence as a clean
+completion.
+
+**Quantized weights.** `--model` also accepts three aliases: `phonon` (the pinned
+`gradium/phonon-31m-en`, full precision, same as the default), `phonon-q8` and
+`phonon-q4`. The quantized aliases convert the same pinned snapshot once (about a
+second) and load the result. This lowers memory, disk and load time only; TTFB and RTF
+are unchanged. The quality of `phonon-q4` has not been judged by ear; full precision
+stays the default. The converted weights are cached under
+`$XDG_CACHE_HOME/pipecat-tts-server/phonon/` (default `~/.cache/...`), keyed by pin,
+bit width and mlx-audio version, so a pin or mlx-audio change re-converts. The server
+reports the alias you passed as its `model`.
+
+```sh
+uv run python -m tts_server serve --backend phonon --model phonon-q8
+```
+
+Extra voices are chosen **ahead of time by the operator** with the server env var
+`PIPECAT_TTS_PHONON_VOICES` (comma-separated catalog slugs, e.g.
+`zoey,juniper`; no CLI flag). Only listed voices are downloaded (one file
+each) and advertised; an unknown or unfetchable slug is warned about and skipped,
+and a client asking for a skipped voice gets `invalid_config`. A resolved voice file
+must be an absolute, existing `.safetensors` path (no `@`) or it is skipped the same
+way. For a launchd agent,
+export it when running `just tts-install phonon` (it is validated and baked into
+the plist). The catalog is 102 voices (en/fr/de/es/pt; the model is English, so
+non-English voices log a warning):
+
+```sh
+uv run python -m tts_server voices                  # slug, lang, enabled, cached (? = unknown, no huggingface_hub)
+uv run python -m tts_server voices --language en
+uv run python -m tts_server voices --refresh        # diff live voices.jsonl (added/removed/changed, duplicate/invalid slugs); changes nothing
+PIPECAT_TTS_PHONON_VOICES=zoey,juniper just smoke-phonon
+```
 
 ### Voxtral TTS capabilities (as shipped)
 
@@ -364,8 +440,8 @@ seconds for a full turn, bounded by `drain_timeout_seconds`), so the *next*
 commit can't start synthesizing until then. To free the lock sooner for
 back-to-back commits, **chunk at sentence/newline boundaries** — incremental
 commits also shorten the first-segment generate that dominates TTFB. The
-server's hard guarantee is "no more audio after `response.cancelled`". (See the
-dev plan's *Phase 3 live smoke run* for the measured RTF / per-segment latency.)
+server's hard guarantee is "no more audio after `response.cancelled`". (See
+`scripts/profiling/README.md` for the measured RTF / per-segment latency.)
 
 ### Qwen3-TTS capabilities (as shipped)
 

@@ -73,6 +73,12 @@ def make_backend(name: str, model: str | None = None) -> TTSBackend:
         from .fish_tts import DEFAULT_FISH_MODEL, FishBackend
 
         return FishBackend(model=model or DEFAULT_FISH_MODEL)
+    if name == "phonon":
+        # Lazy import (same invariant): ``phonon.py`` imports ``mlx_audio`` /
+        # ``huggingface_hub`` only inside its seams, called from ``start()``.
+        from .phonon import DEFAULT_PHONON_MODEL, PhononBackend
+
+        return PhononBackend(model=model or DEFAULT_PHONON_MODEL)
     # ``ValueError`` (not ``SystemExit``): this is a library-level resolver also
     # callable outside the CLI, so it must not terminate the process. The CLI
     # entry point (``__main__._cmd_serve``) translates it to a clean ``exit(2)``.

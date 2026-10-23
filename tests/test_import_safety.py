@@ -47,6 +47,10 @@ _TTS_MODULES = [
     # stdlib-only (``inspect``-based), so it must import cleanly on the lean
     # base too, from the commit that introduces it.
     "tts_server.backends._introspect_util",
+    # phonon.py + phonon_voices.py must import with only the lean base —
+    # ``mlx_audio`` / ``huggingface_hub`` stay lazy inside the seams (Phase 1).
+    "tts_server.backends.phonon",
+    "tts_server.backends.phonon_voices",
 ]
 
 # Top-level package names that must NEVER appear in ``sys.modules`` as a side

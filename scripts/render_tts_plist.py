@@ -53,8 +53,8 @@ DEFAULT_LABEL = "pipecat.tts-server"
 # legitimate path characters and must not be rejected.
 _ABSPATH_RE = re.compile(r"^/[^\x00-\x1f]+$")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9._/\-]+$")
-# The seven shipped backends (see the justfile _resolve map + README port table).
-_BACKEND_RE = re.compile(r"^(tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts|fish_tts)$")
+# The eight shipped backends (see the justfile _resolve map + README port table).
+_BACKEND_RE = re.compile(r"^(tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts|fish_tts|phonon)$")
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
 # A bare hostname / IP literal. Allows loopback names and IPv4/IPv6 literals;
 # the loopback-vs-remote auth decision is made by ``is_loopback_host``, not this
@@ -63,6 +63,11 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9._:\-]+$")
 # PIPECAT_TTS_KOKORO_EXTRA_LANGS — a comma-separated list of ISO codes (e.g.
 # ``ja,zh``). Validated before being baked into the plist's EnvironmentVariables.
 _EXTRA_LANGS_RE = re.compile(r"^[A-Za-z]{2,8}(,[A-Za-z]{2,8})*$")
+# PIPECAT_TTS_PHONON_VOICES — comma-separated Phonon catalog slugs (lowercase
+# alphanumerics + ``_``, e.g. ``zoey,juniper``). Strict allowlist like the
+# Kokoro one; the backend soft-skips unknown slugs, so this only blocks hostile /
+# malformed values (spaces, URLs, path separators) before they reach the plist.
+_PHONON_VOICES_RE = re.compile(r"^[a-z0-9_]{1,64}(,[a-z0-9_]{1,64}){0,127}$")
 # TTS_WS_PING_INTERVAL / TTS_WS_PING_TIMEOUT — websocket keepalive knobs the server
 # reads via ``tts_server.__main__._resolve_keepalive``. Accept a disable token or a
 # bounded positive number; the server re-validates, so this allowlist is
@@ -199,7 +204,7 @@ def main() -> None:
         "BACKEND",
         os.environ.get("BACKEND"),
         _BACKEND_RE,
-        "tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts|fish_tts",
+        "tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts|fish_tts|phonon",
     )
     host = _require("HOST", os.environ.get("HOST"), _HOST_RE, "hostname or IP literal")
     port_raw = _require("PORT", os.environ.get("PORT"), re.compile(r"^[0-9]+$"), "integer")
@@ -263,6 +268,26 @@ def main() -> None:
             )
             sys.exit(2)
         extra_env["PIPECAT_TTS_KOKORO_EXTRA_LANGS"] = extra_langs
+
+    # Phonon voice set: baked only when the backend is ``phonon`` (the other
+    # backends never read it); on any other backend it is ignored with a warning.
+    phonon_voices = os.environ.get("PIPECAT_TTS_PHONON_VOICES")
+    if phonon_voices:
+        if backend != "phonon":
+            print(
+                f"warning: PIPECAT_TTS_PHONON_VOICES is ignored for backend {backend!r} "
+                "(only the phonon backend reads it).",
+                file=sys.stderr,
+            )
+        elif not _PHONON_VOICES_RE.match(phonon_voices):
+            print(
+                f"error: PIPECAT_TTS_PHONON_VOICES={phonon_voices!r} rejected by "
+                "allowlist (comma-separated catalog slugs, e.g. zoey,juniper)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        else:
+            extra_env["PIPECAT_TTS_PHONON_VOICES"] = phonon_voices
 
     # Websocket keepalive overrides. Baked under the SAME names the server reads
     # (not a PIPECAT_TTS_* alias), so the launchd process env drives

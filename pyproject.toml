@@ -147,6 +147,14 @@ qwen3_tts = ["websockets>=13.0", "mlx-audio==0.6.1"]
 # commercially. The package ships only runtime; weights download on first
 # ``serve``.
 fish_tts = ["websockets>=13.0", "mlx-audio==0.6.1"]
+# Full server install with the Phonon (Gradium ``phonon-31m-en``) backend — a
+# ``streaming:true`` model served through mlx-audio 0.6.1's ``pocket_tts``
+# module. Loads a PINNED model revision (HF HEAD's ``gradium_phonon_tts``
+# model_type is unsupported by 0.6.1). ``requests`` is undeclared by 0.6.1's
+# ``pocket_tts/utils.py`` (same as the pocket_tts extra). ``huggingface_hub`` is
+# imported directly (lazily, in ``start()``) for the revision-pinned snapshot and
+# per-voice downloads; the offline-cache behaviour relied on is a 2.x behaviour.
+phonon = ["websockets>=13.0", "mlx-audio==0.6.1", "requests", "huggingface_hub>=2.0"]
 # Reference Pipecat-framework adapter (``examples/pipecat_tts_service.py``).
 # This is for running the *example*, not the server itself — it pulls the
 # Pipecat framework (and ``client`` for ``tts_server.client``). It is NOT a

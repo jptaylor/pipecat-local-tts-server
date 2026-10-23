@@ -49,13 +49,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" && "$BACKEND" != "pocket_tts" && "$BACKEND" != "dia" && "$BACKEND" != "qwen3_tts" && "$BACKEND" != "fish_tts" ]]; then
-  echo "--backend must be tone, kokoro, voxtral_tts, pocket_tts, dia, qwen3_tts, or fish_tts (got '$BACKEND')" >&2; exit 2
+if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" && "$BACKEND" != "pocket_tts" && "$BACKEND" != "dia" && "$BACKEND" != "qwen3_tts" && "$BACKEND" != "fish_tts" && "$BACKEND" != "phonon" ]]; then
+  echo "--backend must be tone, kokoro, voxtral_tts, pocket_tts, dia, qwen3_tts, fish_tts, or phonon (got '$BACKEND')" >&2; exit 2
 fi
 # mlx-backed backends need a longer first-call timeout (model load/JIT/first-run
 # download); tone is fast.
 IS_MLX=0
-[[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" || "$BACKEND" == "dia" || "$BACKEND" == "qwen3_tts" || "$BACKEND" == "fish_tts" ]] && IS_MLX=1
+[[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" || "$BACKEND" == "dia" || "$BACKEND" == "qwen3_tts" || "$BACKEND" == "fish_tts" || "$BACKEND" == "phonon" ]] && IS_MLX=1
 [[ -z "$TIMEOUT" ]] && { [[ "$IS_MLX" -eq 1 ]] && TIMEOUT=180 || TIMEOUT=30; }
 
 # --- locate repo + run dir --------------------------------------------------
@@ -209,6 +209,14 @@ elif [[ "$BACKEND" == "dia" ]]; then
   # dia_dialogue_smoke.py instead (see dev plan Phase 3 live smoke run).
   verify "dia/dialogue" "$RUN_DIR/dia.wav" \
     --text "[S1] The quick brown fox jumps over the lazy dog. [S2] Indeed it does."
+elif [[ "$BACKEND" == "phonon" ]]; then
+  # phonon is streaming:true and fast (RTF<<1, 24 kHz). Rate assertion + WAV
+  # round-trip + cadence. Default voice (omitted) exercises the voice=None path
+  # (the model's own shipped voice). Measured numbers: scripts/profiling/README.md.
+  rate_check 24000
+  verify "phonon/default" "$RUN_DIR/phonon.wav" \
+    --text "The quick brown fox jumps over the lazy dog."
+  latency_check --ttfb-bound 3.0
 elif [[ "$BACKEND" == "fish_tts" ]]; then
   # fish_tts is a streaming:false backend (voice_count:0, voice/language both
   # structurally discarded). Structural WAV round-trip + an explicit assertion

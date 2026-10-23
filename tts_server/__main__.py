@@ -10,6 +10,10 @@ Subcommands (mirrors the sibling ``stt_server``):
   depth, exit 0 on success or 1 on failure (a preflight health probe). Useful for
   launchd keepalive scripts and humans checking "is my server up?" without
   writing a client.
+- ``voices`` — list a backend's bundled voice catalog (``phonon`` only for now):
+  slug, language, whether it is enabled via ``PIPECAT_TTS_PHONON_VOICES``, and
+  whether its file is already in the local HF cache. ``--refresh`` diffs the live
+  ``voices.jsonl`` against the bundled table and changes nothing.
 """
 
 from __future__ import annotations
@@ -66,6 +70,10 @@ def _resolve_model(backend: str, model: str | None) -> str | None:
         from .backends.fish_tts import DEFAULT_FISH_MODEL
 
         return DEFAULT_FISH_MODEL
+    if backend == "phonon":
+        from .backends.phonon import DEFAULT_PHONON_MODEL
+
+        return DEFAULT_PHONON_MODEL
     return None
 
 
@@ -358,8 +366,50 @@ def _cmd_status(args: argparse.Namespace) -> None:
         print(f"  pid: {pid}")
 
 
+def _cmd_voices(args: argparse.Namespace) -> None:
+    """``voices`` subcommand: list (and optionally ``--refresh``-diff) the catalog.
+
+    Formatting only; the catalog logic lives in ``backends.phonon`` (lean at module
+    load — it imports ``huggingface_hub`` only inside its download seam) and the
+    stdlib-only ``backends.phonon_voices`` (the drift diff)."""
+    if args.backend != "phonon":
+        print(f"tts_server: no voice catalog for backend {args.backend!r}", file=sys.stderr)
+        raise SystemExit(2)
+    from .backends import phonon, phonon_voices
+
+    rows = phonon.voice_catalog_rows()
+    if args.language:
+        rows = [r for r in rows if r["language"] == args.language]
+    if args.json:
+        print(json.dumps(rows))
+    else:
+        print(f"{'slug':<28} {'lang':<5} {'enabled':<8} cached")
+        for r in rows:
+            print(
+                f"{r['slug']:<28} {r['language']:<5} "
+                f"{'yes' if r['enabled'] else 'no':<8} "
+                f"{'?' if r['cached'] is None else 'yes' if r['cached'] else 'no'}"
+            )
+    if args.refresh:
+        try:
+            drift = phonon_voices.voice_catalog_drift(phonon.fetch_live_voice_catalog())
+        except Exception as e:
+            print(f"tts_server: --refresh failed: {e}", file=sys.stderr)
+            raise SystemExit(1)
+        out = sys.stderr if args.json else sys.stdout
+        print(
+            "refresh: "
+            + ", ".join(f"{len(items)} {label}" for label, items in drift.items())
+            + " vs the bundled catalog (nothing modified)",
+            file=out,
+        )
+        for label, items in drift.items():
+            for item in items:
+                print(f"  {label}: {item}", file=out)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Construct the ``tts_server`` argument parser (serve + status subcommands).
+    """Construct the ``tts_server`` argument parser (serve + status + voices subcommands).
 
     Extracted from ``main()`` so tests can assert the ``--backend`` choices tuple
     accepts a wired backend and rejects an unknown one — the choices half of the
@@ -372,7 +422,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_endpoint_flags(p_serve)
     p_serve.add_argument(
         "--backend",
-        choices=("tone", "kokoro", "voxtral_tts", "pocket_tts", "dia", "qwen3_tts", "fish_tts"),
+        choices=(
+            "tone",
+            "kokoro",
+            "voxtral_tts",
+            "pocket_tts",
+            "dia",
+            "qwen3_tts",
+            "fish_tts",
+            "phonon",
+        ),
         default="tone",
     )
     # Default None so ``_resolve_model`` applies a backend-aware fallback
@@ -389,6 +448,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout", type=float, default=3.0, help="overall probe timeout in seconds"
     )
     p_status.add_argument("--json", action="store_true", help="emit raw JSON instead of text")
+
+    p_voices = subparsers.add_parser(
+        "voices", help="list a backend's bundled voice catalog (phonon only)"
+    )
+    p_voices.add_argument("--backend", default="phonon")
+    p_voices.add_argument("--language", default=None, help="filter by language code (e.g. en)")
+    p_voices.add_argument("--json", action="store_true", help="emit JSON rows")
+    p_voices.add_argument(
+        "--refresh",
+        action="store_true",
+        help="diff the live voices.jsonl against the bundled table (changes nothing)",
+    )
     return parser
 
 
@@ -399,7 +470,7 @@ def main() -> None:
     # ``-h``/``--help`` is NOT reinterpreted as a serve flag.
     argv = sys.argv[1:]
     top_level_help = argv and argv[0] in {"-h", "--help"}
-    if argv and not argv[0].startswith("-") and argv[0] in {"serve", "status"}:
+    if argv and not argv[0].startswith("-") and argv[0] in {"serve", "status", "voices"}:
         sub, rest = argv[0], argv[1:]
     elif top_level_help:
         sub, rest = None, argv
@@ -415,6 +486,8 @@ def main() -> None:
     args = parser.parse_args([sub, *rest])
     if args.cmd == "status":
         _cmd_status(args)
+    elif args.cmd == "voices":
+        _cmd_voices(args)
     else:
         _cmd_serve(args)
 

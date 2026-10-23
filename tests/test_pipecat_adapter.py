@@ -502,3 +502,59 @@ async def test_update_sample_rate_raises_if_private_field_removed():
     del svc._sample_rate
     with pytest.raises(RuntimeError, match="_sample_rate"):
         svc._update_sample_rate(24000)
+
+
+# --- e2e smoke verdict: errors pushed UPSTREAM must fail the run --------------
+# ``tests/smoke/pipecat_adapter_e2e.py`` needs a live phonon server, so CI cannot
+# run it; this drives its pipeline harness with a stand-in TTS processor instead.
+
+
+def _load_e2e_smoke():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parent / "smoke" / "pipecat_adapter_e2e.py"
+    spec = importlib.util.spec_from_file_location("pipecat_adapter_e2e", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("fail_on_utterance", [None, 1])
+async def test_e2e_smoke_fails_on_upstream_error_after_audio(fail_on_utterance, capsys):
+    """Regression (gauntlet r1 #7): the smoke's error check sat on a sink
+    DOWNSTREAM of the TTS service, but pipecat 1.4.0 ``TTSService`` pushes an
+    ``ErrorFrame`` UPSTREAM (``push_error_frame``). A warm utterance that
+    streamed fast 24 kHz audio and then failed therefore passed. The stand-in
+    pushes its error the same way; ``None`` is the clean control."""
+    from pipecat.frames.frames import Frame, TTSSpeakFrame
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+    smoke = _load_e2e_smoke()
+
+    class _AudioThenErrorTTS(FrameProcessor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.n = 0
+
+        async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+            await super().process_frame(frame, direction)
+            if not isinstance(frame, TTSSpeakFrame):
+                await self.push_frame(frame, direction)
+                return
+            await self.push_frame(TTSStartedFrame())
+            await self.push_frame(
+                TTSAudioRawFrame(audio=b"\x00\x00" * 240, sample_rate=24000, num_channels=1)
+            )
+            if self.n == fail_on_utterance:
+                await self.push_error_frame(ErrorFrame(error="tts_server response.failed"))
+            self.n += 1
+            await self.push_frame(TTSStoppedFrame())
+
+    code = await smoke._run_pipeline(_AudioThenErrorTTS(), timeout=10.0)
+    out = capsys.readouterr().out
+    if fail_on_utterance is None:
+        assert code == 0, out
+    else:
+        assert code == 1, out
+        assert "error frames" in out and "response.failed" in out

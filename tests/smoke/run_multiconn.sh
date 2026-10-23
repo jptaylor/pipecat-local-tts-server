@@ -6,7 +6,7 @@
 # commit (429/BUSY guard). See tests/smoke/README.md.
 #
 # Usage:
-#   tests/smoke/run_multiconn.sh [--backend tone|kokoro] [--connections N]
+#   tests/smoke/run_multiconn.sh [--backend tone|kokoro|voxtral_tts|pocket_tts|qwen3_tts|fish_tts|phonon] [--connections N]
 #                                [--turns N] [--keep] [-- <driver args>]
 #
 # Defaults to the tone backend: the concurrency/backpressure machinery lives in
@@ -42,8 +42,8 @@ trap cleanup EXIT
 
 # A plain `uv run` re-syncs and strips the kokoro extra mid-run; pin --no-sync.
 UV_RUN=(uv run)
-if [[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" || "$BACKEND" == "dia" || "$BACKEND" == "qwen3_tts" || "$BACKEND" == "fish_tts" ]]; then
-  # The extra name matches the backend name (kokoro / voxtral_tts / pocket_tts / dia / qwen3_tts / fish_tts).
+if [[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" || "$BACKEND" == "dia" || "$BACKEND" == "qwen3_tts" || "$BACKEND" == "fish_tts" || "$BACKEND" == "phonon" ]]; then
+  # The extra name matches the backend name (kokoro / voxtral_tts / pocket_tts / dia / qwen3_tts / fish_tts / phonon).
   if ! uv run --no-sync python -c "import mlx_audio" 2>/dev/null; then
     echo "$BACKEND extra not installed — running 'uv sync --extra $BACKEND'..."
     uv sync --extra "$BACKEND" >/dev/null

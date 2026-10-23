@@ -288,6 +288,65 @@ def test_main_rejects_malformed_extra_langs(tmp_path):
     assert not plist_dst.exists()
 
 
+def test_main_bakes_phonon_voices_into_plist(tmp_path):
+    """PIPECAT_TTS_PHONON_VOICES survives into the agent for the phonon backend."""
+    proc, plist_dst = _run_main(
+        tmp_path,
+        {"BACKEND": "phonon", "PORT": "9365", "PIPECAT_TTS_PHONON_VOICES": "alba,elodie_rose"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    plist = plistlib.loads(plist_dst.read_bytes())
+    assert plist["EnvironmentVariables"]["PIPECAT_TTS_PHONON_VOICES"] == "alba,elodie_rose"
+    args = plist["ProgramArguments"]
+    assert args[args.index("--backend") + 1] == "phonon"
+    assert args[args.index("--port") + 1] == "9365"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["alba;rm -rf /", "Alba", "alba elodie", "https://x/y", "a/b", ",alba", "alba,", "a" * 65],
+)
+def test_main_rejects_malformed_phonon_voices(tmp_path, bad):
+    proc, plist_dst = _run_main(tmp_path, {"BACKEND": "phonon", "PIPECAT_TTS_PHONON_VOICES": bad})
+    assert proc.returncode == 2
+    assert "PIPECAT_TTS_PHONON_VOICES" in proc.stderr
+    assert not plist_dst.exists()
+
+
+def test_main_rejects_too_many_phonon_voices(tmp_path):
+    many = ",".join(f"v{i}" for i in range(129))
+    proc, _ = _run_main(tmp_path, {"BACKEND": "phonon", "PIPECAT_TTS_PHONON_VOICES": many})
+    assert proc.returncode == 2
+
+
+@pytest.mark.parametrize("backend", ["kokoro", "tone"])
+def test_main_ignores_phonon_voices_on_other_backends_with_warning(tmp_path, backend):
+    # A well-formed value is ignored off-phonon with a warning (malformed: next test).
+    proc, plist_dst = _run_main(
+        tmp_path, {"BACKEND": backend, "PIPECAT_TTS_PHONON_VOICES": "alba,elodie_rose"}
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "PIPECAT_TTS_PHONON_VOICES" in proc.stderr and "ignored" in proc.stderr
+    plist = plistlib.loads(plist_dst.read_bytes())
+    assert "PIPECAT_TTS_PHONON_VOICES" not in plist["EnvironmentVariables"]
+
+
+@pytest.mark.parametrize("backend", ["kokoro", "tone"])
+def test_main_ignores_malformed_phonon_voices_on_other_backends(tmp_path, backend):
+    # Off-phonon the value is never validated: ignored with a warning, not rejected.
+    proc, plist_dst = _run_main(
+        tmp_path, {"BACKEND": backend, "PIPECAT_TTS_PHONON_VOICES": "alba;rm -rf /"}
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "PIPECAT_TTS_PHONON_VOICES" in proc.stderr and "ignored" in proc.stderr
+    plist = plistlib.loads(plist_dst.read_bytes())
+    assert "PIPECAT_TTS_PHONON_VOICES" not in plist["EnvironmentVariables"]
+
+
+def test_phonon_backend_accepted_by_renderer_allowlist():
+    assert render_tts_plist._BACKEND_RE.match("phonon")
+
+
 def test_main_bakes_ws_ping_overrides_into_plist(tmp_path):
     """TTS_WS_PING_* survive into the agent under the SAME names the server reads,
     so ``_resolve_keepalive`` sees them from the launchd process env."""
@@ -330,3 +389,8 @@ def test_main_rejects_malformed_ws_ping(tmp_path, bad):
     proc, plist_dst = _run_main(tmp_path, {"TTS_WS_PING_TIMEOUT": bad})
     assert proc.returncode == 2
     assert not plist_dst.exists()
+
+
+def test_phonon_quant_alias_model_renders_unchanged():
+    args = _render(backend="phonon", model="phonon-q8")["ProgramArguments"]
+    assert args[args.index("--model") + 1] == "phonon-q8"

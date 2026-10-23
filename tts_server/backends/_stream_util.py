@@ -21,6 +21,10 @@ Invariants (R3 / Streaming-bridge spec / Architecture & Call Flow):
   ``asyncio.run_coroutine_threadsafe(queue.put(pcm), loop).result(timeout=...)``.
 - ``cancel`` (a ``threading.Event``) breaks the generator out so a cancelled
   response does not pin the lock.
+- A generator left suspended (cancel / dead consumer / worker error) is
+  ``close()``d **before** the lock is released, so its ``finally`` (e.g.
+  mlx-audio pocket_tts restoring ``self.temp``) runs under the lock instead of
+  racing the next commit on the shared model.
 - **EOF is enqueued on generator exhaustion in a ``finally``**, never keyed off
   ``.is_final_chunk`` (Kokoro never sets that field; it is advisory only).
 
@@ -108,6 +112,28 @@ def _audio_to_pcm(result: Any) -> bytes:
     return float_to_pcm16(audio)
 
 
+def _close_generator(gen: Any) -> None:
+    """``close()`` a (possibly suspended) generator, never raising.
+
+    Called by the worker while it still holds the Metal lock. Breaking out of
+    ``for result in gen`` leaves ``gen`` suspended at its ``yield``; its
+    ``finally`` would otherwise run only when the worker frame dies — after the
+    lock release — so model state it restores (pocket_tts ``self.temp``) races
+    the next commit. A plain iterator without ``close`` (tests) is a no-op, as
+    is an exhausted generator. A ``close()`` that raises is logged, not
+    propagated: by then the consumer has stopped reading (or a worker error is
+    already recorded), and the lock release / EOF / ``worker_done`` must still
+    happen.
+    """
+    close = getattr(gen, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except BaseException:
+        logger.exception("tts_server: closing the synthesis generator failed")
+
+
 async def stream_generate(
     gen_factory: Callable[[], Iterator[Any]],
     *,
@@ -126,7 +152,8 @@ async def stream_generate(
     or error). On a worker error the exception is re-raised in the consumer.
 
     ``worker_done`` (if supplied) is **set as the worker's final act**, after the
-    Metal lock has been released and EOF enqueued. It lets a caller wait for the
+    generator has been closed (under the lock), the Metal lock has been released
+    and EOF enqueued. It lets a caller wait for the
     worker to fully exit — and thus the process-wide lock to be free — even on the
     cancel path where the consumer stops reading early (the async generator is
     abandoned and its ``finally`` may not run until GC). ``worker_done`` set
@@ -195,6 +222,7 @@ async def stream_generate(
             if metal_lock.acquire(timeout=_PUT_TIMEOUT_SECONDS):
                 acquired = True
                 break
+        gen: Iterator[Any] | None = None
         try:
             # Re-check AFTER acquiring: ``cancel`` may have fired in the window
             # between the final poll and the lock being handed over. Skip
@@ -214,6 +242,11 @@ async def stream_generate(
             error_box["error"] = exc
             logger.exception("tts_server: synthesis worker failed")
         finally:
+            # Close the generator while the lock is STILL held, so its cleanup
+            # (``finally`` restoring shared model state) finishes before the
+            # next commit can acquire the lock. Only if it was created.
+            if gen is not None:
+                _close_generator(gen)
             # GPU/Metal work is finished once the generator is drained or broke
             # out; release the lock BEFORE the EOF enqueue so a slow consumer
             # cannot extend the lock hold and stall other connections' synthesis.

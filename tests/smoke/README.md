@@ -83,11 +83,13 @@ just smoke-voxtral_tts
 just smoke-pocket_tts
 just smoke-qwen3_tts
 just smoke-fish_tts
+just smoke-phonon
 just smoke-multiconn
 just smoke-multiconn-voxtral_tts          # concurrency against voxtral
 just smoke-multiconn-pocket_tts --turns 3 # concurrency against pocket (fast backend)
 just smoke-multiconn-qwen3_tts --turns 3  # concurrency against qwen3 (fast backend, RTF≈0.25×)
 just smoke-multiconn-fish_tts --turns 3   # concurrency against fish_tts (non-streaming, RTF≈1.6-1.7×)
+just smoke-multiconn-phonon               # concurrency against phonon (fast streaming backend, RTF≈0.04×)
 ```
 
 ## Multi-connection / backpressure (`run_multiconn.sh` + `multiconn_smoke.py`)
@@ -181,6 +183,7 @@ returned before the kill vs. after.
 ```sh
 just smoke-reconnect                              # tone (fast)
 tests/smoke/run_reconnect.sh --backend kokoro     # real voice samples
+uv run --extra phonon python tests/smoke/reconnect_smoke.py --backend phonon
 ```
 
 Design notes:
@@ -222,3 +225,36 @@ backends land — **Phase 5a `voxtral_tts`** and **Phase 5b `pocket_tts`**, both
 
 Tracked as checkboxes under Phase 5b in
 `docs/dev_plans/20260624-feature-tts-server-v1.md`.
+
+## Phonon server-level checks (named voice, barge-in, disconnect, adapter)
+
+Both scripts start their **own** phonon server on a `mktemp` socket (never the
+canonical operator socket) and tear it down. They need the `phonon` extra and a
+cached or reachable HF model.
+
+```sh
+# named voice + voice validation + barge-in + abrupt disconnect, through the real server
+uv run --extra phonon python tests/smoke/phonon_cancel_smoke.py [--voice zoey]
+
+# reference Pipecat adapter inside a real pipeline (default voice, warm utterance)
+uv run --extra examples --extra phonon python tests/smoke/pipecat_adapter_e2e.py
+```
+
+- `phonon_cancel_smoke.py` starts the server with
+  `PIPECAT_TTS_PHONON_VOICES=<english slug>,<typo'd slug>` and asserts: `server.status`
+  voices == `["default", <slug>]` (the typo is skipped, server stays up); audio for the
+  named voice; `invalid_config` for `voice="hf://x"` and for the typo'd slug; barge-in
+  (`response.cancel` mid-stream gives `response.cancelled`, zero deltas in the 0.5 s after
+  it, then a follow-up commit returns full audio, for the default and the named voice); and
+  an abrupt client-side disconnect (transport abort on the Unix socket, after the victim's
+  first delta) mid-generate followed by full audio on a fresh connection.
+- `pipecat_adapter_e2e.py` drives `examples/pipecat_tts_service.py` in a Pipecat
+  pipeline with the default voice and asserts on the **second** (warm) utterance: 24 kHz,
+  at least one audio frame, first-frame TTFB < 0.1 s. The first utterance only has to
+  succeed; named voices are not asserted against the 0.1 s bound.
+- `latency_smoke.py` also prints `max_gap`, the largest inter-delta arrival gap.
+- `phonon_quant_probe.py` is not a server check: it loads each weight variant of the
+  pinned snapshot in its own subprocess (no server, no socket) and records load time,
+  peak memory, TTFB and RTF for the default voice and Zoey. Results are in the Phonon
+  section of `scripts/profiling/README.md`.
+  `uv run --extra pocket_tts python tests/smoke/phonon_quant_probe.py --out-dir <dir>`

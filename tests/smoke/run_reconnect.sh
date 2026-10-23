@@ -6,7 +6,7 @@
 # audio returned before the kill vs. after. See tests/smoke/README.md.
 #
 # Usage:
-#   tests/smoke/run_reconnect.sh [--backend tone|kokoro] [--keep] [-- <driver args>]
+#   tests/smoke/run_reconnect.sh [--backend tone|kokoro|phonon] [--keep] [-- <driver args>]
 #
 # Defaults to tone (fast; the stale-socket reclaim is backend-agnostic). Run with
 # --backend kokoro to verify real voice samples survive the restart, and to catch
@@ -30,10 +30,11 @@ cd "$REPO_ROOT"
 
 # A plain `uv run` re-syncs and strips the kokoro extra mid-run; pin --no-sync.
 UV_RUN=(uv run)
-if [[ "$BACKEND" == "kokoro" ]]; then
+if [[ "$BACKEND" == "kokoro" || "$BACKEND" == "phonon" ]]; then
+  # The extra name matches the backend name (kokoro / phonon).
   if ! uv run --no-sync python -c "import mlx_audio" 2>/dev/null; then
-    echo "kokoro extra not installed — running 'uv sync --extra kokoro'..."
-    uv sync --extra kokoro >/dev/null
+    echo "$BACKEND extra not installed — running 'uv sync --extra $BACKEND'..."
+    uv sync --extra "$BACKEND" >/dev/null
   fi
   UV_RUN=(uv run --no-sync)
 fi

@@ -13,10 +13,11 @@
 #
 # Environment overrides:
 #   PIPECAT_TTS_LABEL    launchd label / plist filename (default: pipecat.tts-server)
-#   PIPECAT_TTS_BACKEND  backend name: tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts|fish_tts (default: tone)
+#   PIPECAT_TTS_BACKEND  backend name: tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts|fish_tts|phonon (default: tone)
 #   PIPECAT_TTS_HOST     loopback host to bind (default: 127.0.0.1)
 #   PIPECAT_TTS_PORT     TCP port to bind (default: 8665 — the tone agent port)
-#   PIPECAT_TTS_MODEL    model id (optional; backend-aware fallback applies when unset)
+#   PIPECAT_TTS_MODEL    model id (optional; backend-aware fallback applies when unset;
+#                        phonon also takes the aliases phonon|phonon-q8|phonon-q4)
 #   PIPECAT_TTS_AUTH_TOKEN_FILE  path to a file with the bearer token (REQUIRED for a
 #                        non-loopback host — the renderer is fail-closed). This is the
 #                        ONLY supported way to give a launchd agent auth: launchd does
@@ -25,6 +26,9 @@
 #                        renderer rejects an install where it is set without the file.
 #   PIPECAT_TTS_KOKORO_EXTRA_LANGS  comma-separated ISO codes (e.g. ja,zh); baked into
 #                        the agent's plist EnvironmentVariables so it survives launchd.
+#   PIPECAT_TTS_PHONON_VOICES  comma-separated Phonon catalog slugs (e.g. zoey,juniper);
+#                        baked into the plist (phonon backend only; ignored with a
+#                        warning otherwise). List with: python -m tts_server voices
 #   TTS_WS_PING_INTERVAL / TTS_WS_PING_TIMEOUT  websocket keepalive overrides (seconds);
 #                        baked into the plist EnvironmentVariables so they survive
 #                        launchd. Unset → the server's 120s pong-timeout default applies.
@@ -67,7 +71,7 @@ render_plist() {
     # renderer subprocess; the command word "$PYTHON" uses the parent shell's
     # (identical) value, so SC2097/SC2098 are false positives here.
     #
-    # PIPECAT_TTS_AUTH_TOKEN / PIPECAT_TTS_KOKORO_EXTRA_LANGS / TTS_WS_PING_* are
+    # PIPECAT_TTS_AUTH_TOKEN / PIPECAT_TTS_KOKORO_EXTRA_LANGS / PIPECAT_TTS_PHONON_VOICES / TTS_WS_PING_* are
     # forwarded explicitly (not left to implicit inheritance) so the renderer's
     # silent-drop guard + EnvironmentVariables pass-through act on the operator's
     # actual env.
@@ -78,6 +82,7 @@ render_plist() {
         PLIST_DST="$PLIST_DST" PIPECAT_TTS_LABEL="$LABEL" \
         PIPECAT_TTS_AUTH_TOKEN="${PIPECAT_TTS_AUTH_TOKEN:-}" \
         PIPECAT_TTS_KOKORO_EXTRA_LANGS="${PIPECAT_TTS_KOKORO_EXTRA_LANGS:-}" \
+        PIPECAT_TTS_PHONON_VOICES="${PIPECAT_TTS_PHONON_VOICES:-}" \
         TTS_WS_PING_INTERVAL="${TTS_WS_PING_INTERVAL:-}" \
         TTS_WS_PING_TIMEOUT="${TTS_WS_PING_TIMEOUT:-}" \
         "$PYTHON" "$RENDER_PY"

@@ -25,6 +25,8 @@ Usage:
   uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --save-audio /tmp/fish_samples
   # inline [tag] variant (prepended to every phrase's text):
   uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --prepend "[excited] "
+  # phonon (streaming, fast; extra: phonon):
+  uv run --extra phonon python scripts/profiling/rtf_benchmark.py --backend phonon
   # extras-kwarg variant (any backend's advertised extras, e.g. fish's instruct):
   uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --extras '{"instruct": "excited sports commentary"}'
 """

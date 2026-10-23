@@ -166,6 +166,68 @@ def test_resolve_fish_tts_exits_zero_with_canonical_port():
     assert port == 9265
 
 
+@_skip_no_just
+def test_resolve_phonon_exits_zero_with_canonical_port():
+    """``phonon`` is wired into the resolver map at port 9365 (next +100 step
+    after fish_tts's 9265)."""
+    label, host, port = _resolve_fields("phonon")
+    assert label == "pipecat.tts-server.phonon"
+    assert host == "127.0.0.1"
+    assert port == 9365
+
+
+def test_readme_port_table_lists_phonon_9365():
+    assert _readme_port_table()["phonon"] == ("pipecat.tts-server.phonon", 9365)
+
+
+def test_phonon_is_in_argparse_and_renderer():
+    assert "phonon" in _argparse_backends()
+    assert _load_renderer()._BACKEND_RE.match("phonon")
+
+
+def _alternation(text: str, anchor: str) -> set[str]:
+    """Backend names from the first ``a|b|c`` run that follows ``anchor``."""
+    tail = text[text.index(anchor) :]
+    m = re.search(r"[a-z0-9_]+(?:\|[a-z0-9_]+)+", tail)
+    assert m, f"no alternation after {anchor!r}"
+    return set(m.group(0).split("|"))
+
+
+def test_justfile_case_alternations_cover_exactly_the_argparse_backends():
+    """The ``tts-status`` case-arm backend alternation equals the argparse set."""
+    text = JUSTFILE.read_text()
+    assert _alternation(text, 'case "$target" in') == _argparse_backends()
+
+
+def test_renderer_error_hint_lists_exactly_the_argparse_backends():
+    """The renderer's human-readable ``tone|kokoro|...`` hint can't drift."""
+    text = RENDER_SCRIPT.read_text()
+    hint = _alternation(text, '"BACKEND"')
+    assert hint == _argparse_backends()
+
+
+@pytest.mark.parametrize("script", ["run_smoke.sh", "run_multiconn.sh"])
+def test_smoke_scripts_enumerate_every_backend(script):
+    """Every ``--backend`` choice is named in the smoke script's backend gate
+    (so ``just smoke-<b>`` / ``smoke-multiconn-<b>`` is not rejected)."""
+    text = (REPO_ROOT / "tests" / "smoke" / script).read_text()
+    for b in _argparse_backends() - {"tone"}:
+        assert f'"$BACKEND" == "{b}"' in text, f"{script} does not mention backend {b!r}"
+    assert '"$BACKEND" == "phonon"' in text
+
+
+def test_justfile_has_phonon_smoke_recipes():
+    text = JUSTFILE.read_text()
+    assert re.search(
+        r"^smoke-phonon \*args:\n\s+tests/smoke/run_smoke.sh --backend phonon", text, re.M
+    )
+    assert re.search(
+        r"^smoke-multiconn-phonon \*args:\n\s+tests/smoke/run_multiconn.sh --backend phonon",
+        text,
+        re.M,
+    )
+
+
 # ---------------------------------------------------------------------------
 # _plist_endpoint: tts-list reads the live endpoint (and auth token) from the
 # agent's own plist, so a secured agent is probed WITH its token instead of

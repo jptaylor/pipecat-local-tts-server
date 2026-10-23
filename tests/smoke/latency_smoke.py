@@ -95,11 +95,12 @@ async def _run(args: argparse.Namespace) -> int:
     ttfb = delta_ts[0] - t_commit
     span = delta_ts[-1] - delta_ts[0]
     total = done_ts - t_commit
+    max_gap = max((b - a for a, b in zip(delta_ts, delta_ts[1:], strict=False)), default=0.0)
     audio_s = (total_bytes / 2) / rate  # int16 mono
     rtf = total / audio_s if audio_s else float("nan")
     print(
         f"measured: deltas={len(delta_ts)} ttfb={ttfb:.3f}s span={span:.3f}s "
-        f"total={total:.3f}s audio={audio_s:.2f}s rtf={rtf:.3f}"
+        f"total={total:.3f}s audio={audio_s:.2f}s rtf={rtf:.3f} max_gap={max_gap:.3f}s"
     )
 
     # 1. streamed, not one shot.

@@ -611,3 +611,94 @@ its per-audio-second RTF is comparable, and its cold-start warmup is variable
 for the same reason; qwen3_tts cold start roughly doubled (2.4 -> 4.5 s) — a
 single cold sample each, unexplained, watch it if launchd start-up time matters.
 
+## phonon (gradium/phonon-31m-en) harness numbers (M4 Max, mlx-audio 0.6.1, 2026-10-22)
+
+Measured with this repo's `rtf_benchmark.py --backend phonon` (in-process) and the
+server-level `just smoke-phonon` (`latency_smoke.py`), warm HF cache, pinned revision
+`52433c46975bfa13144c56204c9f4ee1c5b148aa`. Contention caveat: an `stt_server`
+(nemotron) and a `pocket_tts` launchd agent were running but **idle (0% CPU)** during
+every run, so these are not pristine-GPU numbers; they are also **not** under active
+STT load. A separate pair of `rtf_benchmark` runs was made while Onoats (its own
+python process, ~22-33% CPU) transcribed a live 4-participant call: warm TTFB 0.02 s,
+RTF 0.04, unchanged from the idle-STT numbers. Onoats' CPU was not sampled during
+those runs, so that "active" state rests on the operator's word; the spike's own
+contention numbers were not re-read for comparison.
+
+```sh
+uv run --extra phonon python scripts/profiling/rtf_benchmark.py --backend phonon
+PIPECAT_TTS_PHONON_VOICES=zoey uv run --extra phonon python scripts/profiling/rtf_benchmark.py --backend phonon --voice zoey
+```
+
+| case | cold start | TTFB (warm) | RTF (warm) |
+|---|---|---|---|
+| default voice | 0.6 s | 0.01-0.02 s | 0.04 |
+| named voice (`zoey`, English) | 0.6 s | 0.02 s | 0.04 |
+
+Cold start is `start()` (load + warmup) with the weights already cached; a first-ever
+run also downloads the model (~103 MB). Warm wall time is 0.12 s for a 3.4 s phrase and
+0.20 s for a 5.5 s phrase; first-call-per-phrase TTFB was 0.02-0.03 s. No named-voice
+TTFB penalty was observed (voice file local).
+
+### Quantized aliases (`phonon-q8`, `phonon-q4`)
+
+Compare the weight variants with the same benchmark:
+
+```sh
+for m in phonon phonon-q8 phonon-q4; do
+  uv run --extra phonon python scripts/profiling/rtf_benchmark.py --backend phonon --model $m
+done
+```
+
+Measured on an M4 Max with mlx-audio 0.6.1 by `tests/smoke/phonon_quant_probe.py`
+(not by `rtf_benchmark.py`); TTFB/RTF were identical across variants. To reproduce
+(usage line from the probe's docstring):
+
+```sh
+uv run --extra pocket_tts python tests/smoke/phonon_quant_probe.py --out-dir <dir>
+```
+
+| weights | peak memory | load | on-disk weights |
+|---|---|---|---|
+| fp (`phonon`) | 369 MB | 0.43 s | 103 MB |
+| `phonon-q8` | 284 MB | 0.04 s | 59.5 MB |
+| `phonon-q4` | 265 MB | 0.03 s | 41.1 MB |
+
+Server level (`latency_smoke.py`, default voice, one 4.9 s no-newline sentence over a
+UDS): `deltas=244 ttfb=0.021s span=0.187s total=0.208s rtf=0.043 max_gap=0.014s`.
+The adapter e2e (`pipecat_adapter_e2e.py`, default voice) measured first-audio-frame
+TTFB 0.045 s on the first utterance and 0.018 s on the warm second, at
+24000 Hz. Barge-in: `response.cancelled` arrived ~1.1-1.3 ms after `response.cancel`
+(default and named voice); a fresh commit after an abrupt mid-generate disconnect returned
+full audio.
+
+```sh
+just smoke-phonon                                                     # latency_smoke.py (server level)
+uv run --extra examples --extra phonon python tests/smoke/pipecat_adapter_e2e.py
+uv run --extra phonon python tests/smoke/phonon_cancel_smoke.py [--voice zoey]   # barge-in + abrupt disconnect
+```
+
+## Shared-bridge change A/B: `main` vs `feature/tts-phonon-backend` (2026-10-22)
+
+The phonon branch changed the shared bridge (`_stream_util`/`_bridge_stream`): the worker now
+`close()`s the synthesis generator under the Metal lock, before releasing it (affects every
+backend). `rtf_benchmark.py --warm 2` (`--warm 1` for dia), `main` @ `a3f1192` vs the branch,
+run sequentially and interleaved per backend on an M4 Max, mlx-audio 0.6.1. NOT pristine: an idle
+`stt_server`, a `pocket_tts` launchd agent and Onoats were running. `main`'s source was run inside
+the branch's venv (`PYTHONPATH`), so only `tts_server/` differs. Median over warm runs:
+
+| backend | load s main / branch | TTFB s main / branch | RTF main / branch |
+|---|---|---|---|
+| kokoro | 2.5 / 2.5 | 0.10 / 0.11 | 0.03 / 0.03 |
+| pocket_tts | 1.0 / 0.8 | 0.03 / 0.02 | 0.06 / 0.06 |
+| qwen3_tts | 4.7 / 3.8 | 0.12 / 0.12 | 0.26 / 0.26 |
+| fish_tts | 4.3 / 6.4 | 9.9 / 8.1 | 1.50 / 1.42 |
+| voxtral_tts | 2.7 / 3.6 | 0.41 / 0.50 | 1.17 / 1.33 |
+| dia | 24 / 26 | 24.9 / 22.8 | 2.15 / 2.35 |
+| phonon (branch only) | 0.9 | 0.02 | 0.05 |
+
+No regression. voxtral_tts read worse on the branch in the first pass; two reversed-order
+re-runs were indistinguishable (RTF 1.66-1.83 branch vs 1.62-1.94 main, TTFB 0.60-0.79 vs
+0.62-0.73), with both trees at RTF ~1.7 as machine load rose (the cause is inferred; load was not
+sampled). The generator close runs after the last chunk, so it cannot delay TTFB. dia output length
+is non-deterministic (one warm repeat), and load times are single samples. The `pocket_tts` and
+`fish_tts` mlx-gated backend tests also pass on the branch (6 and 7).

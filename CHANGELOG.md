@@ -5,7 +5,44 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0] - 2026-10-21
+## [0.6.0] - 2026-10-22
+
+### Added
+
+- **`phonon` backend** (extra `phonon`; `gradium/phonon-31m-en`, pinned revision,
+  streaming, 24 kHz, English). The 31M weights, tokenizer and voices are Apache-2.0
+  (model card); the 40M siblings are CC-BY-NC-4.0/gated per their Hugging Face card
+  metadata (checked 2026-10-21) and unsupported. Canonical
+  launchd port 9365, `just smoke-phonon` / `smoke-multiconn-phonon`.
+- Phonon fails a response whose sentence chunk reaches the model's ~45 s limit
+  (`response.failed`, `BACKEND_ERROR`) instead of reporting a clipped, clean completion;
+  checked per chunk via `_generate_audio_stream_short_text` (mlx-audio 0.6.1, pinned).
+  Only for the pinned model revision and its aliases; an unpinned repo or local path, a
+  pinned revision without a measured ceiling, or an mlx-audio without the chunk method
+  starts with the guard off and a warning (the ceiling is measured only for the pinned
+  model). Clients see the generic "backend synthesis failed"; the detail is logged.
+- Phonon quantized-weight aliases: `--model phonon-q8` / `phonon-q4` (and `phonon` for
+  the default fp weights). The pinned snapshot is converted once into
+  `$XDG_CACHE_HOME/pipecat-tts-server/phonon/` and loaded from there; saves
+  memory/disk/load time, TTFB/RTF unchanged. fp stays the default.
+- `PIPECAT_TTS_PHONON_VOICES` (server env, comma-separated catalog slugs): enables
+  extra named voices (one file downloaded each; unknown/unfetchable slugs are
+  skipped with a warning). Validated and baked into the launchd plist for `phonon`.
+  A resolved voice file must be an absolute, existing path ending in `.safetensors`
+  (no `@`); anything else is skipped with a warning.
+- `python -m tts_server voices [--backend phonon] [--language] [--json] [--refresh]`:
+  lists the bundled 102-voice catalog (enabled/cached columns; `cached` is `?`/`null`
+  without `huggingface_hub`); `--refresh` diffs the live `voices.jsonl`
+  (added/removed/changed, plus duplicate and invalid/reserved slugs) and changes nothing.
+- Measured on an M4 Max (warm cache, in-process `rtf_benchmark.py`): cold start 0.6 s,
+  warm TTFB 0.01-0.02 s, RTF 0.04 for the default voice and a named voice; server-level
+  TTFB 0.021 s with a 0.014 s max inter-delta gap; barge-in acknowledged in ~1 ms.
+  Re-run while a local STT app transcribed a live call: same TTFB/RTF (STT CPU not sampled
+  during the run). Details: `scripts/profiling/README.md`.
+- New smokes: `tests/smoke/phonon_cancel_smoke.py` (named voice, voice validation,
+  barge-in, abrupt disconnect) and `tests/smoke/pipecat_adapter_e2e.py` (reference
+  adapter in a real pipeline); `latency_smoke.py` prints `max_gap`; `reconnect_smoke.py`
+  accepts `--backend phonon`.
 
 ### Changed
 
@@ -16,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (415 passed, 2 skipped), every live smoke (`just smoke-*`, multiconn, reconnect) and an
   A/B `rtf_benchmark.py` run against 0.4.4 under identical conditions: no
   steady-state TTFB/RTF regression on any backend (see `scripts/profiling/README.md`).
+- Shared synthesis bridge (`_stream_util.py`): the worker now closes the synthesis
+  generator before releasing the Metal lock, so an upstream generator's cleanup (for
+  example `pocket_tts` restoring its sampling state) finishes before the next commit can
+  take the lock. Affects every bridged backend; previously this ran only after the lock
+  was released on a cancel.
 - `pocket_tts` extra now declares `requests` explicitly: mlx-audio 0.6.1's
   `pocket_tts` module imports it without declaring it.
 - Existing `uv.lock` environments need `uv sync` to pick up the new pin.
@@ -375,7 +417,9 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.1.0...v0.2.0
