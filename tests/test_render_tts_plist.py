@@ -430,3 +430,19 @@ def test_main_rejects_trailing_newline_in_every_validated_value(tmp_path, var, v
     assert bad.returncode == 2, bad.stderr
     assert "rejected by allowlist" in bad.stderr
     assert not bad_dst.exists()
+
+
+def test_main_rejects_trailing_newline_in_plist_dst(tmp_path):
+    """``PLIST_DST`` goes through the same ``_require`` allowlist, but ``_run_main``
+    pins it to its own path, so the parametrized test above cannot cover it."""
+    dst = tmp_path / "custom.plist"
+    ok, _ = _run_main(tmp_path, {"PLIST_DST": str(dst)})
+    assert ok.returncode == 0, ok.stderr
+    assert dst.exists()
+    dst.unlink()
+
+    bad, _ = _run_main(tmp_path, {"PLIST_DST": str(dst) + "\n"})
+    assert bad.returncode == 2, bad.stderr
+    assert "rejected by allowlist" in bad.stderr
+    assert not dst.exists()
+    assert not Path(str(dst) + "\n").exists()

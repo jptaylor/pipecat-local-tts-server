@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Changed
 
 - Reference Pipecat adapter retries a commit rejected with `busy`, honouring the
   server's `retry_after_ms` (+ up to 25% jitter), up to `busy_retries` (default 3)

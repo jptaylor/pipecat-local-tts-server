@@ -136,7 +136,9 @@ class LocalTTSService(TTSService):
         # also emit an explicit TTSStoppedFrame per response.audio.done so the
         # downstream knows the utterance ended even between commits.
         super().__init__(sample_rate=sample_rate, **kwargs)
-        if busy_retries < 0 or busy_retry_budget_s < 0:
+        # ``not (x >= 0)`` (not ``x < 0``) so a NaN budget is rejected, not silently
+        # accepted as "no time bound".
+        if not (busy_retries >= 0 and busy_retry_budget_s >= 0):
             raise ValueError("busy_retries and busy_retry_budget_s must be >= 0")
         # ``busy`` (synthesis backlog full) is a pre-admission rejection: the server
         # leaves our appended text buffered, so a retry re-sends only the commit.
@@ -352,7 +354,15 @@ class LocalTTSService(TTSService):
         if err.get("code", ev.get("code")) != P.ErrorCode.BUSY:
             return None
         hint = ev.get("retry_after_ms", err.get("retry_after_ms"))
-        if isinstance(hint, bool) or not isinstance(hint, int | float) or hint < 0:
+        # ``0 <= hint <= budget`` also rejects NaN (``hint < 0`` let it through, and
+        # ``asyncio.sleep(nan)`` returns at once), inf, and ints too large to convert to
+        # float (``hint / 1000.0`` would raise OverflowError); a hint over the whole
+        # budget could never be honoured anyway.
+        if (
+            isinstance(hint, bool)
+            or not isinstance(hint, int | float)
+            or not 0 <= hint <= self._busy_retry_budget_s * 1000.0
+        ):
             return None
         delay = hint / 1000.0 * (1.0 + random.uniform(0.0, 0.25))
         if waited_s + delay > self._busy_retry_budget_s:

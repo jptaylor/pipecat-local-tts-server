@@ -484,6 +484,26 @@ def test_sweep_survives_missing_parent_and_unreadable_entries(tmp_path, monkeypa
     assert stale.exists()
 
 
+def test_sweep_skips_an_entry_that_vanishes_mid_scan_and_continues(tmp_path, monkeypatch):
+    """An entry another process renames/removes between ``scandir`` and ``stat``
+    (a concurrent convert finishing) raises OSError for that entry only."""
+    root = tmp_path / "phonon"
+    day = 24 * 3600.0
+    raced = _plant(root, ".a.tmp-1-2", day)
+    other = _plant(root, ".b.tmp-3-4", day)
+    real = PH._newest_mtime
+
+    def flaky(path: str) -> float:
+        if path.endswith(".a.tmp-1-2"):
+            raise FileNotFoundError(path)
+        return real(path)
+
+    monkeypatch.setattr(PH, "_newest_mtime", flaky)
+    PH._sweep_stale_tmp(root)
+    assert raced.exists()  # unreadable entry left alone, not an error
+    assert not other.exists()  # and the scan carried on to the next one
+
+
 def test_quantized_dir_key_tracks_version(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     monkeypatch.setattr(PH, "_mlx_audio_version", lambda: "1.0")

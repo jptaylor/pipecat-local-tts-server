@@ -555,11 +555,58 @@ async def test_cancel_during_busy_wait_cancels_and_clears():
     assert client.clears == 1, "uncommitted text must not leak into the next utterance"
 
 
-def test_busy_retry_params_reject_negative_values():
+@pytest.mark.parametrize(
+    "hint",
+    [-1, True, "250", float("nan"), float("inf"), 10**400],
+    ids=["negative", "bool", "str", "nan", "inf", "huge-int"],
+)
+async def test_unusable_busy_hint_is_not_retried(hint):
+    """A hint that is not a finite, non-negative number within the budget must fall
+    back to clear-and-error, never sleep on it (NaN would return at once; a huge int
+    would raise OverflowError out of ``run_tts``)."""
+    client = _CommitLog([_busy(hint)])
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert any(isinstance(f, ErrorFrame) for f in frames)
+    assert len(client.commit_ids) == 1
+    assert client.clears == 1
+
+
+class _FailRetryCommit(_CommitLog):
+    """The first commit goes out; the re-sent one fails (connection dropped during
+    the wait)."""
+
+    async def commit(self, *, event_id: str | None = None, **kwargs) -> None:
+        if self.commit_ids:
+            self.commit_ids.append(event_id)
+            raise ConnectionError("socket closed")
+        await super().commit(event_id=event_id, **kwargs)
+
+
+async def test_busy_retry_commit_send_failure_clears_and_errors():
+    client = _FailRetryCommit([_busy(10)])
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    errors = [f for f in frames if isinstance(f, ErrorFrame)]
+    assert len(errors) == 1 and "commit failed" in errors[0].error
+    assert isinstance(frames[-1], TTSStoppedFrame)
+    assert len(client.commit_ids) == 2
+    assert client.clears == 1 and client.cancels == []
+
+
+def test_busy_retry_params_reject_negative_or_nan_values():
     with pytest.raises(ValueError):
         _service(busy_retries=-1)
     with pytest.raises(ValueError):
         _service(busy_retry_budget_s=-0.1)
+    with pytest.raises(ValueError):
+        _service(busy_retry_budget_s=float("nan"))
 
 
 async def test_cancel_before_commit_clears_dirty_buffer():
