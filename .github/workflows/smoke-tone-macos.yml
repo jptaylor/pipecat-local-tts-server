@@ -1,0 +1,29 @@
+name: smoke-tone-macos
+
+# Throwaway repro: does the tone backend serve PCM on a headless GitHub macOS
+# runner (no audio device)? Runs only on this branch; delete once answered.
+on:
+  push:
+    branches: [fix/phonon-followups]
+    paths: [.github/workflows/smoke-tone-macos.yml]
+
+jobs:
+  smoke-tone:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install just
+        run: brew install just
+      - name: Runner audio devices (informational)
+        run: system_profiler SPAudioDataType || true
+      - name: Smoke (tone backend, isolated socket)
+        run: just smoke-tone
