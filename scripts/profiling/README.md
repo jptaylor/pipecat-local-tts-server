@@ -702,3 +702,28 @@ re-runs were indistinguishable (RTF 1.66-1.83 branch vs 1.62-1.94 main, TTFB 0.6
 sampled). The generator close runs after the last chunk, so it cannot delay TTFB. dia output length
 is non-deterministic (one warm repeat), and load times are single samples. The `pocket_tts` and
 `fish_tts` mlx-gated backend tests also pass on the branch (6 and 7).
+
+## Load + TTFB on `main` after the phonon merge (kokoro, pocket_tts, qwen3_tts, phonon; 2026-10-22)
+
+`rtf_benchmark.py --warm 3` per backend on `main` @ `7cf4358` (mlx-audio 0.6.1, M4 Max, weights
+cached), run sequentially. Load = `start()` (load + warmup). TTFB = median over 3 phrases x 3 warm
+repeats. NOT pristine: an idle `stt_server`, a `pocket_tts` launchd agent and Onoats (~2% CPU)
+were running.
+
+```sh
+for b in kokoro pocket_tts qwen3_tts phonon; do
+  uv run --extra "$b" python scripts/profiling/rtf_benchmark.py --backend "$b" --warm 3
+done
+```
+
+| backend | model | load | TTFB (warm median) | TTFB range |
+|---|---|---|---|---|
+| phonon | `gradium/phonon-31m-en` | **0.6 s** | **0.02 s** | 0.02-0.02 |
+| pocket_tts | `mlx-community/pocket-tts` | 0.8 s | **0.02 s** | 0.02-0.02 |
+| kokoro | `Kokoro-82M-bf16` | 3.2 s | 0.08 s | 0.04-0.13 |
+| qwen3_tts | `Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` | 3.0 s | 0.12 s | 0.11-0.12 |
+
+phonon and pocket_tts tie on TTFB and are the fastest to load. kokoro's range reflects the phrases:
+its 3-segment (newline) phrase streams the first segment at ~0.04 s, the single-sentence phrases at
+0.09-0.13 s. Load is a single sample per backend; compare with the earlier tables (qwen3_tts loaded in
+2.4-4.5 s across runs, so its 3.0 s here is inside that spread).
