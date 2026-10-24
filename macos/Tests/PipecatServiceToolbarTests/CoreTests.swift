@@ -1120,3 +1120,84 @@ final class Lines: @unchecked Sendable {
         _ = await next.value
     }
 }
+
+@Suite struct STTServerLifetimeTests {
+    /// Stop and release the server while a client is connected: the connection's
+    /// late callbacks (cancelled state, close completion) must not touch it.
+    @Test func connectionsOutliveAReleasedServer() async throws {
+        // A decode in flight keeps its session alive past stop().
+        var server: STTWebSocketServer? = STTWebSocketServer(identity: .init(name: "slow", model: nil)) { _, _ in
+            // Ignores cancellation, as a real decode can.
+            await withCheckedContinuation { done in DispatchQueue.global().asyncAfter(deadline: .now() + 0.6) { done.resume() } }
+            return "late"
+        }
+        let port = try await server!.start(port: 0)
+        let client = STTClient(port: port)
+        _ = try await client.connect()
+        let pending = Task { try? await client.transcribe(Data(count: 3200)) }
+        try await Task.sleep(for: .milliseconds(150))
+        weak let released = server
+        let queue = server!.queue
+        let gate = DispatchSemaphore(value: 0)
+        server?.stop()
+        // Hold the server queue so the connection's callbacks run after the release.
+        queue.async { gate.wait() }
+        server = nil
+        #expect(released == nil, "the test needs the server gone")
+        gate.signal()
+        try await Task.sleep(for: .milliseconds(1000))
+        _ = await pending.value
+        await client.close()
+    }
+
+    @Test func connectionsBeyondTheCapAreRefused() async throws {
+        let server = STTServerTests.fakeServer()
+        let port = try await server.start(port: 0)
+        defer { server.stop() }
+        var clients: [STTClient] = []
+        for _ in 0..<STTWebSocketServer.maxConnections {
+            let client = STTClient(port: port)
+            _ = try await client.connect()
+            clients.append(client)
+        }
+        let extra = STTClient(port: port)
+        await #expect(throws: (any Error).self) { _ = try await extra.connect() }
+        // A freed slot is usable again.
+        await clients.removeFirst().close()
+        try await Task.sleep(for: .milliseconds(200))
+        let again = STTClient(port: port)
+        _ = try await again.connect()
+        for client in clients + [again, extra] { await client.close() }
+    }
+
+    @Test func decodesRunOneAtATime() async throws {
+        let gauge = ConcurrencyGauge()
+        let server = STTWebSocketServer(identity: .init(name: "slow", model: nil)) { pcm, _ in
+            gauge.enter()
+            defer { gauge.leave() }
+            try await Task.sleep(for: .milliseconds(200))
+            return "heard \(pcm.count)"
+        }
+        let port = try await server.start(port: 0)
+        defer { server.stop() }
+        let a = STTClient(port: port)
+        let b = STTClient(port: port)
+        _ = try await a.connect()
+        _ = try await b.connect()
+        async let first = a.transcribe(Data(count: 3200))
+        async let second = b.transcribe(Data(count: 6400))
+        #expect(try await [first, second] == ["heard 3200", "heard 6400"])
+        #expect(gauge.peak == 1, "two transcriptions ran at once")
+        await a.close()
+        await b.close()
+    }
+}
+
+final class ConcurrencyGauge: @unchecked Sendable {
+    private let lock = NSLock()
+    private var now = 0
+    private var max = 0
+    func enter() { lock.withLock { now += 1; max = Swift.max(max, now) } }
+    func leave() { lock.withLock { now -= 1 } }
+    var peak: Int { lock.withLock { max } }
+}

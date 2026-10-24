@@ -9,7 +9,8 @@ import Network
 /// Commit-oriented like the reference server: binary (or base64) pcm16 at
 /// 16 kHz mono accumulates until `input_audio_buffer.commit`, then one delta and
 /// one completed event carry the transcript. Requests with an `Origin` header
-/// are refused, as in the Python servers.
+/// are refused, as in the Python servers. At most `maxConnections` clients are
+/// served at once, and their transcriptions run one at a time.
 public final class STTWebSocketServer: @unchecked Sendable {
     public typealias Transcriber = @Sendable (_ pcm16: Data, _ language: String?) async throws -> String
 
@@ -34,12 +35,16 @@ public final class STTWebSocketServer: @unchecked Sendable {
     }
 
     static let maxBufferBytes = 300 * 16000 * 2  // 300 s, as in the reference server
+    /// Bounds memory (each client may buffer `maxBufferBytes`) for this in-app server.
+    static let maxConnections = 8
 
     let identity: Identity
     let transcriber: Transcriber
     let queue = DispatchQueue(label: "ai.pipecat.toolbar.stt-server")
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: STTServerConnection] = [:]
+    /// The last transcription queued, server-wide: each waits for the one before.
+    private var lastDecode: Task<Void, Never>?
     /// Called on the server queue with human-readable log lines.
     public var onLog: (@Sendable (String) -> Void)?
 
@@ -65,6 +70,10 @@ public final class STTWebSocketServer: @unchecked Sendable {
         self.listener = listener
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return connection.cancel() }
+            guard self.connections.count < Self.maxConnections else {
+                self.onLog?("refused a connection: \(Self.maxConnections) clients already connected")
+                return connection.cancel()
+            }
             let session = STTServerConnection(connection: connection, server: self)
             self.connections[ObjectIdentifier(session)] = session
             session.start()
@@ -111,6 +120,17 @@ public final class STTWebSocketServer: @unchecked Sendable {
     func remove(_ session: STTServerConnection) {
         connections[ObjectIdentifier(session)] = nil
     }
+
+    /// Runs `work` after every transcription queued before it (on the server queue).
+    func serialize(_ work: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
+        let previous = lastDecode
+        let task = Task {
+            await previous?.value
+            await work()
+        }
+        lastDecode = task
+        return task
+    }
 }
 
 private final class OnceFlag: @unchecked Sendable {
@@ -125,9 +145,17 @@ private final class OnceFlag: @unchecked Sendable {
 }
 
 /// One client session. All state is confined to the server's queue.
+///
+/// A session can outlive its server (a decode in flight, a close completion,
+/// the connection's last state callback): it copies what it serves at init and
+/// holds the server weakly, so a late callback after `stop()` never touches a
+/// freed server.
 final class STTServerConnection: @unchecked Sendable {
     private let connection: NWConnection
-    unowned let server: STTWebSocketServer
+    private weak var server: STTWebSocketServer?
+    private let queue: DispatchQueue
+    private let identity: STTWebSocketServer.Identity
+    private let transcriber: STTWebSocketServer.Transcriber
     private let sessionID = "sess_" + STTServerConnection.hex()
     private var buffer = Data()
     private var language: String?
@@ -138,6 +166,9 @@ final class STTServerConnection: @unchecked Sendable {
     init(connection: NWConnection, server: STTWebSocketServer) {
         self.connection = connection
         self.server = server
+        queue = server.queue
+        identity = server.identity
+        transcriber = server.transcriber
     }
 
     static func hex() -> String { UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(16).description }
@@ -155,7 +186,7 @@ final class STTServerConnection: @unchecked Sendable {
                 break
             }
         }
-        connection.start(queue: server.queue)
+        connection.start(queue: queue)
     }
 
     func close() {
@@ -168,7 +199,7 @@ final class STTServerConnection: @unchecked Sendable {
     private func teardown() {
         closed = true
         decode?.cancel()
-        server.remove(self)
+        server?.remove(self)
     }
 
     // MARK: Receive
@@ -262,12 +293,16 @@ final class STTServerConnection: @unchecked Sendable {
         var committed: [String: Any] = ["type": "input_audio_buffer.committed", "event_id": event(), "item_id": item]
         if let clientEventID { committed["previous_event_id"] = clientEventID }
         send(committed)
-        let transcriber = server.transcriber
+        guard let server else { return }
+        let transcriber = transcriber
         let language = language
-        let queue = server.queue
+        let queue = queue
         let log = server.onLog
         let session = self
-        decode = Task {
+        decode = server.serialize {
+            guard !Task.isCancelled else {
+                return queue.async { session.decode = nil }
+            }
             let started = Date()
             let result: Result<String, Error>
             do { result = .success(try await transcriber(audio, language)) } catch { result = .failure(error) }
@@ -306,7 +341,7 @@ final class STTServerConnection: @unchecked Sendable {
         connection.send(
             content: nil,
             contentContext: NWConnection.ContentContext(identifier: "close", metadata: [NWProtocolWebSocket.Metadata(opcode: .close)]),
-            isComplete: true, completion: .contentProcessed { _ in session.server.queue.async { session.close() } })
+            isComplete: true, completion: .contentProcessed { _ in session.queue.async { session.close() } })
     }
 
     // MARK: Send
@@ -340,7 +375,7 @@ final class STTServerConnection: @unchecked Sendable {
     static func json(_ value: String?) -> Any { value.map { $0 as Any } ?? NSNull() }
 
     private func backendObject() -> [String: Any] {
-        ["name": server.identity.name, "model": Self.json(server.identity.model)]
+        ["name": identity.name, "model": Self.json(identity.model)]
     }
 
     private func audioObject() -> [String: Any] { ["format": "pcm16", "rate": 16000, "channels": 1] }
