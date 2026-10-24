@@ -5,7 +5,7 @@
 A native macOS menu bar app that downloads speech models (text to speech and
 speech to text) and serves each one on a fixed loopback port. Point a Pipecat
 app at the port and it uses the model with no cloud API. It has no Dock icon.
-Servers stop when the app quits, even if it crashes.
+Servers stop when the app quits, even if it crashes. Quitting also cancels running installs and downloads.
 
 ## Quickstart
 

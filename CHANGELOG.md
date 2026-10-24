@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server), Whisper and Kyutai (`moshi_mlx`), all on the `pipecat-local-stt-server` wire
   protocol. Running-only main menu, an Add Models catalog, copy URL / Pipecat service /
   env from a right-click menu, model deletion, and "Try it" for both directions.
+  Quitting also aborts in-flight installs and model downloads and waits for them to
+  stop; deleting a service with "Delete Everything" removes its model weights even
+  when its environment is outdated, and reports any it could not delete. An abandoned
+  Kyutai transcription releases the backend (cancelled per 80 ms frame).
   `just app-build` / `app-open` / `app-run` / `app-test`.
 
 ### Changed

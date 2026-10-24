@@ -251,7 +251,7 @@ macos/
   `<env>/bin/python -m tts_server prefetch --backend <b> --json` decoding the A2 event
   stream. Events: `phase(venv|install|prefetch)`, `log(line)`, `downloadStart`,
   `downloadProgress(downloaded,total?)`, `convert`, `done`. `checkModelCached` runs
-  `prefetch --check --json`. `remove` = `rm -rf envs/<b>` (HF cache untouched). Cancel =
+  `prefetch --check --json`. `remove` = `rm -rf envs/<b>` (HF cache untouched unless `deleteModel`, which also covers outdated environments and throws `RemovalError` for leftovers). Cancel =
   SIGTERM the current subprocess.
 - **`ServerProcess`** (actor): spawns `<env>/bin/python -m tts_server serve --backend b
   --host 127.0.0.1 --port P --supervised` with held stdin; waits for the `ready` JSON
@@ -300,7 +300,7 @@ the app via `--supervised`). UserDefaults only: last Try-it text, last voice per
 - `MenuBarExtra` with `.menuBarExtraStyle(.window)`, label `waveform.circle` /
   `waveform.circle.fill` when anything runs (hierarchical rendering).
 - `AppDelegate`: `NSApp.setActivationPolicy(.accessory)` (needed under `swift run`);
-  `applicationShouldTerminate` → `.terminateLater`, `shutdownAll`, then reply; same on
+  `applicationShouldTerminate` → `.terminateLater`, `shutdownAll` (servers plus `EnvironmentManager.shutdown()`, which aborts installs and waits for removals), then reply; same on
   `NSWorkspace.willPowerOffNotification`; refuse a second instance.
 - `RootView` 380 pt wide: header (name, "2 running · 3 installed"), provider list rows
   (status dot colours: grey/blue-pulsing/green/orange/red; name; licence capsule badge:
@@ -362,7 +362,7 @@ Swift / app:
 6. Port busy: start a listener on 8765 (or `just tts-install kokoro`), Start kokoro →
    message names pid/launchd label with copyable `launchctl print` command.
 7. `kill -9 <server pid>` → row shows crashed + Restart. Quit with servers running →
-   `pgrep -f "tts_server serve"` empty within 10 s; `kill -9` the app → servers exit on
-   stdin EOF.
+   `pgrep -f "tts_server serve"` empty within 10 s; quit mid-install → no `uv`/prefetch
+   process left; `kill -9` the app → servers exit on stdin EOF.
 8. Remove tone → `envs/tone` gone, row back to Not installed.
 9. `uv run pytest tests/test_justfile_recipes.py` still passes.

@@ -31,7 +31,7 @@ flowchart LR
 |---|---|---|
 | Catalog | `PipecatToolbarCore/Service.swift` | Each service's kind, runtime, port, model, licence and copy strings. |
 | Tools | `ToolLocator.swift` | Finds `uv`, the TTS wheel, the `uv.lock` constraints and the STT helper: bundle first, then `PIPECAT_TOOLBAR_*` overrides, then the repo checkout. |
-| Environments | `EnvironmentManager.swift` (actor) | Python, venvs, packages and model prefetch. Runs the offline cache checks and removal. Builds every command line by runtime. |
+| Environments | `EnvironmentManager.swift` (actor) | Python, venvs, packages and model prefetch. Runs the offline cache checks and removal (which also probes outdated environments, falls back to the model's folder under `AppPaths.huggingFaceHub()`, and throws `RemovalError` for model folders it cannot delete). Builds every command line by runtime. |
 | Processes | `Subprocess.swift` | `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL. |
 | Protocols | `TTSClient.swift`, `STTClient.swift`, `STTWebSocketServer.swift` | WebSocket clients for both wire protocols, plus a native stt-protocol server. |
 | State | `AppModel`, `ServiceModel` (`@MainActor @Observable`) | Per-service phase machine, page navigation, delete confirmation. |
@@ -92,7 +92,7 @@ Every Python server, and the native server, follows one contract.
    crashed, and the server shuts down as if sent SIGTERM. So servers never
    outlive the app.
 4. **Stop.** Stop sends SIGTERM and closes stdin, then sends SIGKILL after
-   10 s. Quitting the app stops all servers in parallel before it exits.
+   10 s. Quitting the app stops all servers in parallel and aborts any in-flight installs or model downloads (`EnvironmentManager.shutdown()`), waiting for them and for removals before it exits.
 
 `tts_server` implements this natively (`serve --supervised`,
 `tts_server/supervise.py`). The STT engines get it from the helper, which wraps
