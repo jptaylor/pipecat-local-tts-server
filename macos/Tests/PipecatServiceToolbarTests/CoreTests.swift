@@ -1244,14 +1244,19 @@ final class Lines: @unchecked Sendable {
         let manager = EnvironmentManager(
             paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
         let install = Task { try await manager.install(.tone).consume { _ in } }
-        let deadline = ContinuousClock.now + .seconds(5)
+        // Generous: the whole suite runs in parallel and spawns many processes.
+        let deadline = ContinuousClock.now + .seconds(30)
         while !FileManager.default.fileExists(atPath: started.path), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(FileManager.default.fileExists(atPath: started.path), "the install never reached the version probe")
         install.cancel()
         _ = await install.result
-        try await Task.sleep(for: .milliseconds(1200))  // the probe finishes and the marker is written
+        // The probe finishes (it ignores Cancel) and the marker is written.
+        let written = ContinuousClock.now + .seconds(15)
+        while EnvironmentMarker.read(paths.marker(.tone)) == nil, ContinuousClock.now < written {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         #expect(EnvironmentMarker.read(paths.marker(.tone)) != nil, "the probe did not get to write the marker")
         #expect(!manager.isRequested(.tone), "a cancelled fresh install reads as installed")
     }
