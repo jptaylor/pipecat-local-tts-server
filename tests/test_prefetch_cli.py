@@ -39,6 +39,35 @@ def _run(monkeypatch, capsys, *argv: str) -> tuple[int, list[dict], str]:
     return code, events, err
 
 
+class _StubTqdm:
+    """The slice of ``tqdm.tqdm`` that ``prefetch._progress_class`` subclasses."""
+
+    def __init__(self, iterable=None, desc=None, total=None, unit="it", **_kwargs):
+        self.iterable, self.desc, self.total, self.unit, self.n = iterable, desc, total, unit, 0
+
+    def update(self, n=1):
+        self.n += n
+        return True
+
+    def close(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _optional_hub_modules(monkeypatch):
+    """Let these tests run in the lean env (``--extra client``), which has no
+    ``tqdm``: stub it in ``sys.modules`` only when it is absent, so a full env
+    still exercises the real class. ``huggingface_hub`` itself is never needed —
+    every test stubs the ``_snapshot_download`` seam."""
+    import importlib.util
+    import types
+
+    if importlib.util.find_spec("tqdm") is None:
+        stub = types.ModuleType("tqdm")
+        stub.tqdm = _StubTqdm
+        monkeypatch.setitem(sys.modules, "tqdm", stub)
+
+
 @pytest.fixture
 def fake_hub(tmp_path, monkeypatch):
     """Stub the download seam. ``cached`` holds repo ids already "on disk"."""
