@@ -761,6 +761,50 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         #expect(!FileManager.default.fileExists(atPath: repo.path), "model weights survived removal")
     }
 
+    /// An environment whose `prefetch --check` prints `rows`, for removal tests.
+    static func checkingEnvironment(_ service: Service, _ paths: AppPaths, rows: [String]) throws {
+        let python = paths.python(service)
+        try FileManager.default.createDirectory(at: python.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let json = (rows + [#"{"event":"summary","cached":false,"size_bytes":8}"#]).joined(separator: "\n")
+        try "#!/bin/sh\ncat <<'EOF'\n\(json)\nEOF\n".write(to: python, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
+        try EnvironmentMarker(service: service.rawValue, fingerprint: "old.whl", python: "3.12.0", createdAt: Date())
+            .write(paths.marker(service))
+    }
+
+    /// Delete Everything removes every repo the check names, cached or partial
+    /// (a cancelled download, a missing codec), not only the cached ones.
+    @Test func removalDeletesPartiallyDownloadedRepos() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        let cached = paths.hubDir.appending(path: "models--org--weights")
+        let snapshot = cached.appending(path: "snapshots/abc")
+        let partial = paths.hubDir.appending(path: "models--org--codec")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: partial.appending(path: "blobs"), withIntermediateDirectories: true)
+        try Self.checkingEnvironment(.pocketTTS, paths, rows: [
+            #"{"event":"check","repo":"org/weights","path":"\#(snapshot.path)","cached":true}"#,
+            #"{"event":"check","repo":"org/codec","path":null,"cached":false}"#,
+        ])
+        try await manager.remove(.pocketTTS, deleteModel: true)
+        #expect(!FileManager.default.fileExists(atPath: cached.path))
+        #expect(!FileManager.default.fileExists(atPath: partial.path), "a partial repo survived Delete Everything")
+    }
+
+    /// A reported folder the deletion guard refuses is a failure, never a silent success.
+    @Test func aRefusedModelFolderIsReported() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        let outside = paths.supportDir.appending(path: "elsewhere/models--org--weights")
+        let snapshot = outside.appending(path: "snapshots/abc")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Self.checkingEnvironment(.pocketTTS, paths, rows: [
+            #"{"event":"check","path":"\#(snapshot.path)","cached":true}"#
+        ])
+        await #expect(throws: RemovalError.self) {
+            try await manager.remove(.pocketTTS, deleteModel: true)
+        }
+        #expect(FileManager.default.fileExists(atPath: outside.path), "a refused folder was deleted")
+    }
+
     @Test func modelFilesThatCannotBeDeletedAreReported() async throws {
         let (manager, paths) = try VariantTests.manager()
         let repo = paths.supportDir.appending(path: "hub/models--org--stuck")
@@ -1121,6 +1165,50 @@ final class Lines: @unchecked Sendable {
         // A cancelled install unwinds in the background: give it time to (wrongly) record.
         try await Task.sleep(for: .milliseconds(cancel ? 500 : 50))
         #expect(manager.isRequested(.phononQ8) == recorded)
+    }
+}
+
+@Suite struct FreshInstallCancelTests {
+    /// A fresh build cancelled during the Python version probe (which ignores
+    /// Cancel) wrote the environment marker but no variant: it must read as not
+    /// installed, not fall back to the pre-variant marker.
+    @Test func aFreshInstallCancelledDuringTheVersionProbeIsNotInstalled() async throws {
+        let paths = try InstallCancellationTests.paths()
+        let started = paths.supportDir.appending(path: "probing")
+        // The venv's python answers the version probe slowly; uv's steps succeed.
+        let python = paths.supportDir.appending(path: "python-src")
+        try "#!/bin/sh\ntouch '\(started.path)'\nsleep 1\necho 3.12.0\n".write(to: python, atomically: true, encoding: .utf8)
+        let uv = paths.supportDir.appending(path: "uv")
+        try """
+        #!/bin/sh
+        if [ "$1" = venv ]; then mkdir -p "$4/bin"; cp '\(python.path)' "$4/bin/python"; chmod 755 "$4/bin/python"; fi
+        exit 0
+
+        """.write(to: uv, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
+        let manager = EnvironmentManager(
+            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
+        let install = Task { try await manager.install(.tone).consume { _ in } }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !FileManager.default.fileExists(atPath: started.path), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(FileManager.default.fileExists(atPath: started.path), "the install never reached the version probe")
+        install.cancel()
+        _ = await install.result
+        try await Task.sleep(for: .milliseconds(1200))  // the probe finishes and the marker is written
+        #expect(EnvironmentMarker.read(paths.marker(.tone)) != nil, "the probe did not get to write the marker")
+        #expect(!manager.isRequested(.tone), "a cancelled fresh install reads as installed")
+    }
+
+    /// An environment from before variants (marker only, no `.variants/`) still
+    /// counts its builder as installed, and only its builder.
+    @Test func aPreVariantEnvironmentStillReadsAsInstalled() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        try await VariantTests.fakeEnvironment(.phononQ8, manager, paths)
+        #expect(!FileManager.default.fileExists(atPath: paths.variantsDir(.phonon).path))
+        #expect(manager.isRequested(.phononQ8))
+        #expect(!manager.isRequested(.phonon))
     }
 }
 

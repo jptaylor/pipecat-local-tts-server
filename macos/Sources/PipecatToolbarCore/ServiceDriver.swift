@@ -270,7 +270,10 @@ public final class ServiceDriver {
         case .shutdown: await shutdown()
         case .removeEnvironment(let deleteModel):
             guard let environment else { return }
+            // What the last check saw, for when the environment can no longer report it.
+            let hub = host?.servicePaths?.hubDir
             let known = (cache?.repoFolders ?? []) + (cache?.derivedFolders ?? [])
+                + (cache?.repoIDs ?? []).compactMap { repo in hub?.appending(path: EnvironmentManager.cacheFolderName(repo: repo)) }
             do {
                 try await environment.remove(service, deleteModel: deleteModel, knownFolders: known)
             } catch {

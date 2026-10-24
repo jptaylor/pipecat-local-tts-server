@@ -72,12 +72,15 @@ public struct ModelCacheStatus: Sendable, Equatable {
     public var repoFolders: [URL]
     /// Weights the server derived for this variant alone (Phonon's quantized copies).
     public var derivedFolders: [URL]
+    /// Every repo the check named, cached or not (a partial download still has a folder).
+    public var repoIDs: [String]
 
-    public init(cached: Bool, sizeBytes: Int64, repoFolders: [URL], derivedFolders: [URL] = []) {
+    public init(cached: Bool, sizeBytes: Int64, repoFolders: [URL], derivedFolders: [URL] = [], repoIDs: [String] = []) {
         self.cached = cached
         self.sizeBytes = sizeBytes
         self.repoFolders = repoFolders
         self.derivedFolders = derivedFolders
+        self.repoIDs = repoIDs
     }
 }
 
@@ -218,12 +221,14 @@ public actor EnvironmentManager {
     static func cacheStatus(checkOutput lines: [String]) -> ModelCacheStatus? {
         let events = lines.compactMap(ServerCLIEvent.parse)
         guard let summary = events.last(where: { $0.event == "summary" }) else { return nil }
-        let paths = events.filter { $0.event == "check" }.compactMap(\.path)
+        let checks = events.filter { $0.event == "check" }
+        let paths = checks.compactMap(\.path)
+        let repos = Array(Set(checks.compactMap(\.repo))).sorted()
         // A quantized Phonon variant also needs its converted copy of the weights.
         let derived = summary.quantized == true ? [summary.quantizedPath].compactMap { $0.map { URL(filePath: $0) } } : []
         return ModelCacheStatus(
             cached: (summary.cached ?? false) && summary.quantized != false, sizeBytes: summary.sizeBytes ?? 0,
-            repoFolders: Array(Set(paths.compactMap(Self.repoFolder(fromSnapshot:)))), derivedFolders: derived)
+            repoFolders: Array(Set(paths.compactMap(Self.repoFolder(fromSnapshot:)))), derivedFolders: derived, repoIDs: repos)
     }
 
     /// `.../hub/models--org--name/snapshots/<sha>` -> `.../hub/models--org--name`, if it looks like one.
@@ -263,6 +268,11 @@ public actor EnvironmentManager {
         // The backend directory, resolved, must be the root's own `<backend>`, not a link out of it.
         let root = canonicalPath(derived)
         return parent == (root == "/" ? "" : root) + "/" + backend ? folder : nil
+    }
+
+    /// Whether anything (a folder, a file or a link, even a dangling one) is at `url`.
+    static func exists(_ url: URL) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: url.standardizedFileURL.path)) != nil
     }
 
     static func isDeletableModelPath(_ url: URL, hub: URL, derived: URL) -> Bool {
@@ -394,6 +404,10 @@ public actor EnvironmentManager {
                         arguments: ["venv", "--python", Self.pythonVersion, envDir.path],
                         environment: env))
             }
+            // A new environment records its variants from the start, so it never
+            // falls back to the pre-variant marker: until the commit point below
+            // writes this variant, a cancelled build reads as not installed.
+            try FileManager.default.createDirectory(at: paths.variantsDir(backend), withIntermediateDirectories: true)
         }
 
         if installsPackages {
@@ -585,15 +599,22 @@ public actor EnvironmentManager {
         if deleteModel {
             // An outdated environment (after an app update) still reports where its
             // weights are; only fall back to the cached/derived folders if it can't.
-            var own = await modelCacheStatus(backend, includeOutdated: true).map { $0.repoFolders + $0.derivedFolders } ?? knownFolders
-            if own.isEmpty, let repo = backend.info.modelRepo {
-                own = [paths.hubDir.appending(path: Self.cacheFolderName(repo: repo))]
-            }
+            // Every repo the check names counts, cached or partial, and so does the
+            // service's model repo: a partial download is still gigabytes on disk.
+            let status = await modelCacheStatus(backend, includeOutdated: true)
+            let repos = (status?.repoIDs ?? []) + [backend.info.modelRepo].compactMap { $0 }
+            let own = (status.map { $0.repoFolders + $0.derivedFolders } ?? knownFolders)
+                + repos.map { paths.hubDir.appending(path: Self.cacheFolderName(repo: $0)) }
             var shared: [URL] = []
+            var sharedRepos = siblings.compactMap(\.info.modelRepo)
             for sibling in siblings {
-                shared += await modelCacheStatus(sibling, includeOutdated: true)?.repoFolders ?? []
+                let siblingStatus = await modelCacheStatus(sibling, includeOutdated: true)
+                shared += siblingStatus?.repoFolders ?? []
+                sharedRepos += siblingStatus?.repoIDs ?? []
             }
-            doomed = Self.unshared(own, siblingRepos: siblings.compactMap(\.info.modelRepo), siblingFolders: shared)
+            var seen = Set<String>()
+            doomed = Self.unshared(own, siblingRepos: sharedRepos, siblingFolders: shared)
+                .filter { seen.insert($0.standardizedFileURL.path).inserted }
         }
         if siblings.isEmpty {
             if fm.fileExists(atPath: paths.envDir(backend).path) {
@@ -604,10 +625,14 @@ public actor EnvironmentManager {
         }
         // Try every folder, then report the ones that stayed: a silent leftover
         // is multiple gigabytes the user thinks are gone.
+        // A folder the deletion guard refuses is reported too, never skipped.
         var failures: [String] = []
-        for case let folder? in doomed.map({ Self.deletionTarget($0, hub: paths.hubDir, derived: paths.derivedModelsDir) })
-        where fm.fileExists(atPath: folder.path)
-        {
+        for candidate in doomed {
+            guard let folder = Self.deletionTarget(candidate, hub: paths.hubDir, derived: paths.derivedModelsDir) else {
+                if Self.exists(candidate) { failures.append("\(candidate.path): outside the model caches, not deleted") }
+                continue
+            }
+            guard Self.exists(folder) else { continue }
             do { try fm.removeItem(at: folder) } catch { failures.append("\(folder.path): \(error.localizedDescription)") }
         }
         if !failures.isEmpty {
