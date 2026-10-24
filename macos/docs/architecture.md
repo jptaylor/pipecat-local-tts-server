@@ -10,7 +10,7 @@ covers how it fits together. For usage, see the [README](../README.md).
 flowchart LR
     subgraph App["Pipecat Service Toolbar (Swift)"]
         UI["SwiftUI panel<br/>Running / Add Models / Detail"]
-        AM["AppModel<br/>ServiceModel x11"]
+        AM["AppModel<br/>ServiceModel per service<br/>(adapter over ServiceDriver)"]
         EM["EnvironmentManager<br/>(uv)"]
         SUP["Subprocess<br/>(held stdin)"]
         AS["STTWebSocketServer<br/>+ AppleSpeech"]
@@ -34,15 +34,17 @@ flowchart LR
 | Environments | `EnvironmentManager.swift` (actor) | Python, venvs, packages and model prefetch. Runs the offline cache checks and removal (which also probes outdated environments, falls back to the model's folder under `AppPaths.hubDir`, and throws `RemovalError` for model folders it cannot delete). It deletes only `models--*` folders directly in `AppPaths.hubDir` and `<backend>/<key>` folders in `AppPaths.derivedModelsDir`, whatever paths the probe reports: every component above the folder must resolve, symlinks included, to exactly that root or `<root>/<backend>`, so a symlinked backend directory can't carry a deletion outside it. Builds every command line by runtime. |
 | Processes | `Subprocess.swift` | `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL to the child's process group. Its exit always resolves (`notLaunched` for a failed launch, or a `stop()` before `run()`, which refuses the launch), and `stop()` returns once no process of the group is left. |
 | Ports | `PortProbe.swift` | Whether a loopback port is free and, if not, who holds it (`lsof`, plus a loaded `pipecat.tts-server.<backend>` launchd agent): the "port busy" failure in the README's Problems section. |
-| Download sizes | `HubSizes.swift` | Approximate download size of a model repo from the public Hugging Face tree API, counting only the files mlx-audio fetches (shown in Add Models before install). |
+| Download sizes | `HubSizes.swift`, `ServiceCatalog.snapshots(for:)` | Approximate download size of a service from the public Hugging Face tree API (shown in Add Models before install): the sum over every snapshot its install fetches, each at its pinned revision and through its own file filter (mlx-audio's allow patterns, dia's codec patterns, pocket_tts's `embeddings/*.safetensors`, the STT helper's "all but docs"). The table sits in `Service.swift` next to the model repos; a lean drift test compares it with `prefetch_specs(model)`. `prefetch --check --json` can't be the source: its events carry no allow patterns, and it needs the installed environment the size is shown before. |
+| Lifecycle | `ServiceLifecycle.swift`, `ServiceDriver.swift` | The per-service state machine, UI-free. `ServiceLifecycle.reduce(state, event) -> [effect]` is pure and makes every phase change and guard (a ready, exit or ready timeout from a replaced server, or one after Stop or Delete, changes nothing; a requested exit only completes a Stop; an install ending during a removal leaves the phase to it; quit cancels only an Apple Speech install). `ServiceDriver` (`@MainActor @Observable`) runs the effects through injectable seams (`ServiceEnvironment` for `EnvironmentManager`, `ServerProcess` for `Subprocess`, `NativeSpeechServer`, the port probe, Apple Speech, the clock and the timeouts in `ServiceDependencies`) and holds the progress the UI shows. |
 | Protocols | `TTSClient.swift`, `STTClient.swift`, `STTWebSocketServer.swift`, `PCMStreamConverter.swift` | WebSocket clients for both wire protocols, plus a native stt-protocol server; `STTWire` is the one definition of the stt audio format. |
-| State | `AppModel`, `ServiceModel` (`@MainActor @Observable`) | Per-service phase machine, page navigation, delete confirmation. |
+| State | `AppModel`, `ServiceModel` (`@MainActor @Observable`) | Page navigation, delete confirmation. `ServiceModel` is a thin adapter over its `ServiceDriver`: it publishes the driver's state, forwards intents, and is the driver's `ServiceHost` (the environment manager, paths, Try it sessions, Apple Speech). |
 | Audio | `AudioPlayer`, `TryItSession`, `STTTryItSession`, `AppleSpeech` | TTS playback, microphone and sample capture, SpeechAnalyzer. |
 | Views | `PanelView`, `ServiceDetailView`, `Components`, `Brand` | Running list, catalog, detail page, right-click menu, catmark artwork. |
 
-`PipecatToolbarCore` has no UI. Unit tests and the opt-in end-to-end tests
-target it; `ServiceModelTests` also imports the app target (`@testable`) for
-`ServiceModel`'s exit and quit edges.
+`PipecatToolbarCore` has no UI. The test target depends on it alone: unit
+tests, the lifecycle tests (`ServiceLifecycleTests` on the reducer,
+`ServiceDriverTests` with a fake process and environment) and the opt-in
+end-to-end tests.
 
 ### Development overrides
 
@@ -93,6 +95,39 @@ uses (Phonon's variants share one Hugging Face repo; the 8-bit and 4-bit
 conversions are their own), and the venv goes with the last variant. In Add
 Models, a family's uninstalled variants share one row that expands to list them;
 once installed, each is an ordinary row.
+
+## Lifecycle state machine
+
+Each service's phase is `ServiceLifecycle.reduce`'s alone. The UI's intents and
+every asynchronous result (install progress and ending, a server's ready line,
+`error` line, exit or ready timeout, the port probe, a removal's steps) arrive
+as `LifecycleEvent`s; the reducer returns `LifecycleEffect`s, which
+`ServiceDriver` runs in order and whose results come back as events.
+
+```mermaid
+stateDiagram-v2
+    notInstalled --> installing: install
+    needsModel --> installing: install (model)
+    installing --> installed: finished, refreshed
+    installing --> failed: failed
+    installed --> starting: start (port free)
+    installed --> installing: start, outdated env (packages, then start)
+    starting --> running: ready (current server only)
+    starting --> failed: exit / error line / port busy / timeout
+    running --> stopping: stop
+    stopping --> installed: requested exit
+    running --> failed: crash
+    installed --> removing: delete
+    removing --> notInstalled: removed, refreshed
+    removing --> failed: couldn't remove
+```
+
+Every launch gets a `ServerID`; events name the server they come from, so one
+from a replaced server is ignored. The guards: a ready flips only the current
+server's `starting`; a requested exit only completes a Stop; a removal owns the
+phase over an install it cancelled; Start never runs during a removal or with a
+server up; quit cancels only an Apple Speech install and waits for it at most
+`installDrain`.
 
 ## Supervision contract
 
@@ -245,10 +280,10 @@ codes (`SupervisedErrorCode`) and the stt wire rate (`STTWire.rate`) against it.
 
 | Suite | What it covers |
 |---|---|
-| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion and the one stt wire format, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots (on disk, with symlinked leaves, backend directories and roots), logo parsing, `Subprocess` stdin and kill handling, exit-after-drain ordering and its lifecycle table (launch failure, stop before launch, descendants that obey or ignore SIGTERM), install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, Try-it routing of every event by request (`ResponseTracker`), request frame order against Stop at every point (`TTSRequestQueue`) and decoding of real server frames (`Fixtures/tts_wire_frames.json`, which also holds the request frames the server was sent), `ServiceModel` exits against every phase and quit during an Apple Speech install, seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, the unread-reply cap, which processes get `HF_TOKEN`. |
+| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion and the one stt wire format, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots (on disk, with symlinked leaves, backend directories and roots), logo parsing, `Subprocess` stdin and kill handling, exit-after-drain ordering and its lifecycle table (launch failure, stop before launch, descendants that obey or ignore SIGTERM), install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, Try-it routing of every event by request (`ResponseTracker`), request frame order against Stop at every point (`TTSRequestQueue`) and decoding of real server frames (`Fixtures/tts_wire_frames.json`, which also holds the request frames the server was sent), the lifecycle reducer's whole state space (every event against every phase, with the server current or replaced, Stop or removal under way, and quit under way) and its exits against every phase, the driver's start/ready/stop, late ready, ready timeout and supervised error, and quit during an Apple Speech install, download-size filters and pins, seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, the unread-reply cap, which processes get `HF_TOKEN`. |
 | Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403). |
 | End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny and Kyutai against the built bundle, then serve and use each. |
-| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and `PrefetchEvent.swift` and checks their backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases and supervised error codes against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server; `test_supervised_contract.py`, which runs the TTS server and the STT helper on stub inputs and checks every JSON line, error code, the Swift decoder's keys and `STTWire.rate` against `docs/supervised-contract.json`, the helper's default models and model pins against `Service.swift`, and the STT constraints against each engine's requirements. |
+| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and `PrefetchEvent.swift` and checks their backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases, the download-size snapshot table (against `prefetch_specs(model)` and the STT helper's filter) and supervised error codes against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server; `test_supervised_contract.py`, which runs the TTS server and the STT helper on stub inputs and checks every JSON line, error code, the Swift decoder's keys and `STTWire.rate` against `docs/supervised-contract.json`, the helper's default models and model pins against `Service.swift`, and the STT constraints against each engine's requirements. |
 | Visual (`--snapshot <dir>`) | Renders every page in light and dark from sample states. |
 
 ## Security notes

@@ -130,6 +130,15 @@ PIPECAT_TOOLBAR_E2E=1 swift test --package-path macos --filter EndToEnd   # real
 swift run --package-path macos PipecatServiceToolbar --snapshot /tmp/shots  # render the UI
 ```
 
+The service lifecycle (install, start, stop, delete, quit) lives in `PipecatToolbarCore`
+as a pure reducer, `ServiceLifecycle.reduce`, plus `ServiceDriver`, which runs its
+effects through injectable seams; the app's `ServiceModel` only publishes it. The
+Swift tests depend on Core alone, so a lifecycle change is tested without the app
+target (`ServiceLifecycleTests`, `ServiceDriverTests`). Download sizes come from
+`ServiceCatalog.snapshots(for:)` in `Service.swift`; when a backend's
+`prefetch_specs(model)` changes (a pin, a codec, voice files), update that table:
+`uv run pytest tests/test_macos_catalog_drift.py` fails until they match.
+
 Unbundled runs find their tools through `PIPECAT_TOOLBAR_UV`, `PIPECAT_TOOLBAR_WHEEL`,
 `PIPECAT_TOOLBAR_CONSTRAINTS`, `PIPECAT_TOOLBAR_HELPER`, `PIPECAT_TOOLBAR_STT_CONSTRAINTS`
 and `PIPECAT_TOOLBAR_REPO` (see
