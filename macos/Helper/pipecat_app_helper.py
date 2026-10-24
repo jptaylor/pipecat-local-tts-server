@@ -18,6 +18,10 @@ Supervised contract (same as ``tts_server serve --supervised``):
   warm, or ``{"event":"error","code",...}`` on a fatal error;
 - stdin EOF (the app quit or crashed) stops the server like SIGTERM.
 
+Every event's fields and every error ``code`` are fixed in
+``docs/supervised-contract.json``; ``tests/test_supervised_contract.py`` runs
+this helper and ``tts_server`` on stub inputs and checks both against it.
+
 Prefetch progress is measured from the Hugging Face cache on disk, so it works
 with every ``huggingface_hub`` version (Kyutai's runtime pins ``<0.29``).
 
@@ -41,10 +45,47 @@ from pathlib import Path
 
 logger = logging.getLogger("pipecat_app_helper")
 
+# Each engine's default model: the family default's ``modelRepo`` in
+# macos/Sources/PipecatToolbarCore/Service.swift (drift-tested).
 DEFAULT_MODELS = {
     "whisper": "mlx-community/whisper-large-v3-turbo",
     "kyutai": "kyutai/stt-1b-en_fr-mlx",
 }
+
+# The Hugging Face commit each model repo the app offers is pinned to, so the
+# snapshot ``prefetch`` downloads is the one ``serve-stt`` loads (never a newer
+# HEAD). Keys are exactly the STT ``modelRepo`` values in Service.swift
+# (drift-tested). Fetched from the HF API on 2026-10-24; the repos' last
+# commits are 2024-03-09 (whisper-tiny), 2025-06-19 (kyutai) and 2026-04-12
+# (other whisper sizes). A repo missing here (a user-supplied --repo/--model)
+# resolves HEAD, as before.
+MODEL_REVISIONS = {
+    "mlx-community/whisper-large-v3-turbo": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+    "mlx-community/whisper-large-v3-mlx": "49e6aa286ad60c14352c404340ded53710378a11",
+    "mlx-community/whisper-medium-mlx": "7fc08c4eac4c316526498f147dfdee6f6303f975",
+    "mlx-community/whisper-small-mlx": "45f3915923c7a79a5a5b5a7d909d39aeb0e5630e",
+    "mlx-community/whisper-base-mlx": "1e3e249fb8d01c655324bd6841b1deadffd6d04c",
+    "mlx-community/whisper-tiny-mlx": "6caf9c55601caafbe6508a8b0d216bdf4783c4e8",
+    "kyutai/stt-1b-en_fr-mlx": "2b995724eef1e964b7ccb6a762b35a665c4abe0d",
+    "kyutai/stt-2.6b-en-mlx": "5ccfc8f844ab8abaf591c7954f70c07e72325554",
+}
+
+# The stt wire format's sample rate (``stt_server.protocol.AUDIO_SAMPLE_RATE_HZ``,
+# Swift ``STTWire.rate``). Kyutai's resampler and the warmups assume it;
+# ``serve-stt`` refuses to start if the installed stt_server disagrees.
+WIRE_RATE = 16000
+
+# Stable ``code`` values for ``{"event":"error"}`` lines: a subset of
+# ``tts_server.supervise``'s ``CODE_*`` (this helper has no Unix socket and no
+# config errors). Listed in docs/supervised-contract.json.
+CODE_MODULE_NOT_FOUND = "ModuleNotFoundError"
+CODE_ADDR_IN_USE = "EADDRINUSE"
+CODE_ACCESS_DENIED = "EACCES"
+CODE_MODEL_DOWNLOAD = "ModelDownloadError"
+CODE_BACKEND_START = "BackendStartError"
+
+# Exception modules that mean "fetching weights failed" (same as supervise.py).
+_DOWNLOAD_MODULE_PREFIXES = ("huggingface_hub", "requests", "urllib3", "hf_xet", "httpx")
 
 # --- JSON channel -------------------------------------------------------------
 
@@ -71,6 +112,8 @@ def json_channel():
 
 
 def classify(exc: BaseException) -> str:
+    """The error ``code`` for a fatal exception: ``supervise.classify_startup_error``'s
+    priority order over the cause chain, minus its Unix-socket cases."""
     seen = set()
     chain = []
     cur: BaseException | None = exc
@@ -80,17 +123,20 @@ def classify(exc: BaseException) -> str:
         cur = cur.__cause__ or cur.__context__
     for e in chain:
         if isinstance(e, ModuleNotFoundError):
-            return "ModuleNotFoundError"
+            return CODE_MODULE_NOT_FOUND
     for e in chain:
         if isinstance(e, OSError) and e.errno == errno.EADDRINUSE:
-            return "EADDRINUSE"
+            return CODE_ADDR_IN_USE
+    for e in chain:
+        if isinstance(e, OSError) and e.errno == errno.EACCES:
+            return CODE_ACCESS_DENIED
     for e in chain:
         module = type(e).__module__ or ""
-        if module.startswith(
-            ("huggingface_hub", "requests", "urllib3", "httpx", "hf_xet")
-        ) or isinstance(e, (ConnectionError, TimeoutError)):
-            return "ModelDownloadError"
-    return "BackendStartError"
+        if module.startswith(_DOWNLOAD_MODULE_PREFIXES) or isinstance(
+            e, (ConnectionError, TimeoutError)
+        ):
+            return CODE_MODEL_DOWNLOAD
+    return CODE_BACKEND_START
 
 
 # --- prefetch -----------------------------------------------------------------
@@ -121,35 +167,62 @@ def _state_file(state_dir: str | None, repo: str) -> Path | None:
     return Path(state_dir) / f".prefetch-{repo.replace('/', '--')}.json"
 
 
+def _check_row(repo: str, revision: str | None, path: str | None, size: int) -> dict:
+    """``prefetch --check``'s per-snapshot row, as ``tts_server prefetch`` writes it."""
+    return {
+        "event": "check",
+        "repo": repo,
+        "revision": revision,
+        "kind": "model",
+        "required": True,
+        "cached": path is not None,
+        "path": path,
+        "size_bytes": size,
+    }
+
+
+def _cached_record(state: Path | None, revision: str | None) -> tuple[str, int] | None:
+    """``(snapshot path, size)`` of a completed prefetch whose files are all still
+    present and whose snapshot is the pinned commit (a snapshot folder is named
+    after its commit, so records written before the pins are judged the same way)."""
+    if not state or not state.exists():
+        return None
+    try:
+        record = json.loads(state.read_text())
+        snap = Path(record["path"])
+        if revision is not None and snap.name != revision:
+            return None
+        if snap.is_dir() and all((snap / f).exists() for f in record["files"]):
+            return str(snap), int(record["size_bytes"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
 def cmd_prefetch(args: argparse.Namespace) -> int:
-    repo, revision = args.repo, args.revision
+    repo = args.repo
+    revision = args.revision or MODEL_REVISIONS.get(repo)
     state = _state_file(args.state_dir, repo)
     if args.check:
         # Offline: trust only a completion record whose files are all still present.
-        if state and state.exists():
-            try:
-                record = json.loads(state.read_text())
-                snap = Path(record["path"])
-                if snap.is_dir() and all((snap / f).exists() for f in record["files"]):
-                    emit(
-                        {
-                            "event": "summary",
-                            "repo": repo,
-                            "cached": True,
-                            "path": str(snap),
-                            "size_bytes": record["size_bytes"],
-                        }
-                    )
-                    return 0
-            except (OSError, ValueError, KeyError):
-                pass
-        emit({"event": "summary", "repo": repo, "cached": False, "path": None, "size_bytes": 0})
+        found = _cached_record(state, revision)
+        path, size = found if found else (None, 0)
+        emit(_check_row(repo, revision, path, size))
+        emit(
+            {
+                "event": "summary",
+                "backend": None,
+                "model": repo,
+                "cached": path is not None,
+                "size_bytes": size,
+            }
+        )
         return 0
 
     try:
         from huggingface_hub import HfApi, snapshot_download  # type: ignore
     except ImportError as exc:
-        emit({"event": "error", "code": "ModuleNotFoundError", "message": str(exc), "repo": repo})
+        emit({"event": "error", "code": CODE_MODULE_NOT_FOUND, "message": str(exc), "repo": repo})
         return 1
 
     try:
@@ -170,7 +243,6 @@ def cmd_prefetch(args: argparse.Namespace) -> int:
                 "repo": repo,
                 "revision": revision,
                 "kind": "model",
-                "files": len(names),
             }
         )
 
@@ -203,7 +275,15 @@ def cmd_prefetch(args: argparse.Namespace) -> int:
         if state:
             state.parent.mkdir(parents=True, exist_ok=True)
             state.write_text(
-                json.dumps({"repo": repo, "path": str(path), "files": names, "size_bytes": size})
+                json.dumps(
+                    {
+                        "repo": repo,
+                        "revision": revision,
+                        "path": str(path),
+                        "files": names,
+                        "size_bytes": size,
+                    }
+                )
             )
         emit(
             {
@@ -216,7 +296,15 @@ def cmd_prefetch(args: argparse.Namespace) -> int:
             }
         )
         emit({"event": "done", "repo": repo, "path": str(path), "size_bytes": size})
-        emit({"event": "complete", "repo": repo, "cached": True, "size_bytes": size})
+        emit(
+            {
+                "event": "complete",
+                "backend": None,
+                "model": repo,
+                "cached": True,
+                "size_bytes": size,
+            }
+        )
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         logger.exception("prefetch failed")
@@ -235,7 +323,8 @@ def cmd_prefetch(args: argparse.Namespace) -> int:
 
 
 def _resample_16k_to_24k(audio):
-    """Polyphase 2:3 resample (zero-stuff x3, windowed-sinc low-pass, keep every 2nd)."""
+    """WIRE_RATE -> Mimi's 24 kHz: polyphase 2:3 resample (zero-stuff x3,
+    windowed-sinc low-pass, keep every 2nd)."""
     import numpy as np
 
     if audio.size == 0:
@@ -261,8 +350,9 @@ class KyutaiBackend:
 
     backend_name = "kyutai"
 
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str, revision: str | None = None) -> None:
         self.model = model
+        self.revision = revision
         self._lock = threading.Lock()
         self._prefix_samples = 0
         self._flush_samples = 2 * 24000
@@ -272,16 +362,18 @@ class KyutaiBackend:
 
     def _load(self) -> None:
         import mlx.core as mx  # type: ignore
-        import mlx.nn as nn  # type: ignore
         import sentencepiece  # type: ignore
         from huggingface_hub import hf_hub_download  # type: ignore
+        from mlx import nn  # type: ignore
         from moshi_mlx import models, utils  # type: ignore
 
-        config_path = hf_hub_download(self.model, "config.json")
-        raw = json.loads(Path(config_path).read_text())
-        mimi_weights = hf_hub_download(self.model, raw["mimi_name"])
-        moshi_weights = hf_hub_download(self.model, raw.get("moshi_name", "model.safetensors"))
-        tokenizer = hf_hub_download(self.model, raw["tokenizer_name"])
+        def fetch(name: str) -> str:
+            return hf_hub_download(self.model, name, revision=self.revision)
+
+        raw = json.loads(Path(fetch("config.json")).read_text())
+        mimi_weights = fetch(raw["mimi_name"])
+        moshi_weights = fetch(raw.get("moshi_name", "model.safetensors"))
+        tokenizer = fetch(raw["tokenizer_name"])
 
         stt = raw.get("stt_config") or {}
         self._prefix_samples = int(float(stt.get("audio_silence_prefix_seconds", 0.0)) * 24000)
@@ -302,7 +394,7 @@ class KyutaiBackend:
         self._mimi = models.mimi.Mimi(models.mimi_202407(self._mimi_codebooks))
         self._mimi.load_pytorch_weights(str(mimi_weights), strict=True)
         model.warmup()
-        self.transcribe(b"\x00\x00" * 16000)  # JIT the Mimi + LM path once
+        self.transcribe(b"\x00\x00" * WIRE_RATE)  # JIT the Mimi + LM path once
         logger.info("kyutai: loaded %s", self.model)
 
     def transcribe(self, pcm16: bytes, cancel: threading.Event | None = None) -> str:
@@ -414,20 +506,65 @@ def _watch_stdin_eof() -> None:
         threading.Thread(target=run, name="stdin-watch", daemon=True).start()
 
 
+def _pinned_snapshot(repo: str, revision: str) -> str:
+    """Local folder of ``repo`` at ``revision``: the cached snapshot ``prefetch``
+    left, else downloaded now (what an unpinned load would also do)."""
+    from huggingface_hub import snapshot_download  # type: ignore
+
+    try:
+        return str(snapshot_download(repo, revision=revision, local_files_only=True))
+    except Exception:  # noqa: BLE001 - any cache miss: fetch the pinned commit
+        return str(snapshot_download(repo, revision=revision))
+
+
 def _make_backend(engine: str, model: str):
+    revision = MODEL_REVISIONS.get(model)
     if engine == "whisper":
         from stt_server.backends.mlx_whisper import MLXWhisperBackend  # type: ignore
 
-        return MLXWhisperBackend(model=model)
+        if revision is None:
+            return MLXWhisperBackend(model=model)
+        # mlx_whisper loads a repo id at its HEAD; hand it the pinned snapshot's
+        # folder instead, and keep the repo id as the backend's public identity
+        # (``model`` is what server.hello reports, so no local path leaks).
+        backend = MLXWhisperBackend(model=_pinned_snapshot(model, revision))
+        backend.model = model
+        return backend
     if engine == "kyutai":
-        return KyutaiBackend(model)
+        return KyutaiBackend(model, revision)
     raise SystemExit(f"unknown engine {engine!r}")
+
+
+def _wire_rate() -> int:
+    """The installed stt_server's wire rate; refuses one this helper doesn't speak."""
+    from stt_server.protocol import AUDIO_SAMPLE_RATE_HZ  # type: ignore
+
+    if AUDIO_SAMPLE_RATE_HZ != WIRE_RATE:
+        raise RuntimeError(
+            f"stt_server speaks {AUDIO_SAMPLE_RATE_HZ} Hz but this helper expects {WIRE_RATE} Hz"
+        )
+    return AUDIO_SAMPLE_RATE_HZ
+
+
+def ready_event(server, *, engine: str, model: str, host: str, port: int, rate: int) -> dict:
+    """The ``ready`` line for a listening ``stt_server.server.TranscriptionServer``;
+    the bound port comes from its public ``listening_port()`` (``port`` 0 = ephemeral)."""
+    return {
+        "event": "ready",
+        "backend": engine,
+        "model": model,
+        "host": host,
+        "port": server.listening_port() or port,
+        "socket_path": None,
+        "rate": rate,
+        "pid": os.getpid(),
+    }
 
 
 async def _warm(backend) -> None:
     """Decode 1 s of silence so the first real request doesn't pay for the load."""
     stream = await backend.open_stream(language=None)
-    await stream.feed(b"\x00\x00" * 16000)
+    await stream.feed(b"\x00\x00" * WIRE_RATE)
     await stream.end()
     async for _ in stream.events():
         pass
@@ -447,32 +584,29 @@ def cmd_serve_stt(args: argparse.Namespace) -> int:
                     probe.bind((args.host, args.port))
             from stt_server.server import serve  # type: ignore
 
+            rate = _wire_rate()
             logger.info("starting %s (model=%s)", args.engine, model)
             backend = _make_backend(args.engine, model)
 
             async def ready(server) -> None:
                 if args.engine == "whisper":
                     await _warm(backend)
-                port = args.port
-                for s in getattr(getattr(server, "_server", None), "sockets", None) or []:
-                    name = s.getsockname()
-                    if isinstance(name, tuple):
-                        port = name[1]
-                        break
+                event = ready_event(
+                    server,
+                    engine=args.engine,
+                    model=model,
+                    host=args.host,
+                    port=args.port,
+                    rate=rate,
+                )
                 logger.info(
-                    "listening on %s:%s (engine=%s model=%s)", args.host, port, args.engine, model
+                    "listening on %s:%s (engine=%s model=%s)",
+                    args.host,
+                    event["port"],
+                    args.engine,
+                    model,
                 )
-                emit(
-                    {
-                        "event": "ready",
-                        "backend": args.engine,
-                        "model": model,
-                        "host": args.host,
-                        "port": port,
-                        "rate": 16000,
-                        "pid": os.getpid(),
-                    }
-                )
+                emit(event)
 
             asyncio.run(serve(backend, host=args.host, port=args.port, ready=ready))
             return 0

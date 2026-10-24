@@ -741,7 +741,7 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         try FileManager.default.createDirectory(at: python.deletingLastPathComponent(), withIntermediateDirectories: true)
         let json = """
             {"event":"check","path":"\(snapshot.path)","cached":true}
-            {"event":"summary","cached":true,"size_bytes":8,"path":"\(snapshot.path)"}
+            {"event":"summary","cached":true,"size_bytes":8}
             """
         try "#!/bin/sh\ncat <<'EOF'\n\(json)\nEOF\n".write(to: python, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)

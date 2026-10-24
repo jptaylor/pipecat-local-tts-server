@@ -212,12 +212,13 @@ public actor EnvironmentManager {
         return try? await sub.collect().stdout
     }
 
-    /// Reads `prefetch --check --json` output.
+    /// Reads `prefetch --check --json` output: one `check` row per snapshot, then
+    /// a `summary`. The TTS server and the STT helper write the same events
+    /// (`docs/supervised-contract.json`, enforced by `tests/test_supervised_contract.py`).
     static func cacheStatus(checkOutput lines: [String]) -> ModelCacheStatus? {
         let events = lines.compactMap(ServerCLIEvent.parse)
         guard let summary = events.last(where: { $0.event == "summary" }) else { return nil }
-        // TTS reports one `check` row per snapshot; the STT helper reports the path on the summary.
-        let paths = events.filter { $0.event == "check" }.compactMap(\.path) + [summary.path].compactMap { $0 }
+        let paths = events.filter { $0.event == "check" }.compactMap(\.path)
         // A quantized Phonon variant also needs its converted copy of the weights.
         let derived = summary.quantized == true ? [summary.quantizedPath].compactMap { $0.map { URL(filePath: $0) } } : []
         return ModelCacheStatus(
