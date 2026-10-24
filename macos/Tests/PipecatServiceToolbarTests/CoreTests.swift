@@ -233,6 +233,51 @@ import Testing
         #expect(!EnvironmentManager.isDeletableModelPath(root.appending(path: "models--org--name"), hub: link, derived: elsewhere))
     }
 
+    /// Every component of a path to delete resolves inside its root after
+    /// symlinks are resolved; only the leaf itself is not followed (deleting a
+    /// link removes the link). Shapes on disk x {allowed, refused}.
+    @Test func deletionNeverFollowsALinkOutOfTheRoots() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appending(path: "toolbar-derived-\(UUID().uuidString.prefix(8))")
+        defer { try? fm.removeItem(at: root) }
+        let hub = root.appending(path: "hub")
+        let derived = root.appending(path: "derived")
+        let outside = root.appending(path: "outside")
+        for dir in [
+            hub.appending(path: "models--org--name"), derived.appending(path: "phonon/key"),
+            outside.appending(path: "key"), outside.appending(path: "models--org--name"),
+            root.appending(path: "derived-evil/phonon/key"),
+        ] {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        try fm.createSymbolicLink(at: derived.appending(path: "linked"), withDestinationURL: outside)
+        try fm.createSymbolicLink(at: derived.appending(path: "phonon/leaflink"), withDestinationURL: outside.appending(path: "key"))
+        try fm.createSymbolicLink(at: hub.appending(path: "models--org--link"), withDestinationURL: outside)
+        try fm.createSymbolicLink(at: root.appending(path: "derived-link"), withDestinationURL: derived)
+        let cases: [(String, Bool)] = [
+            ("derived/phonon/key", true),  // plain
+            ("derived/phonon/leaflink", true),  // symlinked leaf: the link is removed, not its target
+            ("hub/models--org--link", true),  // symlinked hub leaf, likewise
+            ("derived-link/phonon/key", true),  // a link to the root itself resolves to the root
+            ("derived/linked/key", false),  // symlinked backend directory (the reported escape)
+            ("derived/linked/../phonon/key", true),  // `..` is lexical: deletes derived/phonon/key (below)
+            ("derived/phonon/../linked/key", false),
+            ("derived", false),  // the root itself
+            ("derived/phonon", false),
+            ("derived-evil/phonon/key", false),  // sibling prefix of the root
+            ("outside/key", false),
+        ]
+        for (path, deletable) in cases {
+            #expect(
+                EnvironmentManager.isDeletableModelPath(root.appending(path: path), hub: hub, derived: derived) == deletable,
+                "\(path)")
+        }
+        // What is deleted is the path that was vetted, never what the kernel would reach through the link.
+        #expect(
+            EnvironmentManager.deletionTarget(root.appending(path: "derived/linked/../phonon/key"), hub: hub, derived: derived)?
+                .path == derived.appending(path: "phonon/key").path)
+    }
+
     @Test func quantizedVariantNeedsItsConvertedWeights() throws {
         let check = #"{"event":"check","repo":"gradium/phonon-31m-en","cached":true,"path":"/h/hub/models--gradium--phonon-31m-en/snapshots/abc","size_bytes":10}"#
         let path = "/c/pipecat-tts-server/phonon/abc-q8"

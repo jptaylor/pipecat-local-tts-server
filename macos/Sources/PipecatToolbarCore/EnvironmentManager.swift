@@ -243,17 +243,28 @@ public actor EnvironmentManager {
     /// (`<hub>/models--org--name`) and the TTS server's own derived weights
     /// (`<derived>/<backend>/<key>`) are ever deleted. The candidates come from
     /// subprocess output, so a look-alike name anywhere else (or a `..` path
-    /// that resolves outside those roots) is refused. Parents are compared with
-    /// symlinks resolved; the folder itself is not followed.
-    static func isDeletableModelPath(_ url: URL, hub: URL, derived: URL) -> Bool {
+    /// that resolves outside those roots) is refused.
+    ///
+    /// Invariant: every component above the folder resolves, with symlinks
+    /// resolved, to exactly `<hub>` or `<derived>/<backend>`, so a symlinked
+    /// backend directory can't carry the deletion outside the root. The folder
+    /// itself is not followed (deleting a link removes the link). `..` is
+    /// resolved lexically first, and that lexical path is what is deleted.
+    static func deletionTarget(_ url: URL, hub: URL, derived: URL) -> URL? {
         let folder = url.standardizedFileURL
         let name = folder.lastPathComponent
-        guard !name.isEmpty, name != "/", name != ".", name != ".." else { return false }
+        guard !name.isEmpty, name != "/", name != ".", name != ".." else { return nil }
         let parent = canonicalPath(folder.deletingLastPathComponent())
-        if name.hasPrefix("models--"), name.count > "models--".count, parent == canonicalPath(hub) { return true }
-        let backendDir = folder.deletingLastPathComponent()
-        guard !backendDir.lastPathComponent.hasPrefix(".") else { return false }
-        return canonicalPath(backendDir.deletingLastPathComponent()) == canonicalPath(derived)
+        if name.hasPrefix("models--"), name.count > "models--".count, parent == canonicalPath(hub) { return folder }
+        let backend = folder.deletingLastPathComponent().lastPathComponent
+        guard !backend.isEmpty, backend != "/", backend != "..", !backend.hasPrefix(".") else { return nil }
+        // The backend directory, resolved, must be the root's own `<backend>`, not a link out of it.
+        let root = canonicalPath(derived)
+        return parent == (root == "/" ? "" : root) + "/" + backend ? folder : nil
+    }
+
+    static func isDeletableModelPath(_ url: URL, hub: URL, derived: URL) -> Bool {
+        deletionTarget(url, hub: hub, derived: derived) != nil
     }
 
     private static func canonicalPath(_ url: URL) -> String {
@@ -587,9 +598,8 @@ public actor EnvironmentManager {
         // Try every folder, then report the ones that stayed: a silent leftover
         // is multiple gigabytes the user thinks are gone.
         var failures: [String] = []
-        for folder in doomed
-        where Self.isDeletableModelPath(folder, hub: paths.hubDir, derived: paths.derivedModelsDir)
-            && fm.fileExists(atPath: folder.path)
+        for case let folder? in doomed.map({ Self.deletionTarget($0, hub: paths.hubDir, derived: paths.derivedModelsDir) })
+        where fm.fileExists(atPath: folder.path)
         {
             do { try fm.removeItem(at: folder) } catch { failures.append("\(folder.path): \(error.localizedDescription)") }
         }
