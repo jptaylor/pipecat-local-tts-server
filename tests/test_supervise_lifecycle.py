@@ -87,6 +87,10 @@ def _first_line(proc: subprocess.Popen, timeout: float = 20.0) -> dict:
 
 def _finish(proc: subprocess.Popen) -> tuple[int, list[dict]]:
     """Exit status and every remaining stdout line (each must be a JSON object)."""
+    if proc.stdin is not None and proc.stdin.closed:
+        # Python 3.12's communicate() flushes a non-None stdin and raises
+        # "flush of closed file" (3.13 checks .closed first).
+        proc.stdin = None
     try:
         out, err = proc.communicate(timeout=15)
         proc.stderr_text = err.decode()  # type: ignore[attr-defined]
