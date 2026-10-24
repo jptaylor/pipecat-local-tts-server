@@ -328,23 +328,49 @@ public actor EnvironmentManager {
         }
     }
 
-    /// Records `service` as installed. The first variant record in an environment
-    /// from before variants also records the service that built it.
-    func recordVariant(_ service: Service, installed: Bool) throws {
+    /// Moves an environment from before variants (its marker names the one
+    /// service that built it, there is no `.variants/`) to variant records,
+    /// before anything in it changes: `.variants/` appears in one rename,
+    /// already holding its builder, so the builder stays installed whatever
+    /// a later step (a sibling's marker write, a Cancel) does. A no-op for an
+    /// environment that has records, or for no environment at all.
+    func adoptVariants(_ service: Service) throws {
         let fm = FileManager.default
         let dir = paths.variantsDir(service)
-        if !fm.fileExists(atPath: dir.path) {
-            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        guard !Self.exists(dir), fm.fileExists(atPath: paths.envDir(service).path) else { return }
+        let staging = paths.envDir(service).appending(path: ".variants-\(UUID().uuidString)")
+        try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+        do {
             if let builder = EnvironmentMarker.read(paths.marker(service)).flatMap({ Service(rawValue: $0.service) }),
                 builder.family == service.family
             {
-                fm.createFile(atPath: paths.variantMarker(builder).path, contents: nil)
+                try Self.createEmptyFile(staging.appending(path: builder.rawValue))
             }
+            try fm.moveItem(at: staging, to: dir)
+        } catch {
+            try? fm.removeItem(at: staging)
+            throw error
         }
+    }
+
+    /// Records `service` as installed (or not) in its family's environment.
+    /// Every failure is thrown: a record that silently didn't change makes the
+    /// next refresh report the wrong variants.
+    func recordVariant(_ service: Service, installed: Bool) throws {
+        try adoptVariants(service)
+        let fm = FileManager.default
+        let marker = paths.variantMarker(service)
         if installed {
-            fm.createFile(atPath: paths.variantMarker(service).path, contents: nil)
-        } else {
-            try? fm.removeItem(at: paths.variantMarker(service))
+            try fm.createDirectory(at: paths.variantsDir(service), withIntermediateDirectories: true)
+            try Self.createEmptyFile(marker)
+        } else if Self.exists(marker) {
+            try fm.removeItem(at: marker)
+        }
+    }
+
+    private static func createEmptyFile(_ url: URL) throws {
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path])
         }
     }
 
@@ -382,6 +408,10 @@ public actor EnvironmentManager {
         // what's missing, and never rebuild one that works.
         let status = environmentStatus(backend)
         let buildsEnvironment = status == .missing
+        // An existing environment from before variants records its builder
+        // first: a sibling's install below rewrites the marker, and a Cancel
+        // after that must leave the builder installed and the sibling not.
+        if !buildsEnvironment { try adoptVariants(backend) }
         var installsPackages = buildsEnvironment || mode == .packages
         if mode == .full, case .outdated = status { installsPackages = true }
 

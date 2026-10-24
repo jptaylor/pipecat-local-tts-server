@@ -1270,6 +1270,73 @@ final class Lines: @unchecked Sendable {
         #expect(manager.isRequested(.phononQ8))
         #expect(!manager.isRequested(.phonon))
     }
+
+    /// A pre-variant environment (marker only) built by Phonon 8-bit from an
+    /// older wheel, with a python that answers the version probe after `delay`.
+    static func preVariantOutdatedEnvironment(delay: String) throws -> (EnvironmentManager, AppPaths, URL) {
+        let paths = try InstallCancellationTests.paths()
+        let started = paths.supportDir.appending(path: "probing")
+        let python = paths.python(.phononQ8)
+        try FileManager.default.createDirectory(at: python.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\ntouch '\(started.path)'\nsleep \(delay)\necho 3.12.0\n".write(to: python, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
+        try EnvironmentMarker(service: Service.phononQ8.rawValue, fingerprint: "an older wheel", python: "3.12.0", createdAt: Date())
+            .write(paths.marker(.phononQ8))
+        let uv = paths.supportDir.appending(path: "uv")
+        try "#!/bin/sh\nexit 0\n".write(to: uv, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
+        let manager = EnvironmentManager(
+            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
+        return (manager, paths, started)
+    }
+
+    /// Rule for marker-only environments: an existing one records its builder
+    /// in `.variants/` before a sibling's install changes anything (a fresh
+    /// build starts with an empty `.variants/`). A sibling's package refresh
+    /// rewrites the marker; the builder stays installed next to the sibling.
+    @Test func aSiblingInstallKeepsAPreVariantBuilder() async throws {
+        let (manager, paths, _) = try Self.preVariantOutdatedEnvironment(delay: "0")
+        #expect(manager.isRequested(.phononQ8) && !manager.isRequested(.phonon))
+        try await manager.install(.phonon, mode: .packages).consume { _ in }
+        #expect(EnvironmentMarker.read(paths.marker(.phonon))?.service == Service.phonon.rawValue)
+        #expect(manager.isRequested(.phonon), "the sibling was not recorded")
+        #expect(manager.isRequested(.phononQ8), "the pre-variant builder was lost")
+    }
+
+    /// Cancel after the sibling's marker write but before its variant record:
+    /// the sibling does not read as installed, and the builder still does.
+    @Test func aCancelledSiblingInstallLeavesAPreVariantBuilderInstalled() async throws {
+        let (manager, paths, started) = try Self.preVariantOutdatedEnvironment(delay: "1")
+        let install = Task { try await manager.install(.phonon, mode: .packages).consume { _ in } }
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !FileManager.default.fileExists(atPath: started.path), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(FileManager.default.fileExists(atPath: started.path), "the install never reached the version probe")
+        install.cancel()
+        _ = await install.result
+        let written = ContinuousClock.now + .seconds(15)
+        while EnvironmentMarker.read(paths.marker(.phonon))?.service != Service.phonon.rawValue, ContinuousClock.now < written {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(EnvironmentMarker.read(paths.marker(.phonon))?.service == Service.phonon.rawValue, "the marker was not rewritten")
+        #expect(!manager.isRequested(.phonon), "a cancelled sibling install reads as installed")
+        #expect(manager.isRequested(.phononQ8), "the pre-variant builder disappeared")
+    }
+
+    /// A variant record that can't be written fails the call instead of
+    /// reporting success.
+    @Test func aVariantRecordThatCannotBeWrittenThrows() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        try await VariantTests.fakeEnvironment(.phonon, manager, paths)
+        try await manager.recordVariant(.phonon, installed: true)
+        let dir = paths.variantsDir(.phonon)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) }
+        await #expect(throws: (any Error).self) { try await manager.recordVariant(.phononQ8, installed: true) }
+        await #expect(throws: (any Error).self) { try await manager.recordVariant(.phonon, installed: false) }
+        #expect(manager.isRequested(.phonon) && !manager.isRequested(.phononQ8))
+    }
 }
 
 @Suite struct PipeDrainTests {
