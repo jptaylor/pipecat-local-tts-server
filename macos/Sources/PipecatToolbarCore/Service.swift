@@ -176,6 +176,21 @@ public enum ServiceCatalog {
         Service.allCases.filter { $0.kind == kind }
     }
 
+    /// The commit each STT model repo is pinned to: the helper's `MODEL_REVISIONS`
+    /// (`macos/Helper/pipecat_app_helper.py`), which `prefetch --repo` downloads and
+    /// `serve-stt` loads, so the download size is measured at the same commit.
+    /// `tests/test_macos_catalog_drift.py` checks the two tables are equal.
+    public static let sttModelRevisions: [String: String] = [
+        "mlx-community/whisper-large-v3-turbo": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+        "mlx-community/whisper-large-v3-mlx": "49e6aa286ad60c14352c404340ded53710378a11",
+        "mlx-community/whisper-medium-mlx": "7fc08c4eac4c316526498f147dfdee6f6303f975",
+        "mlx-community/whisper-small-mlx": "45f3915923c7a79a5a5b5a7d909d39aeb0e5630e",
+        "mlx-community/whisper-base-mlx": "1e3e249fb8d01c655324bd6841b1deadffd6d04c",
+        "mlx-community/whisper-tiny-mlx": "6caf9c55601caafbe6508a8b0d216bdf4783c4e8",
+        "kyutai/stt-1b-en_fr-mlx": "2b995724eef1e964b7ccb6a762b35a665c4abe0d",
+        "kyutai/stt-2.6b-en-mlx": "5ccfc8f844ab8abaf591c7954f70c07e72325554",
+    ]
+
     /// Every Hugging Face snapshot the install's model step downloads for `service`:
     /// TTS mirrors `prefetch_specs(model)` in the backend module (run with the app's
     /// `--model`, no `PIPECAT_TTS_PHONON_VOICES`), STT the helper's `prefetch --repo`.
@@ -201,7 +216,7 @@ public enum ServiceCatalog {
                     kind: .codec),
             ]
         case .whisper, .kyutai:
-            return [HubSnapshot(repo: repo, files: .allButDocs)]
+            return [HubSnapshot(repo: repo, revision: sttModelRevisions[repo], files: .allButDocs)]
         default:
             return [HubSnapshot(repo: repo)]
         }

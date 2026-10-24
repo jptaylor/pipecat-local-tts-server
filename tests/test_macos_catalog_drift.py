@@ -16,13 +16,15 @@ import Python, so these tests parse the Swift source (one parser,
   * each variant ``modelArgument`` is an alias its backend resolves to the
     family's repo;
   * ``ServiceCatalog.snapshots(for:)`` (the download-size table) equals each
-    TTS service's ``prefetch_specs(model)`` and the STT helper's file filter;
+    TTS service's ``prefetch_specs(model)`` and the STT helper's file filter,
+    at the helper's ``MODEL_REVISIONS`` pins (``sttModelRevisions``);
   * ``SupervisedErrorCode`` raw values equal ``tts_server.supervise``'s ``CODE_*``;
   * the Try it wire fixture is what the server sends.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -30,7 +32,13 @@ from pathlib import Path
 from tts_server import supervise
 from tts_server.__main__ import BACKEND_CHOICES
 
-from ._macos_catalog import Snapshot, macos_catalog, macos_snapshots, mlx_audio_default_patterns
+from ._macos_catalog import (
+    Snapshot,
+    macos_catalog,
+    macos_snapshots,
+    macos_stt_model_revisions,
+    mlx_audio_default_patterns,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 CORE = REPO / "macos" / "Sources" / "PipecatToolbarCore"
@@ -220,17 +228,41 @@ def test_swift_snapshots_match_prefetch_specs(monkeypatch):
     assert snapshots["phonon_q8"][0].revision, "the parser sees the Phonon pin"
 
 
+def _helper_model_revisions() -> dict[str, str]:
+    """The helper's ``MODEL_REVISIONS`` literal, read without importing it."""
+    for node in ast.parse(HELPER.read_text()).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "MODEL_REVISIONS" for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError("MODEL_REVISIONS not found in the helper")
+
+
+def test_swift_stt_pins_match_the_helper():
+    """``ServiceCatalog.sttModelRevisions`` is the helper's ``MODEL_REVISIONS``:
+    the app sizes the very commit ``prefetch --repo`` downloads."""
+    assert macos_stt_model_revisions() == _helper_model_revisions()
+
+
 def test_swift_stt_snapshots_match_the_helper_filter():
-    """An STT service downloads its one model repo at ``main`` through the helper's
-    ``prefetch --repo`` (no ``--revision``), which takes every file but top-level
-    dotfiles, ``*.md`` and ``.gitattributes``: ``HubSnapshot.Files.allButDocs``."""
+    """An STT service downloads its one model repo at its pinned commit
+    (``MODEL_REVISIONS``) through the helper's ``prefetch --repo`` (no
+    ``--revision``), which takes every file but top-level dotfiles, ``*.md`` and
+    ``.gitattributes``: ``HubSnapshot.Files.allButDocs``."""
     source = HELPER.read_text()
     assert 'not f.path.startswith(".")' in source
     assert 'endswith((".md", ".gitattributes"))' in source
+    assert "args.revision or MODEL_REVISIONS.get(repo)" in source
+    pins = _helper_model_revisions()
     for name, entry in macos_catalog().items():
         if entry.kind == "stt":
-            expected = [Snapshot(entry.model_repo, None, "allButDocs", "model", True)]
-            assert macos_snapshots()[name] == ([] if entry.model_repo is None else expected), name
+            if entry.model_repo is None:
+                assert macos_snapshots()[name] == [], name
+                continue
+            expected = [
+                Snapshot(entry.model_repo, pins[entry.model_repo], "allButDocs", "model", True)
+            ]
+            assert macos_snapshots()[name] == expected, name
 
 
 def test_swift_supervised_error_codes_match_supervise():

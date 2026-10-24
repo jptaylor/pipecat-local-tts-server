@@ -54,8 +54,9 @@ DEFAULT_MODELS = {
 
 # The Hugging Face commit each model repo the app offers is pinned to, so the
 # snapshot ``prefetch`` downloads is the one ``serve-stt`` loads (never a newer
-# HEAD). Keys are exactly the STT ``modelRepo`` values in Service.swift
-# (drift-tested). Fetched from the HF API on 2026-10-24; the repos' last
+# HEAD). Keys are exactly the STT ``modelRepo`` values in Service.swift, and
+# ``ServiceCatalog.sttModelRevisions`` there repeats this table so the app sizes
+# the same commit before an install (both drift-tested). Fetched from the HF API on 2026-10-24; the repos' last
 # commits are 2024-03-09 (whisper-tiny), 2025-06-19 (kyutai) and 2026-04-12
 # (other whisper sizes). A repo missing here (a user-supplied --repo/--model)
 # resolves HEAD, as before.

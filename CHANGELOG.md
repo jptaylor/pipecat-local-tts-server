@@ -69,8 +69,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and clock seams; `ServiceModel` is now a thin `@Observable` adapter and the Swift
   tests depend on Core only. Add Models' download size now counts every snapshot an
   install fetches at its pinned revision (Phonon's pin, dia's codec, pocket_tts's
-  voice embeddings, the STT helper's file filter) from `ServiceCatalog.snapshots(for:)`,
-  which a lean drift test compares with each backend's `prefetch_specs(model)`.
+  voice embeddings, the STT helper's file filter at its `MODEL_REVISIONS` pin, which
+  `ServiceCatalog.sttModelRevisions` repeats) from `ServiceCatalog.snapshots(for:)`,
+  which a lean drift test compares with each backend's `prefetch_specs(model)` and
+  with the helper's pins.
 - `_clear_stale_unix_socket` raises `SocketInUseError` / `SocketPathConflictError`
   (both still `RuntimeError` subclasses).
 - `TTSServer.listening_port()` returns `None` for a Unix socket instead of a
