@@ -63,14 +63,14 @@ struct EndToEndTests {
         let client = TTSClient(port: port)
         let hello = try await client.connect()
         #expect(hello.backend == backend.family.rawValue)
-        for frame in TTSRequestQueue.frames("Testing the menu bar app.", voice: nil, eventID: "tryit-1") {
+        for frame in TTSClientFrame.request(TTSRequest(id: "tryit-1", text: "Testing the menu bar app.", voice: nil)) {
             try await client.send(frame)
         }
         var bytes = 0
         while let event = try await client.next() {
             if case .audio(_, _, let pcm) = event { bytes += pcm.count }
             if case .done = event { break }
-            if case .failed(_, let message) = event { Issue.record("failed: \(message)"); break }
+            if case .failed(_, _, let message) = event { Issue.record("failed: \(message)"); break }
         }
         await client.close()
         server.closeStdin()
