@@ -89,7 +89,8 @@ public final class ServiceDriver {
     /// Apple Speech model install progress (0...1).
     public private(set) var assetProgress: Double?
     public private(set) var installDetail: String = ""
-    public private(set) var cache: ModelCacheStatus?
+    /// The last cache probe a current read reported.
+    public var cache: ModelCacheStatus? { state.cache }
     public private(set) var startDetail: String = ""
     public private(set) var log: [String] = []
     public private(set) var warning: String?
@@ -102,6 +103,8 @@ public final class ServiceDriver {
     @ObservationIgnored private var nativeServer: (any NativeSpeechServer)?
     @ObservationIgnored private var logSink: LogSink?
     @ObservationIgnored private var nextID = 0
+    /// The output readers of each launched server, cancelled at its exit.
+    @ObservationIgnored private var readers: [ServerID: [Task<Void, Never>]] = [:]
 
     public init(info: ServiceInfo, dependencies: ServiceDependencies = ServiceDependencies()) {
         self.info = info
@@ -139,32 +142,37 @@ public final class ServiceDriver {
 
     // MARK: - Intents
 
-    /// Re-reads the phase. Its result carries the generation it started under,
-    /// so the reducer drops it if a Start, Stop, Delete or install moved on meanwhile.
+    /// Re-reads the phase (the reducer tags the read with a fresh epoch, so a
+    /// newer read, or anything else that moved the epoch, makes this one stale).
     public func refresh() async {
-        let generation = state.generation
+        await run(send(.refreshRequested))
+    }
+
+    /// The read issued under `epoch`: every result carries it.
+    private func read(epoch: Int) async {
         if info.runtime == .appleSpeech {
-            execute(send(.refreshed(await dependencies.appleSpeechPhase(), generation: generation)))
+            execute(send(.refreshed(await dependencies.appleSpeechPhase(), epoch: epoch)))
             return
         }
         guard let environment else { return }
         let status = environment.environmentStatus(service)
         let requested = status != .missing && environment.isRequested(service)
         guard requested, case .ready = status else {
-            if !requested { cache = nil }
-            send(
-                .refreshed(
-                    ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: nil),
-                    environment: status, requested: requested, generation: generation))
+            execute(
+                send(
+                    .refreshed(
+                        ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: nil),
+                        environment: status, requested: requested, cache: requested ? .none : .some(nil), epoch: epoch)))
             return
         }
         // The environment is current while the (slow) cache probe runs.
-        send(.refreshed(state.phase, environment: status, requested: requested, generation: generation))
-        cache = await environment.modelCacheStatus(service, includeOutdated: false)
-        send(
-            .refreshed(
-                ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: cache?.cached),
-                generation: generation))
+        send(.environmentRead(status, epoch: epoch))
+        let cache = await environment.modelCacheStatus(service, includeOutdated: false)
+        execute(
+            send(
+                .refreshed(
+                    ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: cache?.cached),
+                    environment: status, requested: requested, cache: .some(cache), epoch: epoch)))
     }
 
     public func environmentChanged() async {
@@ -204,8 +212,8 @@ public final class ServiceDriver {
 
     private func performImmediate(_ effect: LifecycleEffect) {
         switch effect {
-        case .runInstall(let mode, let then): runInstall(mode: mode, then: then)
-        case .runAppleSpeechInstall: runAppleSpeechInstall()
+        case .runInstall(let mode, let then, let install): runInstall(mode: mode, then: then, install: install)
+        case .runAppleSpeechInstall(let install): runAppleSpeechInstall(install: install)
         case .cancelInstall:
             cancelledInstall = installTask
             installTask?.cancel()
@@ -245,8 +253,7 @@ public final class ServiceDriver {
         case .appendLog(let line): appendLog(line)
         case .startDetail(let text): startDetail = text
         case .clearLog: log = []
-        case .startIfNotCancelled:
-            if !Task.isCancelled { start() }
+        case .start: start()
         case .refresh, .familyChanged, .awaitInstall, .stopServer, .resumeRemoval, .shutdown, .removeEnvironment:
             assertionFailure("\(effect) is not immediate")
         }
@@ -254,7 +261,7 @@ public final class ServiceDriver {
 
     private func performAsync(_ effect: LifecycleEffect) async {
         switch effect {
-        case .refresh: await refresh()
+        case .refresh(let epoch): await read(epoch: epoch)
         case .familyChanged: await host?.familyChanged()
         case .awaitInstall(let bounded):
             guard let install = cancelledInstall else { return }
@@ -266,9 +273,10 @@ public final class ServiceDriver {
         case .stopServer(_, wait: true):
             guard let server else { return }
             _ = await server.stop(grace: dependencies.stopGrace)
-        case .resumeRemoval(let deleteModel): await run(send(.removalResumed(deleteModel: deleteModel)))
+        case .resumeRemoval(let deleteModel, let removal):
+            await run(send(.removalResumed(deleteModel: deleteModel, removal: removal)))
         case .shutdown: await shutdown()
-        case .removeEnvironment(let deleteModel):
+        case .removeEnvironment(let deleteModel, let removal):
             guard let environment else { return }
             // What the last check saw, for when the environment can no longer report it.
             let hub = host?.servicePaths?.hubDir
@@ -277,11 +285,11 @@ public final class ServiceDriver {
             do {
                 try await environment.remove(service, deleteModel: deleteModel, knownFolders: known)
             } catch {
-                send(.removalFailed(error.localizedDescription))
+                send(.removalFailed(error.localizedDescription, removal: removal))
                 return
             }
             ServiceLog.install.info("\(self.service.rawValue, privacy: .public): removed (model files: \(deleteModel))")
-            await run(send(.removalFinished))
+            await run(send(.removalFinished(removal: removal)))
         default:
             performImmediate(effect)
         }
@@ -289,7 +297,7 @@ public final class ServiceDriver {
 
     // MARK: - Install
 
-    private func runAppleSpeechInstall() {
+    private func runAppleSpeechInstall(install tag: Int) {
         warning = nil
         assetProgress = 0
         ServiceLog.install.info("apple_speech: installing speech model")
@@ -300,19 +308,19 @@ public final class ServiceDriver {
                 guard let self else { return }
                 self.installTask = nil
                 self.assetProgress = nil
-                await self.run(self.send(.appleSpeechInstallEnded(.finished)))
+                await self.run(self.send(.appleSpeechInstallEnded(.finished, install: tag)))
             } catch {
                 guard let self else { return }
                 self.installTask = nil
                 self.assetProgress = nil
                 let outcome: InstallOutcome =
                     Task.isCancelled ? .cancelled : .failed(stage: .model, message: error.localizedDescription, logTail: [])
-                await self.run(self.send(.appleSpeechInstallEnded(outcome)))
+                await self.run(self.send(.appleSpeechInstallEnded(outcome, install: tag)))
             }
         }
     }
 
-    private func runInstall(mode: InstallMode, then: InstallContinuation) {
+    private func runInstall(mode: InstallMode, then: InstallContinuation, install tag: Int) {
         guard let environment else { return }
         warning = nil
         download = nil
@@ -329,7 +337,7 @@ public final class ServiceDriver {
                     switch event {
                     case .stage(let s):
                         stage = s
-                        self.send(.installStage(s))
+                        self.send(.installStage(s, install: tag))
                         self.installDetail = ""
                     case .log(let line):
                         self.installDetail = Self.summarize(uvLine: line) ?? self.installDetail
@@ -344,7 +352,7 @@ public final class ServiceDriver {
                 self.installTask = nil
                 self.download = nil
                 ServiceLog.install.info("\(service.rawValue, privacy: .public): install finished")
-                await self.run(self.send(.installEnded(.finished, then: then)))
+                await self.run(self.send(.installEnded(.finished, then: then, install: tag)))
             } catch {
                 guard let self else { return }
                 self.installTask = nil
@@ -362,7 +370,7 @@ public final class ServiceDriver {
                             "\(service.rawValue, privacy: .public): install failed: \(error.localizedDescription, privacy: .public)")
                     }
                 }
-                await self.run(self.send(.installEnded(outcome, then: then)))
+                await self.run(self.send(.installEnded(outcome, then: then, install: tag)))
             }
         }
     }
@@ -377,14 +385,16 @@ public final class ServiceDriver {
         let sink = LogSink(url: paths.appLog(service))
         sink.write("---- \(Date().formatted(.iso8601)) starting apple_speech on \(ServiceCatalog.host):\(port)")
         logSink = sink
-        native.onLog = { [weak self] line in
-            Task { @MainActor in
-                self?.logSink?.write(line)
-                self?.appendLog(line)
-            }
-        }
         nextID += 1
         let id = ServerID(nextID)
+        // A line from a server that was replaced never reaches the next one's log.
+        native.onLog = { [weak self] line in
+            Task { @MainActor in
+                guard let self, self.state.native == id else { return }
+                self.logSink?.write(line)
+                self.appendLog(line)
+            }
+        }
         nativeServer = native
         execute(send(.nativeLaunched(id)))
         let now = dependencies.now
@@ -426,11 +436,14 @@ public final class ServiceDriver {
         watch(sub, id: id, port: port)
     }
 
-    /// Reads a launched server's output and reports its ready line, errors and exit.
+    /// Reads a launched server's output and reports its ready line, errors and
+    /// exit. The readers belong to server `id`: they stop at its exit (a
+    /// descendant may hold the pipes open), and a line read once `id` is no
+    /// longer the current server is dropped, so it can't reach the next launch.
     private func watch(_ sub: any ServerProcess, id: ServerID, port: Int) {
-        Task { [weak self] in
+        let errors = Task { [weak self] in
             for await line in sub.stderr {
-                guard let self else { return }
+                guard let self, self.state.server == id else { return }
                 self.logSink?.write(line)
                 self.appendLog(line)
                 if self.state.phase == .starting, let message = Self.logMessage(line) { self.startDetail = message }
@@ -439,7 +452,8 @@ public final class ServiceDriver {
         let now = dependencies.now
         let events = Task { [weak self] in
             for await line in sub.stdout {
-                guard let self, let event = ServerCLIEvent.parse(line) else { continue }
+                guard let self, self.state.server == id else { return }
+                guard let event = ServerCLIEvent.parse(line) else { continue }
                 if event.event == "ready" {
                     let rate = event.rate ?? (self.info.kind == .tts ? 24000 : STTWire.rate)
                     self.execute(
@@ -449,6 +463,7 @@ public final class ServiceDriver {
                 }
             }
         }
+        readers[id] = [errors, events]
         let drain = dependencies.drainLimit
         Task { [weak self] in
             // The final `error` line is read before the exit is judged.
@@ -459,6 +474,7 @@ public final class ServiceDriver {
 
     /// The server `id` exited (reported after its stdout drained).
     public func serverExited(_ id: ServerID, status: Int32) {
+        for reader in readers.removeValue(forKey: id) ?? [] { reader.cancel() }
         if state.server == id {
             ServiceLog.server.info(
                 "\(self.service.rawValue, privacy: .public): exited status \(status) (requested: \(self.state.stopRequested))")
@@ -535,8 +551,8 @@ public final class ServiceDriver {
         log: [String] = [], startDetail: String = "", installDetail: String = ""
     ) {
         self.state = state
+        self.state.cache = cache
         self.download = download
-        self.cache = cache
         self.log = log
         self.startDetail = startDetail
         self.installDetail = installDetail

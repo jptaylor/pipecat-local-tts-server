@@ -1,10 +1,11 @@
 import Foundation
 
 // The per-service lifecycle as a pure state machine: `ServiceLifecycle.reduce`
-// maps (state, event) to (state', effects). It decides every phase change and
-// every guard against a late event (a ready or exit that arrives after Stop,
-// Delete or a relaunch). `ServiceDriver` runs the effects; the app's
-// `ServiceModel` only publishes the driver's state and forwards user intents.
+// maps (state, event) to (state', effects). It decides every phase change and,
+// through one rule (`reduce`), every guard against a late result: a result is
+// applied only while the owner it was issued for (the epoch, an install, probe
+// or removal slot, a ServerID) is current. `ServiceDriver` runs the effects;
+// the app's `ServiceModel` only publishes the driver's state and forwards intents.
 
 /// Where one service is in its lifecycle (what the UI shows).
 public enum ServicePhase: Equatable, Sendable {
@@ -93,7 +94,8 @@ public struct SupervisedError: Equatable, Sendable {
 /// What a finished install does next.
 public enum InstallContinuation: Equatable, Sendable {
     case refresh
-    /// The package refresh `start()` runs for an outdated environment: start once it is in.
+    /// The package refresh `start()` runs for an outdated environment: start once
+    /// it is in (only if the refresh after it is still current, see `startAfterRead`).
     case refreshThenStart
 }
 
@@ -104,20 +106,30 @@ public enum InstallOutcome: Equatable, Sendable {
     case failed(stage: InstallStage, message: String, logTail: [String])
 }
 
+/// Everything that reaches the reducer. A result of async work names the owner
+/// it was issued for (an `epoch`, `install`, `probe` or `removal` tag, or a
+/// `ServerID`); `ServiceLifecycle.reduce` drops it unless that owner is current.
 public enum LifecycleEvent: Equatable, Sendable {
-    /// A re-read of the environment (nil: leave that field as it is), started
-    /// under `generation` (`LifecycleState.generation` when the read began).
-    case refreshed(ServicePhase, environment: EnvironmentStatus? = nil, requested: Bool? = nil, generation: Int)
+    /// A re-read of the phase was asked for (bootstrap, Reset, a sibling).
+    case refreshRequested
+    /// The read issued under `epoch` found the environment (its slow cache probe is still running).
+    case environmentRead(EnvironmentStatus, epoch: Int)
+    /// The read issued under `epoch` finished (nil: leave that field as it is;
+    /// `cache: .some(nil)` clears the cache status).
+    case refreshed(
+        ServicePhase, environment: EnvironmentStatus? = nil, requested: Bool? = nil, cache: ModelCacheStatus?? = nil,
+        epoch: Int)
     /// A sibling variant changed the shared environment (nil: no manager yet).
     case environmentChanged(EnvironmentStatus?)
     case installRequested(managerAvailable: Bool)
     case cancelInstallRequested
-    case installStage(InstallStage)
-    case installEnded(InstallOutcome, then: InstallContinuation)
-    case appleSpeechInstallEnded(InstallOutcome)
+    case installStage(InstallStage, install: Int)
+    case installEnded(InstallOutcome, then: InstallContinuation, install: Int)
+    case appleSpeechInstallEnded(InstallOutcome, install: Int)
     case startRequested(appAvailable: Bool, managerAvailable: Bool, portFree: Bool)
-    /// The answer to the port probe `probe` (`LifecycleState.portProbe`).
+    /// The answer to the port probe `probe` (`LifecycleState.probe`).
     case portOwnerFound(PortProbe.Owner, probe: Int)
+    /// The synchronous results of a `.launch` / `.launchNative` effect (same main-actor turn).
     case launched(ServerID)
     case launchFailed(String)
     case nativeLaunched(ServerID)
@@ -134,19 +146,99 @@ public enum LifecycleEvent: Equatable, Sendable {
     case shutdownServers
     case removeRequested(deleteModel: Bool, managerAvailable: Bool)
     /// The removal's cancelled install has unwound.
-    case removalResumed(deleteModel: Bool)
-    case removalFailed(String)
-    case removalFinished
+    case removalResumed(deleteModel: Bool, removal: Int)
+    case removalFailed(String, removal: Int)
+    case removalFinished(removal: Int)
     case dismissFailure
+
+    /// The event's case, for the classification tables (`owner`, `isNonOwning`).
+    public enum Kind: CaseIterable, Sendable {
+        case refreshRequested, environmentRead, refreshed, environmentChanged, installRequested, cancelInstallRequested
+        case installStage, installEnded, appleSpeechInstallEnded, startRequested, portOwnerFound, launched, launchFailed
+        case nativeLaunched, nativeBound, nativeFailed, ready, supervisedError, readyTimedOut, exited, stopRequested
+        case shutdownRequested, shutdownServers, removeRequested, removalResumed, removalFailed, removalFinished
+        case dismissFailure
+    }
+
+    /// Which owner a result must name to be applied (`.none`: a user intent or
+    /// a synchronous effect result, always current).
+    public enum Owner: Sendable {
+        case none, epoch, install, probe, removal, server, native
+    }
+
+    public var kind: Kind {
+        switch self {
+        case .refreshRequested: .refreshRequested
+        case .environmentRead: .environmentRead
+        case .refreshed: .refreshed
+        case .environmentChanged: .environmentChanged
+        case .installRequested: .installRequested
+        case .cancelInstallRequested: .cancelInstallRequested
+        case .installStage: .installStage
+        case .installEnded: .installEnded
+        case .appleSpeechInstallEnded: .appleSpeechInstallEnded
+        case .startRequested: .startRequested
+        case .portOwnerFound: .portOwnerFound
+        case .launched: .launched
+        case .launchFailed: .launchFailed
+        case .nativeLaunched: .nativeLaunched
+        case .nativeBound: .nativeBound
+        case .nativeFailed: .nativeFailed
+        case .ready: .ready
+        case .supervisedError: .supervisedError
+        case .readyTimedOut: .readyTimedOut
+        case .exited: .exited
+        case .stopRequested: .stopRequested
+        case .shutdownRequested: .shutdownRequested
+        case .shutdownServers: .shutdownServers
+        case .removeRequested: .removeRequested
+        case .removalResumed: .removalResumed
+        case .removalFailed: .removalFailed
+        case .removalFinished: .removalFinished
+        case .dismissFailure: .dismissFailure
+        }
+    }
+}
+
+extension LifecycleEvent.Kind {
+    /// The closed set of events that do not advance the epoch. Each changes no
+    /// phase, no owner slot (install, probe, removal, server, native) and no
+    /// `requested`, and issues no tagged work (`ServiceLifecycleTests.everyKindIsClassified`).
+    public var isNonOwning: Bool {
+        switch self {
+        case .cancelInstallRequested, .environmentRead, .supervisedError: true
+        case .refreshRequested, .refreshed, .environmentChanged, .installRequested, .installStage, .installEnded,
+            .appleSpeechInstallEnded, .startRequested, .portOwnerFound, .launched, .launchFailed, .nativeLaunched,
+            .nativeBound, .nativeFailed, .ready, .readyTimedOut, .exited, .stopRequested, .shutdownRequested,
+            .shutdownServers, .removeRequested, .removalResumed, .removalFailed, .removalFinished, .dismissFailure:
+            false
+        }
+    }
+
+    public var owner: LifecycleEvent.Owner {
+        switch self {
+        case .environmentRead, .refreshed: .epoch
+        case .installStage, .installEnded, .appleSpeechInstallEnded: .install
+        case .portOwnerFound: .probe
+        case .removalResumed, .removalFailed, .removalFinished: .removal
+        case .ready, .supervisedError, .readyTimedOut, .exited: .server
+        case .nativeBound, .nativeFailed: .native
+        case .refreshRequested, .environmentChanged, .installRequested, .cancelInstallRequested, .startRequested,
+            .launched, .launchFailed, .nativeLaunched, .stopRequested, .shutdownRequested, .shutdownServers,
+            .removeRequested, .dismissFailure:
+            .none
+        }
+    }
 }
 
 /// Work for `ServiceDriver`, in order. Effects never change the phase themselves;
-/// their results come back as events.
+/// their results come back as events, carrying the tag the effect was issued with.
 public enum LifecycleEffect: Equatable, Sendable {
-    case refresh
+    /// Re-reads the phase; its results carry `epoch`.
+    case refresh(epoch: Int)
     case familyChanged
-    case runInstall(InstallMode, then: InstallContinuation)
-    case runAppleSpeechInstall
+    case runInstall(InstallMode, then: InstallContinuation, install: Int)
+    case runAppleSpeechInstall(install: Int)
     /// Cancels the install in flight (remembered for `awaitInstall`).
     case cancelInstall
     /// Waits for the cancelled install to unwind; `bounded` caps it at the quit drain.
@@ -166,12 +258,12 @@ public enum LifecycleEffect: Equatable, Sendable {
     case stopServer(ServerID, wait: Bool)
     case appendLog(String)
     case startDetail(String)
-    case resumeRemoval(deleteModel: Bool)
+    case resumeRemoval(deleteModel: Bool, removal: Int)
     case shutdown
-    case removeEnvironment(deleteModel: Bool)
+    case removeEnvironment(deleteModel: Bool, removal: Int)
     case clearLog
-    /// `start()` again, unless the task running it was cancelled.
-    case startIfNotCancelled
+    /// `start()` (a current refresh after a package refresh asked for it).
+    case start
 }
 
 public struct LifecycleState: Equatable, Sendable {
@@ -183,6 +275,8 @@ public struct LifecycleState: Equatable, Sendable {
     public var environment: EnvironmentStatus = .missing
     /// Installed by the user (a variant's family environment can exist without it).
     public var requested = false
+    /// The last cache probe a current read reported.
+    public var cache: ModelCacheStatus?
     public var running: ServiceRunningInfo?
     /// The current server subprocess.
     public var server: ServerID?
@@ -192,16 +286,24 @@ public struct LifecycleState: Equatable, Sendable {
     public var stopRequested = false
     /// App quit began.
     public var shuttingDown = false
-    /// An install is in flight.
-    public var installing = false
+    /// The install in flight: the epoch it was started under.
+    public var install: Int?
+    /// The removal in flight: the epoch it was started under.
+    public var removal: Int?
+    /// The port-owner probe in flight: the epoch it was issued under. It lives
+    /// only while the phase is `.starting` with no server.
+    public var probe: Int?
     public var supervisedError: SupervisedError?
-    /// Bumped by every event (other than a refresh) that changes the phase or
-    /// what owns it. A refresh started under an older generation is dropped.
-    public var generation = 0
-    /// The port-owner probe in flight; it only lives while the phase is `.starting`.
-    public var portProbe: Int?
-    /// The last probe token handed out.
-    public var probes = 0
+    /// Advanced by every event outside the non-owning set; a read (refresh)
+    /// issued under an older epoch is dropped.
+    public var epoch = 0
+    /// The read in flight: the epoch it was issued under.
+    public var reading: Int?
+    /// The read in flight starts the service when it lands current (refreshThenStart).
+    public var startAfterRead = false
+    /// The user cancelled an Apple Speech download: a refresh that still sees
+    /// the system downloading does not attach to it again.
+    public var declinedSystemDownload = false
 
     public init(info: ServiceInfo) {
         runtime = info.runtime
@@ -211,14 +313,29 @@ public struct LifecycleState: Equatable, Sendable {
 }
 
 extension LifecycleState {
-    /// A server, an install or a removal owns the phase: a refresh must not
-    /// overwrite it (only the event that ends that work moves the phase on). A
+    /// An install is in flight.
+    public var installing: Bool { install != nil }
+
+    /// A server, an install, a probe or a removal owns the phase: a refresh must
+    /// not overwrite it (only the event that ends that work moves the phase on). A
     /// server already asked to stop no longer owns it (Stop and removal hold
     /// their own phase until its exit).
     public var hasLiveWork: Bool {
-        if installing || (server != nil && !stopRequested) || native != nil || portProbe != nil { return true }
+        if install != nil || removal != nil || (server != nil && !stopRequested) || native != nil || probe != nil {
+            return true
+        }
         switch phase {
         case .starting, .running, .stopping, .removing: return true
+        default: return false
+        }
+    }
+
+    /// App quit must wait: a server to stop, or an install or removal whose
+    /// subprocess must not outlive the app.
+    public var blocksQuit: Bool {
+        if install != nil || removal != nil || server != nil || native != nil { return true }
+        switch phase {
+        case .starting, .running, .stopping, .installing, .removing: return true
         default: return false
         }
     }
@@ -252,15 +369,6 @@ extension LifecycleState {
         case .checking, .installing, .starting, .stopping, .removing: true
         default: false
         }
-    }
-
-    /// What a later event can take over from (the generation's inputs).
-    fileprivate var ownership: Ownership { Ownership(phase: phase, server: server, native: native, installing: installing) }
-    fileprivate struct Ownership: Equatable {
-        var phase: ServicePhase
-        var server: ServerID?
-        var native: ServerID?
-        var installing: Bool
     }
 }
 
@@ -296,52 +404,112 @@ public enum ServiceLifecycle {
         }
     }
 
-    /// Every async result is applied here against the state it lands in:
-    /// a refresh carries the generation it was started under and is dropped
-    /// when that generation is stale or live work owns the phase; a port probe
-    /// carries its token; server events carry their `ServerID`.
+    /// Whether `event` names an owner that is still current in `s`.
+    public static func isCurrent(_ event: LifecycleEvent, in s: LifecycleState) -> Bool {
+        switch event {
+        case .environmentRead(_, let epoch), .refreshed(_, _, _, _, let epoch): epoch == s.epoch
+        case .installStage(_, let install), .installEnded(_, _, let install), .appleSpeechInstallEnded(_, let install):
+            install == s.install
+        case .portOwnerFound(_, let probe): probe == s.probe
+        case .removalResumed(_, let removal), .removalFailed(_, let removal), .removalFinished(let removal):
+            removal == s.removal
+        case .ready(let id, _, _, _, _, _), .supervisedError(let id, _), .readyTimedOut(let id), .exited(let id, _, _):
+            id == s.server
+        case .nativeBound(let id, _, _, _), .nativeFailed(let id, _): id == s.native
+        case .refreshRequested, .environmentChanged, .installRequested, .cancelInstallRequested, .startRequested,
+            .launched, .launchFailed, .nativeLaunched, .stopRequested, .shutdownRequested, .shutdownServers,
+            .removeRequested, .dismissFailure:
+            true
+        }
+    }
+
+    /// The one rule every event goes through:
+    /// 1. A result whose owner is no longer current changes nothing, the epoch
+    ///    included (a stale native bind only releases the server it holds).
+    /// 2. Every event outside the non-owning set advances the epoch before it
+    ///    runs, so the work it issues is tagged with the new epoch and any read
+    ///    issued earlier is stale. An event that then changes nothing (its guard
+    ///    rejected it: no state change, no effect) leaves the epoch as it was.
+    /// 3. A probe lives only while the phase is `.starting` with no server.
+    /// 4. A read the advance orphaned is issued again when nothing owns the
+    ///    phase (otherwise the owner's own end re-reads it); it never carries a
+    ///    start with it.
     public static func reduce(_ s: inout LifecycleState, _ event: LifecycleEvent) -> [LifecycleEffect] {
-        let before = s.ownership
-        let effects = apply(&s, event)
-        if s.phase != .starting { s.portProbe = nil }
-        if case .refreshed = event {} else if s.ownership != before { s.generation += 1 }
+        guard isCurrent(event, in: s) else {
+            if case .nativeBound(let id, _, _, _) = event { return [.discardNative(id)] }
+            return []
+        }
+        let before = s
+        if !event.kind.isNonOwning { s.epoch += 1 }
+        var effects = apply(&s, event)
+        var unchanged = s
+        unchanged.epoch = before.epoch
+        if effects.isEmpty, unchanged == before {
+            s = before
+            return []
+        }
+        if s.phase != .starting || s.server != nil || s.native != nil { s.probe = nil }
+        if let reading = s.reading, reading != s.epoch {
+            s.startAfterRead = false
+            if s.hasLiveWork {
+                s.reading = nil
+            } else {
+                effects.append(read(&s))
+            }
+        }
         return effects
     }
 
     private static func apply(_ s: inout LifecycleState, _ event: LifecycleEvent) -> [LifecycleEffect] {
         switch event {
-        case .refreshed(let phase, let environment, let requested, let generation):
-            // Read before a later Start, Stop, Delete or install took the phase.
-            guard generation == s.generation else { return [] }
+        case .refreshRequested:
+            return [read(&s)]
+
+        case .environmentRead(let environment, _):
+            s.environment = environment
+            return []
+
+        case .refreshed(let phase, let environment, let requested, let cache, _):
+            let start = s.startAfterRead
+            s.reading = nil
+            s.startAfterRead = false
             if let environment { s.environment = environment }
-            // A server, install or removal owns the phase; only its own end moves it.
+            if let cache { s.cache = cache }
+            // A server, install, probe or removal owns the phase; only its own end moves it.
             guard !s.hasLiveWork else { return [] }
             if let requested { s.requested = requested }
             if s.runtime == .appleSpeech, case .installing = phase {
+                // The user cancelled: don't attach again while the system still downloads.
+                if s.declinedSystemDownload {
+                    s.phase = .notInstalled
+                    return []
+                }
                 // The system is already downloading the model (an earlier launch or
                 // another app): attach to that download so progress and Cancel work.
-                s.installing = true
+                s.install = s.epoch
                 s.phase = .installing(.model)
-                return [.runAppleSpeechInstall]
+                return [.runAppleSpeechInstall(install: s.epoch)]
             }
+            s.declinedSystemDownload = false
             s.phase = phase
-            return []
+            return start ? [.start] : []
 
         case .environmentChanged(let environment):
             // Leave a phase that work in progress (or a failure on screen) owns.
             switch s.phase {
-            case .checking, .notInstalled, .needsModel, .installed: return [.refresh]
+            case .checking, .notInstalled, .needsModel, .installed: return [read(&s)]
             default:
                 if let environment { s.environment = environment }
                 return []
             }
 
         case .installRequested(let managerAvailable):
-            guard !s.installing else { return [] }
+            guard s.install == nil, s.removal == nil else { return [] }
             if s.runtime == .appleSpeech {
-                s.installing = true
+                s.declinedSystemDownload = false
+                s.install = s.epoch
                 s.phase = .installing(.model)
-                return [.runAppleSpeechInstall]
+                return [.runAppleSpeechInstall(install: s.epoch)]
             }
             guard managerAvailable else { return [] }
             return beginInstall(&s, mode: installMode(environment: s.environment, phase: s.phase), then: .refresh)
@@ -349,22 +517,22 @@ public enum ServiceLifecycle {
         case .cancelInstallRequested:
             return [.cancelInstall]
 
-        case .installStage(let stage):
-            // Only the install in flight reports stages, and never over a removal.
-            guard s.installing, s.phase != .removing else { return [] }
+        case .installStage(let stage, _):
+            // Never over a removal.
+            guard s.phase != .removing else { return [] }
             s.phase = .installing(stage)
             return []
 
-        case .installEnded(let outcome, let then):
-            s.installing = false
+        case .installEnded(let outcome, let then, _):
+            s.install = nil
             switch outcome {
-            case .finished:
-                return then == .refresh ? [.refresh, .familyChanged] : [.refresh, .startIfNotCancelled, .familyChanged]
             case _ where s.phase == .removing:
                 // remove() cancelled this install and owns the phase from here.
-                return []
+                return outcome == .finished ? [.familyChanged] : []
+            case .finished:
+                return [read(&s, thenStart: then == .refreshThenStart), .familyChanged]
             case .cancelled:
-                return [.refresh, .familyChanged]
+                return [read(&s), .familyChanged]
             case .failed(let stage, let message, let logTail):
                 let download = stage == .model
                 s.phase = .failed(
@@ -374,20 +542,24 @@ public enum ServiceLifecycle {
                 return []
             }
 
-        case .appleSpeechInstallEnded(let outcome):
-            s.installing = false
+        case .appleSpeechInstallEnded(let outcome, _):
+            s.install = nil
             switch outcome {
-            case .finished: return [.refresh]
+            case .finished: return [read(&s)]
             // Quit cancelled it: the app is going away, nothing to show.
             case _ where s.shuttingDown: return []
-            case .cancelled: return [.refresh]
+            case .cancelled:
+                s.declinedSystemDownload = true
+                return [read(&s)]
             case .failed(_, let message, _):
                 s.phase = .failed(ServiceFailure(kind: .download, title: "Model download failed", message: message))
                 return []
             }
 
         case .startRequested(let appAvailable, let managerAvailable, let portFree):
-            guard appAvailable, s.server == nil, s.native == nil, s.phase != .removing else { return [] }
+            guard appAvailable, s.server == nil, s.native == nil, s.install == nil, s.removal == nil,
+                s.phase != .removing
+            else { return [] }
             if s.runtime.usesPython, case .outdated = s.environment, managerAvailable {
                 // The app was updated since this env was built: refresh its packages, then start.
                 return beginInstall(&s, mode: .packages, then: .refreshThenStart)
@@ -398,10 +570,9 @@ public enum ServiceLifecycle {
             }
             return s.runtime == .appleSpeech ? [.launchNative(port: s.port)] : [.launch(port: s.port)]
 
-        case .portOwnerFound(let owner, let probe):
-            // A probe that Stop, Delete or a new Start superseded reports nothing.
-            guard s.portProbe == probe, s.phase == .starting else { return [] }
-            s.portProbe = nil
+        case .portOwnerFound(let owner, _):
+            guard s.phase == .starting else { return [] }
+            s.probe = nil
             s.phase = .failed(.portBusy(port: s.port, owner: owner))
             return []
 
@@ -423,38 +594,33 @@ public enum ServiceLifecycle {
             return [.startDetail("Starting…")]
 
         case .nativeBound(let id, let port, let pid, let date):
-            // stop() (or remove) while binding: that server is gone, don't report it.
-            guard s.native == id, s.phase == .starting else { return [.discardNative(id)] }
+            guard s.phase == .starting else { return [.discardNative(id)] }
             return [.appendLog("listening on \(ServiceCatalog.host):\(port)")]
                 + becameReady(&s, port: port, pid: pid, rate: STTWire.rate, model: "SpeechTranscriber", at: date)
 
-        case .nativeFailed(let id, let message):
-            guard s.native == id else { return [] }
+        case .nativeFailed(_, let message):
             s.native = nil
             s.phase = .failed(ServiceFailure(kind: .startup(code: nil), title: "Couldn't start", message: message))
             return []
 
-        case .ready(let id, let port, let pid, let rate, let model, let date):
+        case .ready(_, let port, let pid, let rate, let model, let date):
             // A ready that lands after Stop/Delete must not flip the phase back to running.
-            guard s.server == id, s.phase == .starting else { return [] }
+            guard s.phase == .starting else { return [] }
             return becameReady(&s, port: port, pid: pid, rate: rate, model: model, at: date)
 
-        case .supervisedError(let id, let error):
-            // An obsolete server's error must not judge the current server's exit.
-            guard s.server == id else { return [] }
+        case .supervisedError(_, let error):
             s.supervisedError = error
             return []
 
         case .readyTimedOut(let id):
-            guard s.server == id, s.phase == .starting else { return [] }
+            guard s.phase == .starting else { return [] }
             s.supervisedError = SupervisedError(code: "Timeout", message: "The server did not become ready within 10 minutes.")
             return [.stopServer(id, wait: false)]
 
-        case .exited(let id, let status, let logTail):
+        case .exited(_, let status, let logTail):
             // A requested exit only completes a Stop (`.stopping` -> `.installed`):
             // it is reported after the stdout drain, up to 2 s after `shutdown()`
             // returned, so a removal (or its failure) may own the phase by then.
-            guard s.server == id else { return [] }
             s.server = nil
             s.running = nil
             let effects: [LifecycleEffect] = [.tearDown(note: "exited with status \(status)")]
@@ -484,10 +650,10 @@ public enum ServiceLifecycle {
             if s.native != nil { return stopNative(&s) }
             guard let id = s.server else {
                 // Cancel while the busy port is probed: drop the probe, re-read the phase.
-                guard s.portProbe != nil else { return [] }
-                s.portProbe = nil
+                guard s.probe != nil else { return [] }
+                s.probe = nil
                 s.phase = .checking
-                return [.refresh]
+                return [read(&s)]
             }
             s.stopRequested = true
             s.phase = .stopping
@@ -496,7 +662,7 @@ public enum ServiceLifecycle {
         case .shutdownRequested:
             // Quit cancels an Apple Speech model install; a Python install is the
             // environment manager's to stop.
-            guard s.runtime == .appleSpeech, s.installing else { return [] }
+            guard s.runtime == .appleSpeech, s.install != nil else { return [] }
             s.shuttingDown = true
             return [.cancelInstall, .awaitInstall(bounded: true)]
 
@@ -507,43 +673,52 @@ public enum ServiceLifecycle {
             return [.detachTryIt, .stopServer(id, wait: true)]
 
         case .removeRequested(let deleteModel, let managerAvailable):
-            guard s.runtime.usesPython, managerAvailable, s.phase != .removing else { return [] }
+            guard s.runtime.usesPython, managerAvailable, s.phase != .removing, s.removal == nil else { return [] }
             s.phase = .removing
+            s.removal = s.epoch
             // An install in flight is cancelled and must unwind (and drop the family
             // lock) before removal; it leaves the phase to the removal.
-            return [.cancelInstall, .awaitInstall(bounded: false), .resumeRemoval(deleteModel: deleteModel)]
+            return [.cancelInstall, .awaitInstall(bounded: false), .resumeRemoval(deleteModel: deleteModel, removal: s.epoch)]
 
-        case .removalResumed(let deleteModel):
+        case .removalResumed(let deleteModel, let removal):
             s.phase = .removing  // an install that had already finished may have refreshed it
             // Stop the server first so its exit can't race the removal.
-            return [.shutdown, .removeEnvironment(deleteModel: deleteModel)]
+            return [.shutdown, .removeEnvironment(deleteModel: deleteModel, removal: removal)]
 
-        case .removalFailed(let message):
+        case .removalFailed(let message, _):
+            s.removal = nil
             s.phase = .failed(ServiceFailure(kind: .install, title: "Couldn't remove", message: message))
             return []
 
         case .removalFinished:
             // The removal no longer owns the phase: the refresh reads what is left.
+            s.removal = nil
             s.phase = .checking
-            return [.clearLog, .refresh, .familyChanged]
+            return [.clearLog, read(&s), .familyChanged]
 
         case .dismissFailure:
-            return [.refresh]
+            return [read(&s)]
         }
     }
 
+    /// Issues a read under the current epoch (it replaces any read in flight).
+    private static func read(_ s: inout LifecycleState, thenStart: Bool = false) -> LifecycleEffect {
+        s.reading = s.epoch
+        s.startAfterRead = thenStart
+        return .refresh(epoch: s.epoch)
+    }
+
     private static func probePort(_ s: inout LifecycleState) -> LifecycleEffect {
-        s.probes += 1
-        s.portProbe = s.probes
-        return .probePortOwner(port: s.port, probe: s.probes)
+        s.probe = s.epoch
+        return .probePortOwner(port: s.port, probe: s.epoch)
     }
 
     private static func beginInstall(_ s: inout LifecycleState, mode: InstallMode, then: InstallContinuation)
         -> [LifecycleEffect]
     {
-        s.installing = true
+        s.install = s.epoch
         s.phase = .installing(firstStage(mode: mode, environment: s.environment))
-        return [.runInstall(mode, then: then)]
+        return [.runInstall(mode, then: then, install: s.epoch)]
     }
 
     private static func becameReady(

@@ -19,6 +19,9 @@ import Testing
         private(set) var stops = 0
         /// False: `stop()` only records the request; the test calls `exit`.
         var exitsOnStop = true
+        /// A descendant holds the pipes: they stay open after `exit`, and the
+        /// exit is reported without waiting for them (the drain limit).
+        var keepsPipesOpen = false
 
         init() {
             (stdout, out) = AsyncStream.makeStream()
@@ -27,10 +30,13 @@ import Testing
 
         func run() throws {}
         func emit(_ line: String) { out.yield(line) }
+        func emitError(_ line: String) { err.yield(line) }
 
         func exit(_ code: Int32) {
-            out.finish()
-            err.finish()
+            if !keepsPipesOpen {
+                out.finish()
+                err.finish()
+            }
             let waiters: [CheckedContinuation<Int32, Never>] = lock.withLock {
                 status = code
                 defer { exitWaiters = [] }
@@ -54,7 +60,7 @@ import Testing
                 }
                 if let done { c.resume(returning: done) }
             }
-            await reader.value
+            if !keepsPipesOpen { await reader.value }
             return code
         }
     }
@@ -103,6 +109,66 @@ import Testing
         }
         func remove(_ backend: Service, deleteModel: Bool, knownFolders: [URL]) async throws {}
         func serveArguments(for info: ServiceInfo, port: Int) -> [String]? { ["serve"] }
+    }
+
+    /// An environment the test scripts: an outdated env that its install
+    /// brings up to date, a cache probe that waits for `release()`, a removal.
+    final class ScriptedEnvironment: ServiceEnvironment, @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var open = false
+        private var status: EnvironmentStatus
+        private var requested = true
+        static let marker = EnvironmentMarker(service: "tone", fingerprint: "w", python: "3.12", createdAt: Date())
+
+        init(_ status: EnvironmentStatus) { self.status = status }
+        func environmentStatus(_ backend: Service) -> EnvironmentStatus { lock.withLock { status } }
+        func isRequested(_ service: Service) -> Bool { lock.withLock { requested } }
+        func modelCacheStatus(_ backend: Service, includeOutdated: Bool) async -> ModelCacheStatus? {
+            await withCheckedContinuation { c in
+                let now: Bool = lock.withLock {
+                    if open { return true }
+                    waiters.append(c)
+                    return false
+                }
+                if now { c.resume() }
+            }
+            return ModelCacheStatus(cached: true, sizeBytes: 1, repoFolders: [])
+        }
+        func release() {
+            let all: [CheckedContinuation<Void, Never>] = lock.withLock {
+                open = true
+                defer { waiters = [] }
+                return waiters
+            }
+            for c in all { c.resume() }
+        }
+        var probing: Bool { lock.withLock { !waiters.isEmpty } }
+        func install(_ backend: Service, mode: InstallMode) -> AsyncThrowingStream<InstallEvent, Error> {
+            lock.withLock { status = .ready(Self.marker) }
+            return AsyncThrowingStream { $0.finish() }
+        }
+        func remove(_ backend: Service, deleteModel: Bool, knownFolders: [URL]) async throws {
+            lock.withLock {
+                status = .missing
+                requested = false
+            }
+        }
+        func serveArguments(for info: ServiceInfo, port: Int) -> [String]? { ["serve"] }
+    }
+
+    /// Hands out the test's processes in order and counts the launches.
+    final class Processes: @unchecked Sendable {
+        private let lock = NSLock()
+        private var queue: [FakeProcess]
+        private(set) var launches = 0
+        init(_ queue: [FakeProcess]) { self.queue = queue }
+        func next() -> FakeProcess {
+            lock.withLock {
+                launches += 1
+                return queue.isEmpty ? FakeProcess() : queue.removeFirst()
+            }
+        }
     }
 
     @MainActor final class FakeHost: ServiceHost {
@@ -311,4 +377,91 @@ import Testing
         await until { driver.state.server == nil }
         #expect(driver.state.phase == .failed(ServiceFailure(kind: .startup(code: "ConfigError"), title: "Couldn't start", message: "bad voice")))
     }
+
+    // MARK: - The reported sequences, through the driver
+
+    /// A descendant keeps the crashed server's pipes open: its late output must
+    /// not reach the next launch's log or start detail.
+    @Test func aStaleReaderLineNeverReachesTheNextLaunch() async {
+        let old = FakeProcess()
+        old.keepsPipesOpen = true
+        let new = FakeProcess()
+        let processes = Processes([old, new])
+        let host = FakeHost()
+        var deps = ServiceDependencies()
+        deps.isPortFree = { _ in true }
+        deps.makeProcess = { _ in processes.next() }
+        let driver = ServiceDriver(info: Service.tone.info, dependencies: deps)
+        driver.host = host
+        driver.start()
+        old.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
+        await until { driver.state.phase == .running }
+        old.exit(1)
+        await until { driver.state.server == nil }
+        guard case .failed = driver.state.phase else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        driver.start()
+        #expect(processes.launches == 2 && driver.state.phase == .starting)
+        let late = "2026-10-23 09:31:34,650 INFO tts_server: late line from the old server"
+        old.emitError(late)
+        old.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(!driver.log.contains(late), "the old server's reader wrote into the new launch's log")
+        #expect(driver.startDetail == "Loading model…", "\(driver.startDetail)")
+        #expect(driver.state.phase == .starting)
+        new.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":78}"#)
+        await until { driver.state.phase == .running }
+        #expect(driver.state.running?.pid == 78)
+    }
+
+    /// Start on an outdated environment refreshes its packages, then reads the
+    /// phase before starting. Delete while that read's cache probe runs: the
+    /// read lands stale, so nothing is launched.
+    @Test func deleteDuringRefreshThenStartLaunchesNothing() async {
+        let env = ScriptedEnvironment(.outdated(ScriptedEnvironment.marker))
+        let processes = Processes([])
+        let host = FakeHost(environment: env)
+        var deps = ServiceDependencies()
+        deps.isPortFree = { _ in true }
+        deps.makeProcess = { _ in processes.next() }
+        let driver = ServiceDriver(info: Service.tone.info, dependencies: deps)
+        driver.host = host
+        await driver.refresh()
+        #expect(driver.state.phase == .installed)
+        driver.start()
+        await until { env.probing }
+        #expect(env.probing, "the package refresh's read never reached the cache probe")
+        #expect(driver.state.startAfterRead)
+        driver.remove(deleteModel: false)
+        await until { driver.state.phase == .notInstalled }
+        #expect(driver.state.phase == .notInstalled)
+        env.release()
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(processes.launches == 0, "the deleted service was started")
+        #expect(driver.state.phase == .notInstalled && driver.state.server == nil)
+    }
+
+    /// The system keeps downloading after the user cancelled the attached
+    /// install: the follow-up refresh does not attach again.
+    @Test func aCancelledSystemDownloadStaysCancelled() async {
+        var deps = ServiceDependencies()
+        let attaches = Counter()
+        deps.appleSpeechPhase = { .installing(.model) }
+        deps.appleSpeechInstall = { _ in
+            attaches.value += 1
+            try await Task.sleep(for: .seconds(30))
+        }
+        let driver = ServiceDriver(info: Service.appleSpeech.info, dependencies: deps)
+        await driver.refresh()
+        await until { attaches.value == 1 }
+        driver.cancelInstall()
+        await until { driver.state.phase == .notInstalled }
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(driver.state.phase == .notInstalled && !driver.state.installing, "\(driver.state.phase)")
+        #expect(attaches.value == 1, "Cancel re-attached to the system download")
+    }
+
+    @MainActor final class Counter { var value = 0 }
 }
