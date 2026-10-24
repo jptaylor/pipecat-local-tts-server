@@ -21,7 +21,8 @@ import Testing
 }
 
 @Suite struct CatalogTests {
-    /// TTS ports must match the tts repo's `justfile` `_resolve` table.
+    /// TTS ports must match the tts repo's `justfile` `_resolve` table
+    /// (`tests/test_macos_catalog_drift.py` checks the Swift source against it).
     @Test func canonicalPorts() {
         let expected: [Service: Int] = [
             .tone: 8665, .kokoro: 8765, .voxtralTTS: 8865, .pocketTTS: 8965,
@@ -97,7 +98,10 @@ import Testing
 
     static func manager() throws -> (EnvironmentManager, AppPaths) {
         let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-variants-\(UUID().uuidString.prefix(8))")
-        let paths = AppPaths(supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"))
+        // Model roots inside the temp dir too: a test never deletes from the real caches.
+        let paths = AppPaths(
+            supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"),
+            hubDir: root.appending(path: "hub"), derivedModelsDir: root.appending(path: "derived"))
         try paths.prepare()
         let tools = Tools(
             uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"),
@@ -173,10 +177,59 @@ import Testing
                 [repo, voices, q8], siblingRepos: ["gradium/phonon-31m-en"], siblingFolders: [voices]) == [q8])
         #expect(EnvironmentManager.unshared([repo], siblingRepos: [], siblingFolders: []) == [repo])
 
-        #expect(EnvironmentManager.isDeletableModelPath(repo))
-        #expect(EnvironmentManager.isDeletableModelPath(q8))
-        #expect(!EnvironmentManager.isDeletableModelPath(URL(filePath: "/Users/x/Documents")))
-        #expect(!EnvironmentManager.isDeletableModelPath(URL(filePath: "/Users/x/.cache/pipecat-tts-server")))
+        let derived = URL(filePath: "/Users/x/.cache/pipecat-tts-server")
+        #expect(EnvironmentManager.isDeletableModelPath(repo, hub: hub, derived: derived))
+        #expect(EnvironmentManager.isDeletableModelPath(q8, hub: hub, derived: derived))
+        #expect(!EnvironmentManager.isDeletableModelPath(URL(filePath: "/Users/x/Documents"), hub: hub, derived: derived))
+        #expect(!EnvironmentManager.isDeletableModelPath(derived, hub: hub, derived: derived))
+    }
+
+    /// The delete guard's whole contract: a candidate is deletable iff it is a
+    /// `models--*` folder directly in the hub, or `<derived>/<backend>/<key>`.
+    @Test func deletionStaysInsideTheModelRoots() {
+        let hub = URL(filePath: "/Users/x/.cache/huggingface/hub")
+        let derived = URL(filePath: "/Users/x/.cache/pipecat-tts-server")
+        let cases: [(String, Bool)] = [
+            ("/Users/x/.cache/huggingface/hub/models--org--name", true),
+            ("/Users/x/.cache/huggingface/hub/models--org--name/", true),
+            ("/Users/x/.cache/pipecat-tts-server/phonon/abc-q8", true),
+            // Look-alike names outside the roots.
+            ("/Users/x/Documents/models--archive", false),
+            ("/Users/x/models--x", false),
+            ("/Users/x/.cache/huggingface/hub/sub/models--org--name", false),
+            ("/Users/x/Documents/pipecat-tts-server/phonon/abc", false),
+            ("/tmp/pipecat-tts-server/a/b", false),
+            // Not a repo folder, or the roots themselves.
+            ("/Users/x/.cache/huggingface/hub", false),
+            ("/Users/x/.cache/huggingface/hub/models--", false),
+            ("/Users/x/.cache/huggingface/hub/datasets--org--name", false),
+            ("/Users/x/.cache/huggingface/hub/.locks", false),
+            ("/Users/x/.cache/pipecat-tts-server", false),
+            ("/Users/x/.cache/pipecat-tts-server/phonon", false),
+            ("/Users/x/.cache/pipecat-tts-server/phonon/abc/deeper", false),
+            ("/Users/x/.cache/pipecat-tts-server/.hidden/abc", false),
+            // `..` that resolves out of (or back into) a root.
+            ("/Users/x/.cache/huggingface/hub/../../../Documents/models--x", false),
+            ("/Users/x/.cache/pipecat-tts-server/phonon/../../../../Documents", false),
+            ("/Users/x/Documents/../.cache/huggingface/hub/models--org--name", true),
+        ]
+        for (path, deletable) in cases {
+            #expect(
+                EnvironmentManager.isDeletableModelPath(URL(filePath: path), hub: hub, derived: derived) == deletable,
+                "\(path)")
+        }
+    }
+
+    @Test func deletionRootsAreComparedWithSymlinksResolved() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-links-\(UUID().uuidString.prefix(8))")
+        let real = root.appending(path: "real-hub")
+        try FileManager.default.createDirectory(at: real.appending(path: "models--org--name"), withIntermediateDirectories: true)
+        let link = root.appending(path: "hub-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let elsewhere = root.appending(path: "elsewhere")
+        #expect(EnvironmentManager.isDeletableModelPath(link.appending(path: "models--org--name"), hub: real, derived: elsewhere))
+        #expect(EnvironmentManager.isDeletableModelPath(real.appending(path: "models--org--name"), hub: link, derived: elsewhere))
+        #expect(!EnvironmentManager.isDeletableModelPath(root.appending(path: "models--org--name"), hub: link, derived: elsewhere))
     }
 
     @Test func quantizedVariantNeedsItsConvertedWeights() throws {
@@ -504,5 +557,271 @@ import Testing
         #expect(AppPaths.huggingFaceHub(environment: ["XDG_CACHE_HOME": "/c"], home: home).path == "/c/huggingface/hub")
         #expect(AppPaths.huggingFaceHub(environment: ["HF_HOME": "/hf", "XDG_CACHE_HOME": "/c"], home: home).path == "/hf/hub")
         #expect(AppPaths.huggingFaceHub(environment: ["HF_HUB_CACHE": "/hub", "HF_HOME": "/hf"], home: home).path == "/hub")
+    }
+}
+
+/// A flag any task can set and poll (for "did it finish in time" checks that
+/// must not hang the test when the answer is no).
+final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var set = false
+    var value: Bool { lock.withLock { set } }
+    func raise() { lock.withLock { set = true } }
+
+    /// Polls for up to `limit`.
+    func wait(_ limit: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + limit
+        while !value, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+        return value
+    }
+}
+
+final class Lines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func append(_ line: String) { lock.withLock { lines.append(line) } }
+    var all: [String] { lock.withLock { lines } }
+}
+
+@Suite struct SupervisedExitOrderingTests {
+    /// The exit lands first and the child's last line after it (the order the
+    /// two pipes' queues can deliver them in): the line is still read before
+    /// the exit is reported.
+    @Test func exitIsReportedAfterTheFinalLine() async throws {
+        let sub = Subprocess(
+            .init(
+                executable: URL(filePath: "/bin/sh"),
+                arguments: ["-c", #"(sleep 0.3; printf '{"event":"error","code":"EADDRINUSE"}\n') & exit 1"#],
+                environment: ProcessEnvironment.base()))
+        try sub.run()
+        let lines = Lines()
+        let reader = Task { for await line in sub.stdout { lines.append(line) } }
+        let status = await sub.waitForExit(after: reader)
+        #expect(status == 1)
+        #expect(lines.all.compactMap(ServerCLIEvent.parse).last?.errorCode == .addressInUse)
+    }
+
+    @Test func drainIsBoundedWhenThePipeStaysOpen() async throws {
+        let sub = Subprocess(
+            .init(executable: URL(filePath: "/bin/sh"), arguments: ["-c", "(sleep 30) & exit 0"], environment: ProcessEnvironment.base()))
+        try sub.run()
+        let reader = Task { for await _ in sub.stdout {} }
+        let clock = ContinuousClock()
+        let start = clock.now
+        #expect(await sub.waitForExit(after: reader, drainLimit: .milliseconds(300)) == 0)
+        #expect(clock.now - start < .seconds(5))
+    }
+}
+
+@Suite struct StreamConsumeTests {
+    enum Boom: Error { case boom }
+
+    /// How a consumer ends, for every way the stream or the consumer can end.
+    @Test func everyEndingIsReportedAsItHappened() async throws {
+        enum Ending { case finished, threw, cancelled }
+        for ending in [Ending.finished, .threw, .cancelled] {
+            let (stream, continuation) = AsyncThrowingStream.makeStream(of: Int.self, throwing: (any Error).self)
+            continuation.yield(1)
+            let seen = Lines()
+            let consumer = Task { () -> (any Error)? in
+                do {
+                    try await stream.consume { seen.append("\($0)") }
+                    return nil
+                } catch { return error }
+            }
+            while seen.all.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+            switch ending {
+            case .finished: continuation.finish()
+            case .threw: continuation.finish(throwing: Boom.boom)
+            case .cancelled: consumer.cancel()
+            }
+            let error = await consumer.value
+            switch ending {
+            case .finished: #expect(error == nil)
+            case .threw: #expect(error is Boom)
+            // The bug: a cancelled `for try await` returns normally, like `.finished`.
+            case .cancelled: #expect(error is CancellationError)
+            }
+            // Nothing is delivered after a cancel.
+            continuation.yield(2)
+            #expect(seen.all == ["1"], "\(ending)")
+        }
+    }
+}
+
+@Suite struct ResponseTrackerTests {
+    @Test func staleCancelAfterStopDoesNotStopTheNextUtterance() {
+        var t = ResponseTracker()
+        t.committed()
+        t.created("r1")
+        #expect(t.isCurrent("r1"))
+        t.abandon()  // Stop
+        t.committed()  // Speak again before r1's cancel acknowledgement
+        #expect(!t.isCurrent("r1"))  // the late response.cancelled{r1} is ignored
+        t.created("r2")
+        #expect(t.isCurrent("r2") && !t.isCurrent("r1"))
+    }
+
+    @Test func stopBeforeCreatedSkipsThatResponse() {
+        var t = ResponseTracker()
+        t.committed()
+        t.abandon()
+        t.committed()
+        t.created("r1")  // the abandoned commit's response
+        #expect(!t.isCurrent("r1") && t.current == nil)
+        t.created("r2")
+        #expect(t.isCurrent("r2"))
+    }
+
+    @Test func refusedCommitCreatesNothing() {
+        var t = ResponseTracker()
+        t.committed()
+        t.refused()  // e.g. busy
+        t.committed()
+        t.created("r2")
+        #expect(t.isCurrent("r2"))
+        #expect(!t.isCurrent(nil))
+    }
+
+    /// Every sequence of up to 7 operations, against a direct model: the
+    /// server answers commits in order, and only the newest, un-stopped commit's
+    /// response is current.
+    @Test func matchesTheCommitOrderModelForEverySequence() {
+        enum Op: CaseIterable { case commit, created, refused, abandon }
+        func check(_ ops: [Op]) {
+            var tracker = ResponseTracker()
+            // Model: commits awaiting an answer, by index; which index is wanted.
+            var pending: [Int] = []
+            var wantedCommit: Int?
+            var currentCommit: Int?
+            var commits = 0
+            var ids: [Int: String] = [:]
+            for op in ops {
+                switch op {
+                case .commit:
+                    pending.append(commits)
+                    wantedCommit = commits
+                    currentCommit = nil
+                    commits += 1
+                    tracker.committed()
+                case .created:
+                    guard !pending.isEmpty else { return }  // the server never does this
+                    let commit = pending.removeFirst()
+                    let id = "r\(commit)"
+                    ids[commit] = id
+                    if commit == wantedCommit { currentCommit = commit }
+                    tracker.created(id)
+                case .refused:
+                    guard !pending.isEmpty else { return }
+                    pending.removeFirst()
+                    tracker.refused()
+                case .abandon:
+                    wantedCommit = nil
+                    currentCommit = nil
+                    tracker.abandon()
+                }
+                #expect(tracker.current == currentCommit.flatMap { ids[$0] }, "\(ops)")
+                for (commit, id) in ids where commit != currentCommit {
+                    #expect(!tracker.isCurrent(id), "\(ops)")
+                }
+            }
+        }
+        var sequences: [[Op]] = [[]]
+        for _ in 0..<7 {
+            sequences = sequences.flatMap { seq in Op.allCases.map { seq + [$0] } }
+            sequences.forEach(check)
+        }
+    }
+}
+
+@Suite struct STTServerStartupTests {
+    /// Stop while the listener is still coming up: start() must end (with an
+    /// error, or the port if it bound first), never hang.
+    @MainActor @Test func stopDuringStartupEndsTheStart() async throws {
+        for _ in 0..<20 {
+            let server = STTServerTests.fakeServer()
+            let started = Flag()
+            let start = Task { @MainActor in
+                defer { started.raise() }
+                _ = try await server.start(port: 0)
+            }
+            await Task.yield()
+            server.stop()
+            let ended = await started.wait(.seconds(3))
+            #expect(ended, "start() never returned after stop()")
+            guard ended else { return }
+            _ = await start.result
+        }
+    }
+}
+
+@Suite struct InstallCancellationTests {
+    static func paths() throws -> AppPaths {
+        let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-cancel-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let paths = AppPaths(
+            supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"),
+            hubDir: root.appending(path: "hub"), derivedModelsDir: root.appending(path: "derived"))
+        try paths.prepare()
+        return paths
+    }
+
+    /// An installer that ignores SIGTERM is killed after the grace period, so
+    /// Cancel always ends the install (and frees the family lock).
+    @Test func cancelKillsAnInstallerThatIgnoresSigterm() async throws {
+        let paths = try Self.paths()
+        let pidFile = paths.supportDir.appending(path: "uv.pid")
+        let uv = paths.supportDir.appending(path: "uv")
+        try "#!/bin/sh\ntrap '' TERM\necho $$ > '\(pidFile.path)'\nexec sleep 30\n".write(to: uv, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
+        let manager = EnvironmentManager(
+            paths: paths,
+            tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override),
+            cancelGrace: .milliseconds(500))
+
+        let ended = Flag()
+        let install = Task {
+            defer { ended.raise() }
+            try await manager.install(.tone).consume { _ in }
+        }
+        var pid: Int32?
+        for _ in 0..<200 where pid == nil {
+            pid = (try? String(contentsOf: pidFile, encoding: .utf8)).flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if pid == nil { try await Task.sleep(for: .milliseconds(50)) }
+        }
+        let installer = try #require(pid, "the installer subprocess never started")
+        install.cancel()
+        #expect(await ended.wait(.seconds(5)), "the cancelled install never ended")
+        let dead = Flag()
+        Task {
+            while LifecycleTests.alive(installer) { try? await Task.sleep(for: .milliseconds(20)) }
+            dead.raise()
+        }
+        #expect(await dead.wait(.seconds(5)), "the installer survived Cancel")
+        // The family lock is free again: the next install gets past `.queued`.
+        let reached = Flag()
+        let again = Task {
+            try? await manager.install(.tone).consume { if $0 == .stage(.python) { reached.raise() } }
+        }
+        #expect(await reached.wait(.seconds(5)), "the family lock was still held")
+        again.cancel()
+    }
+
+    /// After app quit begins, the offline cache probe spawns nothing (an install
+    /// unwinding from the quit refreshes, which used to start `prefetch --check`).
+    @Test func noCacheProbeStartsAfterShutdown() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        try await VariantTests.fakeEnvironment(.pocketTTS, manager, paths)
+        let ran = paths.supportDir.appending(path: "probe-ran")
+        try "#!/bin/sh\ntouch '\(ran.path)'\necho '{\"event\":\"summary\",\"cached\":true,\"size_bytes\":1}'\n"
+            .write(to: paths.python(.pocketTTS), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: paths.python(.pocketTTS).path)
+        #expect(await manager.modelCacheStatus(.pocketTTS)?.cached == true)
+        #expect(FileManager.default.fileExists(atPath: ran.path))
+        try FileManager.default.removeItem(at: ran)
+
+        await manager.shutdown(grace: .milliseconds(200), drain: .milliseconds(200))
+        #expect(await manager.modelCacheStatus(.pocketTTS) == nil)
+        #expect(!FileManager.default.fileExists(atPath: ran.path), "a probe ran after shutdown")
     }
 }

@@ -150,6 +150,50 @@ public actor TTSClient {
     }
 }
 
+/// Which `response_id` on one connection belongs to the request the user is
+/// waiting for, so events of an abandoned request (a late `response.cancelled`
+/// or audio after Stop) never act on the next one.
+///
+/// The server answers each `input_text.commit` with exactly one
+/// `response.created` (or, if it refuses the commit, an `error`), in commit
+/// order. So the response created when no other commit is outstanding belongs
+/// to the newest commit, and only that one is current, until it is abandoned.
+public struct ResponseTracker: Sendable, Equatable {
+    /// Commits sent whose `response.created` (or refusal) has not arrived.
+    private var outstanding = 0
+    /// The newest commit is still wanted (not stopped).
+    private var wanted = false
+    public private(set) var current: String?
+
+    public init() {}
+
+    /// A commit is about to be sent: it is now the request that counts.
+    public mutating func committed() {
+        outstanding += 1
+        wanted = true
+        current = nil
+    }
+
+    /// The user stopped: nothing in flight counts any more.
+    public mutating func abandon() {
+        wanted = false
+        current = nil
+    }
+
+    public mutating func created(_ id: String) {
+        guard outstanding > 0 else { return }
+        outstanding -= 1
+        if outstanding == 0, wanted { current = id }
+    }
+
+    /// The server refused a commit (an `error` frame): it will create no response.
+    public mutating func refused() {
+        if outstanding > 0 { outstanding -= 1 }
+    }
+
+    public func isCurrent(_ id: String?) -> Bool { id != nil && id == current }
+}
+
 /// Little-endian pcm16 -> Float32 in [-1, 1), as the server documents its frames.
 public enum PCM16 {
     public static func floats(from data: Data) -> [Float] {

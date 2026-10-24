@@ -231,7 +231,9 @@ final class ServiceModel: Identifiable {
         installTask = Task { [weak self] in
             var stage: InstallStage = .python
             do {
-                for try await event in manager.install(service, mode: mode) {
+                // `consume` throws on Cancel; a plain `for try await` would end
+                // normally and run `then` (which restarts a start()'s install).
+                try await manager.install(service, mode: mode).consume { event in
                     guard let self else { return }
                     switch event {
                     case .stage(let s):
@@ -257,6 +259,8 @@ final class ServiceModel: Identifiable {
                 guard let self else { return }
                 self.installTask = nil
                 self.download = nil
+                // remove() cancelled this install and owns the phase from here.
+                if self.phase == .removing { return }
                 if error is CancellationError || Task.isCancelled {
                     await self.refresh()
                     await self.app?.familyChanged(by: self)
@@ -297,12 +301,12 @@ final class ServiceModel: Identifiable {
     // MARK: - Serve
 
     func start() {
-        guard let app, server == nil, nativeServer == nil else { return }
+        guard let app, server == nil, nativeServer == nil, phase != .removing else { return }
         if info.runtime.usesPython, case .outdated = environment, let manager = app.manager {
             // The app was updated since this env was built: refresh its packages, then start.
             runInstall(manager: manager, mode: .packages) { [weak self] in
                 await self?.refresh()
-                self?.start()
+                if !Task.isCancelled { self?.start() }
             }
             return
         }
@@ -361,9 +365,12 @@ final class ServiceModel: Identifiable {
         Task {
             do {
                 let bound = try await server.start(port: port)
+                // stop() (or remove) while binding: that server is gone, don't report it.
+                guard self.nativeServer === server, self.phase == .starting else { return server.stop() }
                 self.appendLog("listening on \(ServiceCatalog.host):\(bound)")
                 self.becameReady(port: bound, pid: ProcessInfo.processInfo.processIdentifier, rate: 16000, model: "SpeechTranscriber")
             } catch {
+                guard self.nativeServer === server else { return }
                 self.nativeServer = nil
                 self.phase = .failed(Failure(kind: .startup(code: nil), title: "Couldn't start", message: error.localizedDescription))
             }
@@ -402,10 +409,11 @@ final class ServiceModel: Identifiable {
                 if self.phase == .starting, let message = Self.logMessage(line) { self.startDetail = message }
             }
         }
-        Task { [weak self] in
+        let events = Task { [weak self] in
             for await line in sub.stdout {
                 guard let self, let event = ServerCLIEvent.parse(line) else { continue }
-                if event.event == "ready", self.server === sub {
+                // A ready that lands after Stop/Delete must not flip the phase back to running.
+                if event.event == "ready", self.server === sub, self.phase == .starting {
                     self.becameReady(
                         port: event.port ?? port, pid: event.pid ?? sub.pid,
                         rate: event.rate ?? (self.kind == .tts ? 24000 : 16000), model: event.model)
@@ -415,7 +423,8 @@ final class ServiceModel: Identifiable {
             }
         }
         Task { [weak self] in
-            let status = await sub.waitForExit()
+            // The final `error` line is read before the exit is judged.
+            let status = await sub.waitForExit(after: events)
             self?.serverExited(sub, status: status)
         }
         Task { [weak self] in
@@ -437,14 +446,14 @@ final class ServiceModel: Identifiable {
         }
         let tail = Array(log.suffix(8))
         if let err = supervisedError {
-            if err.code == "EADDRINUSE" {
+            if err.code == SupervisedErrorCode.addressInUse.rawValue {
                 Task {
                     let owner = await PortProbe.owner(of: info.port, backend: service)
                     self.phase = .failed(Self.portBusyFailure(port: info.port, owner: owner))
                 }
                 return
             }
-            let title = err.code == "ModuleNotFoundError" ? "Environment incomplete" : "Couldn't start"
+            let title = err.code == SupervisedErrorCode.moduleNotFound.rawValue ? "Environment incomplete" : "Couldn't start"
             phase = .failed(Failure(kind: .startup(code: err.code), title: title, message: err.message ?? "Startup failed.", logTail: tail))
         } else {
             phase = .failed(
@@ -501,9 +510,15 @@ final class ServiceModel: Identifiable {
     /// Uninstalls the service and, with `deleteModel`, the model files no installed
     /// sibling shares. The family environment goes with its last installed variant.
     func remove(deleteModel: Bool) {
-        guard info.runtime.usesPython, let manager = app?.manager else { return }
+        guard info.runtime.usesPython, let manager = app?.manager, phase != .removing else { return }
         phase = .removing
+        // An install in flight is cancelled and must unwind (and drop the family
+        // lock) before removal; it leaves the phase to this task.
+        let install = installTask
+        install?.cancel()
         Task {
+            await install?.value
+            self.phase = .removing  // an install that had already finished may have refreshed it
             // Stop the server first so its exit can't race the removal.
             await shutdown()
             let known = (cache?.repoFolders ?? []) + (cache?.derivedFolders ?? [])

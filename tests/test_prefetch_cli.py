@@ -15,7 +15,9 @@ directories under ``tmp_path``. Invariants:
 from __future__ import annotations
 
 import json
+import re
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -245,3 +247,20 @@ def test_prefetch_requires_backend(monkeypatch, capsys):
     code, _events, err = _run(monkeypatch, capsys)
     assert code == 2
     assert "--backend" in err
+
+
+def test_cached_snapshot_is_offline_and_backends_use_only_public_prefetch_api(fake_hub):
+    """Backends reach the cache through ``prefetch.cached_snapshot``, never the
+    private download seam (which tests stub and may change shape)."""
+    cached, calls = fake_hub
+    spec = PF.SnapshotSpec("org/repo")
+    with pytest.raises(FileNotFoundError):
+        PF.cached_snapshot(spec)
+    cached.add("org/repo")
+    assert PF.cached_snapshot(spec).endswith("org--repo")
+    assert calls == [("org/repo", True), ("org/repo", True)]
+
+    backends = Path(PF.__file__).parent / "backends"
+    private = re.compile(r"\bprefetch\._\w+")
+    offenders = [p.name for p in backends.glob("*.py") if private.search(p.read_text())]
+    assert offenders == []

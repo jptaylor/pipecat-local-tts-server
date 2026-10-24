@@ -15,11 +15,22 @@ public struct AppPaths: Sendable {
     public let cacheDir: URL
     /// `~/Library/Logs/Pipecat Service Toolbar`
     public let logsDir: URL
+    /// The shared Hugging Face hub cache (`huggingFaceHub()`); the only place
+    /// downloaded repo folders are deleted from.
+    public let hubDir: URL
+    /// The TTS server's derived weights (`ttsServerCache()`); the only other
+    /// place model files are deleted from.
+    public let derivedModelsDir: URL
 
-    public init(supportDir: URL, cacheDir: URL, logsDir: URL) {
+    public init(
+        supportDir: URL, cacheDir: URL, logsDir: URL,
+        hubDir: URL = AppPaths.huggingFaceHub(), derivedModelsDir: URL = AppPaths.ttsServerCache()
+    ) {
         self.supportDir = supportDir
         self.cacheDir = cacheDir
         self.logsDir = logsDir
+        self.hubDir = hubDir
+        self.derivedModelsDir = derivedModelsDir
     }
 
     public static func standard(supportOverride: URL? = nil) -> AppPaths {
@@ -31,7 +42,6 @@ public struct AppPaths: Sendable {
             logsDir: library.appending(path: "Logs/\(folderName)"))
     }
 
-    /// uv-managed CPython installs (`UV_PYTHON_INSTALL_DIR`).
     /// The Hugging Face hub cache the servers use (`HF_HUB_CACHE`, `HF_HOME`, `XDG_CACHE_HOME`, else `~/.cache`).
     public static func huggingFaceHub(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -43,6 +53,18 @@ public struct AppPaths: Sendable {
         return home.appending(path: ".cache/huggingface/hub")
     }
 
+    /// Where the TTS server keeps weights it derives (Phonon's quantized copies):
+    /// `$XDG_CACHE_HOME/pipecat-tts-server`, else `~/.cache/pipecat-tts-server`
+    /// (`tts_server/backends/phonon.py` `_cache_root`).
+    public static func ttsServerCache(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        let root = environment["XDG_CACHE_HOME"].map { URL(filePath: $0) } ?? home.appending(path: ".cache")
+        return root.appending(path: "pipecat-tts-server")
+    }
+
+    /// uv-managed CPython installs (`UV_PYTHON_INSTALL_DIR`).
     public var pythonDir: URL { supportDir.appending(path: "python") }
     /// uv's package cache (`UV_CACHE_DIR`).
     public var uvCacheDir: URL { cacheDir.appending(path: "uv") }

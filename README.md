@@ -103,7 +103,9 @@ uv sync --extra examples
 
 > Run every command through `uv run` (or activate the venv once per shell). A
 > bare `python -m tts_server …` uses the system interpreter and fails with
-> `ModuleNotFoundError: No module named 'websockets'`.
+> `ModuleNotFoundError: No module named 'websockets'`. Installing the package
+> also puts a `pipecat-tts` console script on the environment's `PATH`, the same
+> CLI as `python -m tts_server` (`pipecat-tts status`, `pipecat-tts serve …`).
 
 ## macOS menu bar app
 
@@ -321,6 +323,7 @@ addition:
   during the model load, the process exits at once; interrupted downloads resume.
 
 ```sh
+# stdin is the subshell's pipe: it closes after 5 s, so the server exits then.
 ( sleep 5 ) | uv run python -m tts_server serve --backend tone \
     --host 127.0.0.1 --port 0 --supervised
 ```

@@ -32,6 +32,22 @@ public enum InstallEvent: Sendable, Equatable {
     case warning(String)
 }
 
+extension AsyncThrowingStream where Failure == any Error {
+    /// `for try await` over the stream, except that cancelling the consuming task
+    /// throws `CancellationError`. A cancelled `for try await` just ends, exactly
+    /// as if the stream had finished, so a cancelled install would read as done.
+    /// No element is handed to `body` once the task is cancelled.
+    public func consume(
+        isolation: isolated (any Actor)? = #isolation, _ body: (Element) throws -> Void
+    ) async throws {
+        for try await element in self {
+            try Task.checkCancellation()
+            try body(element)
+        }
+        try Task.checkCancellation()
+    }
+}
+
 public struct InstallError: LocalizedError, Sendable, Equatable {
     public var stage: InstallStage
     public var message: String
@@ -78,14 +94,19 @@ public actor EnvironmentManager {
     public let paths: AppPaths
     public let tools: Tools
     private var running: [Service: Subprocess] = [:]
+    /// Short offline probes in flight (`prefetch --check`, the Python version).
+    private var probes: [ObjectIdentifier: Subprocess] = [:]
     private var busyFamilies: Set<Service> = []
     private var familyWaiters: [Service: [CheckedContinuation<Void, Never>]] = [:]
     /// Set by `shutdown()` on app quit: no new subprocess starts after it.
     private var shuttingDown = false
+    /// How long a cancelled install step gets to exit after SIGTERM before SIGKILL.
+    public let cancelGrace: Duration
 
-    public init(paths: AppPaths, tools: Tools) {
+    public init(paths: AppPaths, tools: Tools, cancelGrace: Duration = .seconds(5)) {
         self.paths = paths
         self.tools = tools
+        self.cancelGrace = cancelGrace
     }
 
     // MARK: - Status
@@ -171,11 +192,20 @@ public actor EnvironmentManager {
         case .outdated where includeOutdated: break
         default: return nil
         }
-        guard let args = prefetchArguments(for: backend.info, check: true) else { return nil }
-        let sub = Subprocess(
-            .init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.base()))
-        guard let result = try? await sub.collect() else { return nil }
-        return Self.cacheStatus(checkOutput: result.stdout)
+        guard let args = prefetchArguments(for: backend.info, check: true),
+            let stdout = await probe(.init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.base()))
+        else { return nil }
+        return Self.cacheStatus(checkOutput: stdout)
+    }
+
+    /// Runs a short offline probe to completion and returns its stdout. None
+    /// starts once the app is quitting, and `shutdown()` stops one in flight.
+    private func probe(_ spec: Subprocess.Spec) async -> [String]? {
+        guard !shuttingDown else { return nil }
+        let sub = Subprocess(spec)
+        probes[ObjectIdentifier(sub)] = sub
+        defer { probes[ObjectIdentifier(sub)] = nil }
+        return try? await sub.collect().stdout
     }
 
     /// Reads `prefetch --check --json` output.
@@ -206,11 +236,26 @@ public actor EnvironmentManager {
         "models--" + repo.replacingOccurrences(of: "/", with: "--")
     }
 
-    /// Only Hugging Face repo folders and the TTS server's own derived weights
-    /// (`.../pipecat-tts-server/<backend>/<key>`) are ever deleted.
-    static func isDeletableModelPath(_ url: URL) -> Bool {
-        url.lastPathComponent.hasPrefix("models--")
-            || url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "pipecat-tts-server"
+    /// Only a Hugging Face repo folder directly in the hub cache
+    /// (`<hub>/models--org--name`) and the TTS server's own derived weights
+    /// (`<derived>/<backend>/<key>`) are ever deleted. The candidates come from
+    /// subprocess output, so a look-alike name anywhere else (or a `..` path
+    /// that resolves outside those roots) is refused. Parents are compared with
+    /// symlinks resolved; the folder itself is not followed.
+    static func isDeletableModelPath(_ url: URL, hub: URL, derived: URL) -> Bool {
+        let folder = url.standardizedFileURL
+        let name = folder.lastPathComponent
+        guard !name.isEmpty, name != "/", name != ".", name != ".." else { return false }
+        let parent = canonicalPath(folder.deletingLastPathComponent())
+        if name.hasPrefix("models--"), name.count > "models--".count, parent == canonicalPath(hub) { return true }
+        let backendDir = folder.deletingLastPathComponent()
+        guard !backendDir.lastPathComponent.hasPrefix(".") else { return false }
+        return canonicalPath(backendDir.deletingLastPathComponent()) == canonicalPath(derived)
+    }
+
+    private static func canonicalPath(_ url: URL) -> String {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path(percentEncoded: false)
+        return path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
     }
 
     /// The folders in `own` that no sibling uses, judged by repo id and by the
@@ -348,9 +393,9 @@ public actor EnvironmentManager {
             Subprocess(.init(executable: self.tools.uv, arguments: args, environment: env, currentDirectory: workingDir))
         }
 
-        let pythonVersion = (try? await Subprocess(
+        let pythonVersion = await probe(
             .init(executable: paths.python(backend), arguments: ["-c", "import platform; print(platform.python_version())"],
-                  environment: ProcessEnvironment.base())).collect().stdout.first) ?? Self.pythonVersion
+                  environment: ProcessEnvironment.base()))?.first ?? Self.pythonVersion
         try EnvironmentMarker(
             service: backend.rawValue, fingerprint: tools.fingerprint(for: info),
             python: pythonVersion, createdAt: Date()
@@ -375,10 +420,12 @@ public actor EnvironmentManager {
         let err = Task {
             for await line in sub.stderr { tail.append(line); emit(.log(line)) }
         }
+        let grace = cancelGrace
         let status = await withTaskCancellationHandler {
             await sub.waitForExit()
         } onCancel: {
-            sub.terminate()
+            // SIGTERM, then SIGKILL: a child that ignores SIGTERM can't hold the family lock.
+            Task { _ = await sub.stop(grace: grace) }
         }
         _ = await (out.value, err.value)
         try Task.checkCancellation()
@@ -435,10 +482,12 @@ public actor EnvironmentManager {
             }
             return failure
         }
+        let grace = cancelGrace
         let status = await withTaskCancellationHandler {
             await sub.waitForExit()
         } onCancel: {
-            sub.terminate()
+            // SIGTERM, then SIGKILL: a child that ignores SIGTERM can't hold the family lock.
+            Task { _ = await sub.stop(grace: grace) }
         }
         let failure = await outcome.value
         _ = await err.value
@@ -450,8 +499,11 @@ public actor EnvironmentManager {
         }
     }
 
+    /// Stops `backend`'s running install step: SIGTERM, then SIGKILL after `cancelGrace`.
     public func cancel(_ backend: Service) {
-        running[backend]?.terminate()
+        guard let sub = running[backend] else { return }
+        let grace = cancelGrace
+        Task { _ = await sub.stop(grace: grace) }
     }
 
     /// App quit: abort every install/prefetch, stop its subprocess (SIGTERM, then
@@ -459,7 +511,7 @@ public actor EnvironmentManager {
     /// removal) to drain, so no installer outlives the app or races a relaunch.
     public func shutdown(grace: Duration = .seconds(5), drain: Duration = .seconds(20)) async {
         shuttingDown = true  // nothing new can register in `running` after this
-        let subs = Array(running.values)
+        let subs = Array(running.values) + Array(probes.values)
         await withTaskGroup(of: Void.self) { group in
             for sub in subs { group.addTask { _ = await sub.stop(grace: grace) } }
         }
@@ -486,7 +538,7 @@ public actor EnvironmentManager {
             // weights are; only fall back to the cached/derived folders if it can't.
             var own = await modelCacheStatus(backend, includeOutdated: true).map { $0.repoFolders + $0.derivedFolders } ?? knownFolders
             if own.isEmpty, let repo = backend.info.modelRepo {
-                own = [AppPaths.huggingFaceHub().appending(path: Self.cacheFolderName(repo: repo))]
+                own = [paths.hubDir.appending(path: Self.cacheFolderName(repo: repo))]
             }
             var shared: [URL] = []
             for sibling in siblings {
@@ -504,7 +556,10 @@ public actor EnvironmentManager {
         // Try every folder, then report the ones that stayed: a silent leftover
         // is multiple gigabytes the user thinks are gone.
         var failures: [String] = []
-        for folder in doomed where Self.isDeletableModelPath(folder) && fm.fileExists(atPath: folder.path) {
+        for folder in doomed
+        where Self.isDeletableModelPath(folder, hub: paths.hubDir, derived: paths.derivedModelsDir)
+            && fm.fileExists(atPath: folder.path)
+        {
             do { try fm.removeItem(at: folder) } catch { failures.append("\(folder.path): \(error.localizedDescription)") }
         }
         if !failures.isEmpty {

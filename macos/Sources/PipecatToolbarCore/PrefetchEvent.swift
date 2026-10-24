@@ -47,6 +47,22 @@ public struct ServerCLIEvent: Decodable, Sendable, Equatable {
         guard trimmed.hasPrefix("{"), let data = trimmed.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(ServerCLIEvent.self, from: data)
     }
+
+    /// `code` of an `error` line, when it is one of the stable supervised codes.
+    public var errorCode: SupervisedErrorCode? { code.flatMap(SupervisedErrorCode.init(rawValue:)) }
+}
+
+/// The stable `code` values of a supervised server's `{"event":"error"}` line:
+/// `tts_server/supervise.py`'s `CODE_*` constants (the STT helper emits a subset).
+/// `tests/test_macos_catalog_drift.py` keeps the two lists equal.
+public enum SupervisedErrorCode: String, Sendable, CaseIterable {
+    case moduleNotFound = "ModuleNotFoundError"
+    case addressInUse = "EADDRINUSE"
+    case accessDenied = "EACCES"
+    case socketPathConflict = "SocketPathConflict"
+    case modelDownload = "ModelDownloadError"
+    case config = "ConfigError"
+    case backendStart = "BackendStartError"
 }
 
 /// Download progress for the model step of an install.

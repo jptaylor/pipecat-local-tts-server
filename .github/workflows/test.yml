@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Every job only reads the repo; nothing here needs a writable GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   # Lean job: client-only install on Linux. Proves the lean base (websockets
   # only, no mlx-audio / numpy) resolves, the package imports without pulling
@@ -69,7 +73,8 @@ jobs:
             tests/test_status_port.py \
             tests/test_supervised_cli.py \
             tests/test_app_helper_cancel.py \
-            tests/test_prefetch_cli.py
+            tests/test_prefetch_cli.py \
+            tests/test_macos_catalog_drift.py
 
   # Examples job: installs the `examples` extra (pipecat-ai, pinned) and runs the
   # reference Pipecat adapter tests. These are NOT in the lean allow-list above:
@@ -159,7 +164,7 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - uses: maxim-lobanov/setup-xcode@v1
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: latest-stable
       - name: Install uv

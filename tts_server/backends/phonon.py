@@ -664,9 +664,8 @@ def prefetch_finalize(model: str | None, emit) -> None:
     repo, sha = pin
     if emit is not None:
         emit({"event": "convert", "repo": repo, "bits": bits, "state": "start", "path": None})
-    snapshot = prefetch._snapshot_download(
-        prefetch.SnapshotSpec(repo, revision=sha, allow_patterns=tuple(ALLOW_PATTERNS)),
-        local_files_only=True,
+    snapshot = prefetch.cached_snapshot(
+        prefetch.SnapshotSpec(repo, revision=sha, allow_patterns=tuple(ALLOW_PATTERNS))
     )
     path = _ensure_quantized(snapshot, sha, bits)
     if emit is not None:

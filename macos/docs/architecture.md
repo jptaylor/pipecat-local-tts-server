@@ -31,7 +31,7 @@ flowchart LR
 |---|---|---|
 | Catalog | `PipecatToolbarCore/Service.swift` | Each service's kind, runtime, port, model, licence and copy strings. |
 | Tools | `ToolLocator.swift` | Finds `uv`, the TTS wheel, the `uv.lock` constraints and the STT helper: bundle first, then `PIPECAT_TOOLBAR_*` overrides, then the repo checkout. |
-| Environments | `EnvironmentManager.swift` (actor) | Python, venvs, packages and model prefetch. Runs the offline cache checks and removal (which also probes outdated environments, falls back to the model's folder under `AppPaths.huggingFaceHub()`, and throws `RemovalError` for model folders it cannot delete). Builds every command line by runtime. |
+| Environments | `EnvironmentManager.swift` (actor) | Python, venvs, packages and model prefetch. Runs the offline cache checks and removal (which also probes outdated environments, falls back to the model's folder under `AppPaths.hubDir`, and throws `RemovalError` for model folders it cannot delete). It deletes only `models--*` folders directly in `AppPaths.hubDir` and `<backend>/<key>` folders in `AppPaths.derivedModelsDir`, whatever paths the probe reports. Builds every command line by runtime. |
 | Processes | `Subprocess.swift` | `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL. |
 | Protocols | `TTSClient.swift`, `STTClient.swift`, `STTWebSocketServer.swift` | WebSocket clients for both wire protocols, plus a native stt-protocol server. |
 | State | `AppModel`, `ServiceModel` (`@MainActor @Observable`) | Per-service phase machine, page navigation, delete confirmation. |
@@ -86,13 +86,17 @@ Every Python server, and the native server, follows one contract.
    file and the in-app log tail.
 2. **Startup errors.** A fatal startup error prints
    `{"event":"error","code",...}` and exits 1. The codes are `EADDRINUSE`,
-   `ModuleNotFoundError`, `ModelDownloadError`, `ConfigError` and
-   `BackendStartError`. A busy port is reported before any model loads.
+   `EACCES`, `SocketPathConflict`, `ModuleNotFoundError`, `ModelDownloadError`,
+   `ConfigError` and `BackendStartError` (`SupervisedErrorCode` in Core; a lean
+   test keeps it equal to `tts_server/supervise.py`). A busy port is reported
+   before any model loads. The app judges an exit only after stdout is drained
+   (`Subprocess.waitForExit(after:)`), so the final error line is never lost to
+   the exit, and it ignores a `ready` that arrives once Stop or Delete began.
 3. **Stdin EOF.** The app holds the server's stdin. EOF means the app quit or
    crashed, and the server shuts down as if sent SIGTERM. So servers never
    outlive the app.
 4. **Stop.** Stop sends SIGTERM and closes stdin, then sends SIGKILL after
-   10 s. Quitting the app stops all servers in parallel and aborts any in-flight installs or model downloads (`EnvironmentManager.shutdown()`), waiting for them and for removals before it exits.
+   10 s. Quitting the app stops all servers in parallel and aborts any in-flight installs or model downloads (`EnvironmentManager.shutdown()`), waiting for them and for removals before it exits. No new subprocess (an install step or an offline `prefetch --check` probe) starts after that. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first.
 
 `tts_server` implements this natively (`serve --supervised`,
 `tts_server/supervise.py`). The STT engines get it from the helper, which wraps
@@ -176,10 +180,10 @@ the bare file name.
 
 | Suite | What it covers |
 |---|---|
-| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion, catalog ports and copy strings, variant commands, shared environments and deletion sets, logo parsing, `Subprocess` stdin and kill handling, `STTWebSocketServer` round trip, busy port, Origin rejection. |
+| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots, logo parsing, `Subprocess` stdin and kill handling and exit-after-drain ordering, install cancel (kill escalation, cancellation vs finish), no probes after quit, Try-it response matching (`ResponseTracker`), `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup. |
 | Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403). |
 | End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny and Kyutai against the built bundle, then serve and use each. |
-| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, and a drift test that ties the app's TTS ports to the README and `justfile`. |
+| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` and `PrefetchEvent.swift` and checks their backend names, ports, default model repos and supervised error codes against the Python sources and the `justfile`. |
 | Visual (`--snapshot <dir>`) | Renders every page in light and dark from sample states. |
 
 ## Security notes

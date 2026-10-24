@@ -29,7 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Quitting also aborts in-flight installs and model downloads and waits for them to
   stop; deleting a service with "Delete Everything" removes its model weights even
   when its environment is outdated, and reports any it could not delete. An abandoned
-  Kyutai transcription releases the backend (cancelled per 80 ms frame).
+  Kyutai transcription releases the backend (cancelled per 80 ms frame). Cancel
+  always ends an install (SIGKILL 5 s after SIGTERM) and never counts as a finished
+  one; deleting a service mid-install cancels the install first; model deletion only
+  touches `models--*` folders in the Hugging Face hub cache and the server's own
+  derived-weights folder; a startup error is never lost to the server's exit; "Try
+  it" ignores a stale cancel acknowledgement or audio from a stopped request.
   `just app-build` / `app-open` / `app-run` / `app-test`.
 
 ### Changed

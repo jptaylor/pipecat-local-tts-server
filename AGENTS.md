@@ -32,7 +32,8 @@ uv sync --extra examples    # reference Pipecat adapter (pins pipecat-ai==1.4.0)
 
 ## CLI (`python -m tts_server <subcommand>`)
 
-Endpoint precedence everywhere: **URI > socket > host+port**.
+Also installed as the `pipecat-tts` console script (same `main()`). Endpoint
+precedence everywhere: **URI > socket > host+port**.
 
 | Subcommand | Flags | Notes |
 |---|---|---|
@@ -54,6 +55,7 @@ use `--auth-token-file`.
 | `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer the server requires (optional auth). |
 | `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to re-advertise after installing their extra G2P package. |
 | `PIPECAT_TTS_PHONON_VOICES` | server | Comma-separated Phonon catalog slugs (e.g. `zoey,juniper`) to advertise + download; `default` is always advertised. Unknown/unfetchable slugs are warned and skipped. Baked into the plist for the `phonon` backend only. |
+| `HF_HOME` / `HF_HUB_CACHE` | server | Standard Hugging Face cache location, honoured by both `serve` and `prefetch` (default `~/.cache/huggingface/hub`). |
 | `TTS_WS_PING_INTERVAL` / `TTS_WS_PING_TIMEOUT` | server | Keepalive ping period / pong timeout (seconds). Defaults `20` / `120`: ping kept, pong timeout **large but finite** so GIL-holding Metal compute can't trip a `1011` mid-generation *and* a dead idle peer is still reaped (~140s). a disable token (`none`/`off`/`disable`/`disabled` or any zero) disables a knob (disabling the timeout reintroduces the idle-peer leak). Mirror knobs on `TTSClient(ping_interval=, ping_timeout=)`. |
 
 CLI flags and env vars are **trusted** inputs; untrusted input is websocket

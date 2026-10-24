@@ -126,6 +126,22 @@ public final class Subprocess: @unchecked Sendable {
     /// Waits for the process to exit and returns its status (signal number for a kill).
     public func waitForExit() async -> Int32 { await exit.wait() }
 
+    /// The exit status, returned only once `reader` (the task consuming `stdout`)
+    /// has finished, so a line the child wrote just before exiting is handled
+    /// before its exit is. The exit and the pipe's EOF arrive on different
+    /// queues, in either order. Waits at most `drainLimit` after the exit, in
+    /// case something else (a grandchild) still holds the pipe open.
+    public func waitForExit(after reader: Task<Void, Never>, drainLimit: Duration = .seconds(2)) async -> Int32 {
+        let status = await waitForExit()
+        // Unstructured on purpose: a task group would wait for the reader anyway.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let once = ResumeOnce(continuation)
+            Task { await reader.value; once.resume() }
+            Task { try? await Task.sleep(for: drainLimit); once.resume() }
+        }
+        return status
+    }
+
     /// Closes the held stdin pipe: a `--supervised` server shuts down gracefully.
     public func closeStdin() {
         try? stdinPipe?.fileHandleForWriting.close()
@@ -183,6 +199,22 @@ private final class SplitterBox: @unchecked Sendable {
 
     func feed(_ data: Data) -> [String] { lock.withLock { splitter.feed(data) } }
     func flush() -> String? { lock.withLock { splitter.flush() } }
+}
+
+/// Resumes a continuation exactly once, whichever caller comes first.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Void, Never>) { self.continuation = continuation }
+
+    func resume() {
+        let pending: CheckedContinuation<Void, Never>? = lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume()
+    }
 }
 
 /// One-shot exit status that any number of tasks can await.

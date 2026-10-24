@@ -242,6 +242,11 @@ final class AppModel {
             detail = "This removes its model files. Files and the Python environment shared with "
                 + "\(keeping.formatted(.list(type: .and))) stay."
         }
+        if keeping.isEmpty, model.info.needsModelDownload {
+            // The weights live in the shared Hugging Face cache, not in the app.
+            detail += " The model files are in the shared Hugging Face cache, so a command-line or launchd "
+                + "server using the same model will download them again."
+        }
         alert.informativeText = detail + " You can download it again later."
         alert.alertStyle = .warning
         let delete = alert.addButton(withTitle: "Delete")

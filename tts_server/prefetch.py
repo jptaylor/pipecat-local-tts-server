@@ -130,6 +130,12 @@ def _snapshot_download(spec: SnapshotSpec, *, local_files_only: bool, tqdm_class
     return str(snapshot_download(spec.repo_id, **kwargs))
 
 
+def cached_snapshot(spec: SnapshotSpec) -> str:
+    """Local path of an already-downloaded snapshot (never the network); for a
+    backend's ``prefetch_finalize``. Raises if ``spec`` is not fully cached."""
+    return _snapshot_download(spec, local_files_only=True)
+
+
 def _dir_size(path: str | Path) -> int:
     """Bytes under ``path`` (follows the HF cache's snapshot -> blob symlinks)."""
     total = 0

@@ -23,8 +23,10 @@ final class TryItSession {
     let backend: Service
     private let port: Int
     private var client: TTSClient?
+    /// The connect in flight, shared so `prepare()` and `speak()` open one client.
+    private var connecting: Task<TTSClient, Error>?
     private var receiveTask: Task<Void, Never>?
-    private var responseID: String?
+    private var responses = ResponseTracker()
     private let player = AudioPlayer()
 
     init(backend: Service, port: Int) {
@@ -67,7 +69,7 @@ final class TryItSession {
             guard let hello else { return }
             try player.begin(rate: hello.rate)
             phase = .speaking
-            responseID = nil
+            responses.committed()
             try await client.speak(trimmed, voice: voice)
         } catch {
             fail(error.localizedDescription)
@@ -76,8 +78,8 @@ final class TryItSession {
 
     func stop() async {
         player.stop()
+        responses.abandon()
         if phase == .speaking { try? await client?.cancel() }
-        responseID = nil
         phase = .idle
     }
 
@@ -89,8 +91,11 @@ final class TryItSession {
     }
 
     func detach() {
+        connecting?.cancel()
+        connecting = nil
         receiveTask?.cancel()
         receiveTask = nil
+        responses = ResponseTracker()
         if let client { Task { await client.close() } }
         client = nil
         player.stop()
@@ -99,19 +104,26 @@ final class TryItSession {
 
     private func connectedClient() async throws -> TTSClient {
         if let client { return client }
-        let client = TTSClient(port: port)
-        let hello: ServerHello
-        do {
-            hello = try await client.connect()
-        } catch {
-            await client.close()
-            throw error
+        if let connecting { return try await connecting.value }
+        let connect = Task { () throws -> TTSClient in
+            let client = TTSClient(port: port)
+            let hello: ServerHello
+            do {
+                hello = try await client.connect()
+                try Task.checkCancellation()
+            } catch {
+                await client.close()
+                throw error
+            }
+            self.client = client
+            self.hello = hello
+            receiveTask = Task { [weak self] in await self?.receive(from: client) }
+            if hello.voiceCount > 0 { try await client.requestStatus() }
+            return client
         }
-        self.client = client
-        self.hello = hello
-        receiveTask = Task { [weak self] in await self?.receive(from: client) }
-        if hello.voiceCount > 0 { try await client.requestStatus() }
-        return client
+        connecting = connect
+        defer { if connecting == connect { connecting = nil } }
+        return try await connect.value
     }
 
     private func receive(from client: TTSClient) async {
@@ -133,19 +145,24 @@ final class TryItSession {
             self.voices = voices
             if let voice, !voices.contains(voice) { self.voice = nil }
         case .responseCreated(let id):
-            responseID = id
+            responses.created(id)
+        // Events of a stopped request (a late cancel acknowledgement, its last
+        // audio) belong to an older response id and are ignored.
         case .audio(let rid, _, let pcm):
-            guard phase == .speaking, responseID == nil || rid == responseID else { return }
+            guard phase == .speaking, responses.isCurrent(rid) else { return }
             player.enqueue(pcm16: pcm)
         case .done(let rid, _):
-            guard phase == .speaking, responseID == nil || rid == responseID else { return }
+            guard phase == .speaking, responses.isCurrent(rid) else { return }
             player.finish()
-        case .cancelled:
+        case .cancelled(let rid):
+            guard responses.isCurrent(rid) else { return }
             player.stop()
             if phase == .speaking { phase = .idle }
-        case .failed(_, let message):
+        case .failed(let rid, let message):
+            guard rid == nil || responses.isCurrent(rid) else { return }
             fail(message)
         case .error(let code, let message):
+            responses.refused()
             fail(code == "busy" ? "The server is busy. Try again in a moment." : message)
         case .hello, .other:
             break

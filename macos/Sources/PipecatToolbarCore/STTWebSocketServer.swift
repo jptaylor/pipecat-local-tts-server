@@ -88,6 +88,9 @@ public final class STTWebSocketServer: @unchecked Sendable {
                             continuation.resume(throwing: StartError.failed(error.localizedDescription))
                         }
                     }
+                case .cancelled:
+                    // `stop()` before the listener was ready: the start ends too.
+                    if once.claim() { continuation.resume(throwing: CancellationError()) }
                 default:
                     break
                 }
