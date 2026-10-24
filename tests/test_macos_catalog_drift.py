@@ -15,6 +15,8 @@ import Python, so these tests parse the Swift source (one parser,
   * each TTS entry's ``streaming`` equals its backend's ``capabilities()``;
   * each variant ``modelArgument`` is an alias its backend resolves to the
     family's repo;
+  * ``ServiceCatalog.snapshots(for:)`` (the download-size table) equals each
+    TTS service's ``prefetch_specs(model)`` and the STT helper's file filter;
   * ``SupervisedErrorCode`` raw values equal ``tts_server.supervise``'s ``CODE_*``;
   * the Try it wire fixture is what the server sends.
 """
@@ -28,7 +30,7 @@ from pathlib import Path
 from tts_server import supervise
 from tts_server.__main__ import BACKEND_CHOICES
 
-from ._macos_catalog import macos_catalog
+from ._macos_catalog import Snapshot, macos_catalog, macos_snapshots, mlx_audio_default_patterns
 
 REPO = Path(__file__).resolve().parents[1]
 CORE = REPO / "macos" / "Sources" / "PipecatToolbarCore"
@@ -190,6 +192,45 @@ async def test_swift_try_it_fixture_is_what_the_server_sends():
     assert fixture["error_busy"]["previous_event_id"] == "tryit-2"
     assert fixture["error_append"]["previous_event_id"] == "tryit-3.append"
     assert fixture["request"] == _TRY_IT_REQUEST
+
+
+HELPER = REPO / "macos" / "Helper" / "pipecat_app_helper.py"
+
+
+def test_swift_snapshots_match_prefetch_specs(monkeypatch):
+    """``ServiceCatalog.snapshots(for:)`` (what Add Models sizes before an install)
+    is, per TTS service, exactly ``prefetch_specs(model)`` for the ``--model`` the
+    app passes (repo, pinned revision, allow patterns, kind, required): Phonon's
+    pin, dia's codec, pocket's voice embeddings. The app's environment sets no
+    ``PIPECAT_TTS_PHONON_VOICES``, so no Phonon voice snapshot."""
+    from tts_server import prefetch
+
+    monkeypatch.delenv("PIPECAT_TTS_PHONON_VOICES", raising=False)
+    assert mlx_audio_default_patterns() == prefetch.DEFAULT_ALLOW_PATTERNS
+    snapshots = macos_snapshots()
+    catalog = macos_catalog()
+    for name, entry in catalog.items():
+        if entry.kind != "tts":
+            continue
+        python = [
+            Snapshot(s.repo_id, s.revision, tuple(s.allow_patterns), s.kind, s.required)
+            for s in prefetch.specs_for(entry.family, entry.model_argument)
+        ]
+        assert snapshots[name] == python, name
+    assert snapshots["phonon_q8"][0].revision, "the parser sees the Phonon pin"
+
+
+def test_swift_stt_snapshots_match_the_helper_filter():
+    """An STT service downloads its one model repo at ``main`` through the helper's
+    ``prefetch --repo`` (no ``--revision``), which takes every file but top-level
+    dotfiles, ``*.md`` and ``.gitattributes``: ``HubSnapshot.Files.allButDocs``."""
+    source = HELPER.read_text()
+    assert 'not f.path.startswith(".")' in source
+    assert 'endswith((".md", ".gitattributes"))' in source
+    for name, entry in macos_catalog().items():
+        if entry.kind == "stt":
+            expected = [Snapshot(entry.model_repo, None, "allButDocs", "model", True)]
+            assert macos_snapshots()[name] == ([] if entry.model_repo is None else expected), name
 
 
 def test_swift_supervised_error_codes_match_supervise():

@@ -116,3 +116,86 @@ def macos_catalog() -> dict[str, CatalogEntry]:
         )
     assert sorted(entries) == sorted(raw), "every Service case has a catalog entry"
     return {entry.name: entry for entry in entries.values()}
+
+
+HUB_SIZES_SWIFT = SERVICE_SWIFT.with_name("HubSizes.swift")
+
+_SNAPSHOT_CASE = re.compile(r"^ {8}(case [^\n]+|default):\n", re.MULTILINE)
+_SWIFT_STRING = re.compile(r'"([^"]*)"')
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """One ``HubSnapshot(...)`` of ``ServiceCatalog.snapshots(for:)``."""
+
+    repo: str
+    revision: str | None
+    files: tuple[str, ...] | str  # fnmatch patterns, or "allButDocs"
+    kind: str
+    required: bool
+
+
+def _calls(text: str, name: str) -> list[str]:
+    """The argument text of every ``name(...)`` call (balanced parentheses)."""
+    out = []
+    start = text.find(name + "(")
+    while start != -1:
+        i = j = start + len(name) + 1
+        depth = 1
+        while depth:
+            depth += {"(": 1, ")": -1}.get(text[j], 0)
+            j += 1
+        out.append(text[i : j - 1])
+        start = text.find(name + "(", j)
+    return out
+
+
+def mlx_audio_default_patterns() -> tuple[str, ...]:
+    """``HubSnapshot.Files.mlxAudioDefault``: the default allow patterns."""
+    text = HUB_SIZES_SWIFT.read_text()
+    text = text.split("static let mlxAudioDefault = Files.patterns([", 1)[1]
+    return tuple(_SWIFT_STRING.findall(text.split("])", 1)[0]))
+
+
+def _snapshot(args: str, model_repo: str | None) -> Snapshot:
+    repo = re.match(r'\s*repo: (repo|"([^"]+)")', args)
+    assert repo, args
+    if m := re.search(r"files: \.patterns\(\[(.*?)\]\)", args, re.DOTALL):
+        files: tuple[str, ...] | str = tuple(_SWIFT_STRING.findall(m.group(1)))
+    elif "files: .allButDocs" in args:
+        files = "allButDocs"
+    else:
+        assert "files:" not in args, args
+        files = mlx_audio_default_patterns()
+    return Snapshot(
+        repo=model_repo if repo.group(1) == "repo" else repo.group(2),
+        revision=_optional_string(args, "revision"),
+        files=files,
+        kind=_field(args, r"kind: \.(\w+)") or "model",
+        required=_field(args, r"required: (true|false)") != "false",
+    )
+
+
+def macos_snapshots() -> dict[str, list[Snapshot]]:
+    """``{raw name: snapshots}`` per ``Service`` case: what the app sizes before an
+    install (``ServiceCatalog.snapshots(for:)``, switched on the service's family)."""
+    text = SERVICE_SWIFT.read_text()
+    enum = text.split("public enum Service:", 1)[1].split("public var id", 1)[0]
+    raw = {case: value or case for case, value in _CASE.findall(enum)}
+    body = text.split("func snapshots(for service: Service) -> [HubSnapshot] {", 1)[1]
+    body = body.split("public static func info(for service: Service)", 1)[0]
+    parts = _SNAPSHOT_CASE.split(body)
+    blocks: dict[str, str] = {}  # family raw name (or "default") -> block
+    for label, block in zip(parts[1::2], parts[2::2], strict=True):
+        names = ["default"] if label == "default" else re.findall(r"\.(\w+)", label)
+        for name in names:
+            blocks[raw.get(name, name)] = block
+    out = {}
+    for entry in macos_catalog().values():
+        if entry.model_repo is None:  # the Swift guard: no model repo, nothing to fetch
+            out[entry.name] = []
+            continue
+        block = blocks.get(entry.family, blocks["default"])
+        calls = _calls(block, "HubSnapshot")
+        out[entry.name] = [_snapshot(args, entry.model_repo) for args in calls]
+    return out

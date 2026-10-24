@@ -176,6 +176,37 @@ public enum ServiceCatalog {
         Service.allCases.filter { $0.kind == kind }
     }
 
+    /// Every Hugging Face snapshot the install's model step downloads for `service`:
+    /// TTS mirrors `prefetch_specs(model)` in the backend module (run with the app's
+    /// `--model`, no `PIPECAT_TTS_PHONON_VOICES`), STT the helper's `prefetch --repo`.
+    /// `tests/test_macos_catalog_drift.py` compares this table with both.
+    /// Kept above `info(for:)`: the drift tests' parser reads that switch to the end.
+    public static func snapshots(for service: Service) -> [HubSnapshot] {
+        guard let repo = info(for: service).modelRepo else { return [] }
+        switch service.family {
+        case .phonon:
+            return [HubSnapshot(repo: repo, revision: "52433c46975bfa13144c56204c9f4ee1c5b148aa")]
+        case .pocketTTS:
+            return [
+                HubSnapshot(repo: repo),
+                HubSnapshot(
+                    repo: "kyutai/pocket-tts-without-voice-cloning", revision: "d4fdd22ae8c8e1cb3634e150ebeff1dab2d16df3",
+                    files: .patterns(["embeddings/*.safetensors"]), kind: .voice, required: false),
+            ]
+        case .dia:
+            return [
+                HubSnapshot(repo: repo),
+                HubSnapshot(
+                    repo: "mlx-community/descript-audio-codec-44khz", files: .patterns(["*.safetensors", "*.json"]),
+                    kind: .codec),
+            ]
+        case .whisper, .kyutai:
+            return [HubSnapshot(repo: repo, files: .allButDocs)]
+        default:
+            return [HubSnapshot(repo: repo)]
+        }
+    }
+
     public static func info(for service: Service) -> ServiceInfo {
         switch service {
         case .tone:

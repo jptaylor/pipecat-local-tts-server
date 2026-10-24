@@ -144,15 +144,16 @@ final class AppModel {
     private func loadDownloadSizes() async {
         let defaults = UserDefaults.standard
         for model in services {
-            guard let repo = model.info.modelRepo else { continue }
-            let key = "hubSize.\(repo)"
+            guard model.info.modelRepo != nil else { continue }
+            // Per service: a service's total spans several snapshots (the old `hubSize.<repo>` keys are left unread).
+            let key = "hubSize.service.\(model.service.rawValue)"
             let stamp = defaults.double(forKey: key + ".at")
             if stamp > 0, Date().timeIntervalSince1970 - stamp < 7 * 86_400 {
                 let cached = defaults.object(forKey: key) as? Int64
                 model.approxDownloadBytes = cached
                 continue
             }
-            if let size = await HubSizes.downloadSize(repo: repo), size > 0 {
+            if let size = await HubSizes.downloadSize(of: model.service), size > 0 {
                 model.approxDownloadBytes = size
                 defaults.set(size, forKey: key)
                 defaults.set(Date().timeIntervalSince1970, forKey: key + ".at")
