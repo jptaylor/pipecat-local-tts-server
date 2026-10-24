@@ -1,0 +1,69 @@
+# BACKUP (inactive): lives outside .github/workflows so it never runs. To re-enable:
+#   git mv .github/ci-backup/smoke-tone-macos.yml .github/workflows/
+# 2026-10-23: tone smoke, phonon smoke and rtf_benchmark all PASSED on macos-14 + macos-latest.
+name: smoke-tone-macos
+
+# Throwaway repro: does the tone backend serve PCM on a headless GitHub macOS
+# runner (no audio device)? Runs only on this branch; delete once answered.
+on:
+  push:
+    branches: [fix/phonon-followups]
+    paths: [.github/workflows/smoke-tone-macos.yml]
+
+jobs:
+  smoke-tone:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install just
+        run: brew install just
+      - name: Runner audio devices (informational)
+        run: system_profiler SPAudioDataType || true
+      - name: Smoke (tone backend, isolated socket)
+        run: just smoke-tone
+
+  # Does an mlx backend load on a virtualised runner (Metal GPU)? Downloads the
+  # 31M Phonon weights from the HF Hub; auto-syncs the phonon extra.
+  smoke-phonon:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install just
+        run: brew install just
+      - name: Smoke (phonon backend, isolated socket)
+        run: just smoke-phonon
+
+  # The repo's own in-process benchmark (no server, no socket, no audio device).
+  rtf-benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: RTF benchmark (phonon)
+        run: uv run --extra phonon python scripts/profiling/rtf_benchmark.py --backend phonon

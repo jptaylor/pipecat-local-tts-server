@@ -109,9 +109,9 @@ def _error_frame(
     return ev
 
 
-def _service() -> LocalTTSService:
+def _service(**kwargs) -> LocalTTSService:
     # __init__ does not connect; it only stores kwargs.
-    return LocalTTSService(socket_path="/tmp/does-not-connect.sock")
+    return LocalTTSService(socket_path="/tmp/does-not-connect.sock", **kwargs)
 
 
 def _wire_for_run_tts(svc: LocalTTSService, client: _FakeClient) -> None:
@@ -431,6 +431,182 @@ async def test_busy_rejection_clears_dirty_buffer():
     assert any(isinstance(f, ErrorFrame) for f in frames)
     assert client.clears == 1, "a pre-admission rejection must clear the dirty buffer"
     assert client.cancels == [], "no response exists to cancel before admission"
+
+
+# --- bounded ``busy`` retry ----------------------------------------------------
+# A pre-admission ``busy`` leaves the appended text buffered, so the adapter re-sends
+# ONLY the commit after the server's ``retry_after_ms`` (bounded by count and total
+# wait). Past either bound, or with ``busy_retries=0``, it falls back to the original
+# behaviour: clear the buffer and surface an ``ErrorFrame``.
+
+
+class _CommitLog(_FakeClient):
+    """Records every commit's event_id and how many appends were sent."""
+
+    def __init__(self, events: list[dict]) -> None:
+        super().__init__(events)
+        self.commit_ids: list[str | None] = []
+        self.appends = 0
+
+    async def append(self, text: str, **kwargs) -> None:
+        self.appends += 1
+
+    async def commit(self, *, event_id: str | None = None, **kwargs) -> None:
+        self.commit_ids.append(event_id)
+        await super().commit(event_id=event_id, **kwargs)
+
+
+def _busy(retry_after_ms: int | None = 10, *, nested: bool = False) -> dict:
+    ev = _error_frame(correlated=True, code="busy")
+    if retry_after_ms is not None:
+        if nested:
+            ev["error"]["retry_after_ms"] = retry_after_ms
+        else:
+            ev["retry_after_ms"] = retry_after_ms
+    return ev
+
+
+@pytest.mark.parametrize("nested", [False, True])
+async def test_busy_then_admitted_retries_commit_only(nested):
+    client = _CommitLog(
+        [
+            _busy(10, nested=nested),
+            _committed("r1"),
+            _audio_delta("r1"),
+            {"type": P.EVT_RESPONSE_AUDIO_DONE, "response_id": "r1"},
+        ]
+    )
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert not any(isinstance(f, ErrorFrame) for f in frames)
+    assert any(isinstance(f, TTSAudioRawFrame) for f in frames)
+    assert len(client.commit_ids) == 2 and client.commit_ids[0] != client.commit_ids[1]
+    assert client.appends == 1, "the text is still buffered; only the commit is re-sent"
+    assert client.clears == 0 and client.cancels == []
+
+
+async def test_busy_retries_exhausted_falls_back_to_clear_and_error():
+    client = _CommitLog([_busy(10), _busy(10), _busy(10)])
+    svc = _service(busy_retries=2)
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert any(isinstance(f, ErrorFrame) for f in frames)
+    assert len(client.commit_ids) == 3  # the original commit + 2 retries
+    assert client.clears == 1 and client.cancels == []
+
+
+async def test_busy_hint_over_budget_is_not_retried():
+    client = _CommitLog([_busy(5000)])
+    svc = _service(busy_retry_budget_s=1.0)
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert any(isinstance(f, ErrorFrame) for f in frames)
+    assert len(client.commit_ids) == 1
+    assert client.clears == 1
+
+
+async def test_busy_retries_zero_restores_drop_behaviour():
+    client = _CommitLog([_busy(10)])
+    svc = _service(busy_retries=0)
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert any(isinstance(f, ErrorFrame) for f in frames)
+    assert len(client.commit_ids) == 1
+    assert client.clears == 1 and client.cancels == []
+
+
+@pytest.mark.parametrize(
+    "ev", [_busy(None), _error_frame(correlated=True, code="payload_too_large")]
+)
+async def test_no_retry_without_busy_hint_or_for_other_codes(ev):
+    client = _CommitLog([ev])
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert any(isinstance(f, ErrorFrame) for f in frames)
+    assert len(client.commit_ids) == 1
+    assert client.clears == 1
+
+
+async def test_cancel_during_busy_wait_cancels_and_clears():
+    client = _CommitLog([_busy(2000)])
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    task = asyncio.ensure_future(_drain_run_tts(svc))
+    await asyncio.sleep(0.1)  # inside the retry wait
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(client.commit_ids) == 1, "the wait was aborted before re-sending"
+    assert client.cancels == [None]
+    assert client.clears == 1, "uncommitted text must not leak into the next utterance"
+
+
+@pytest.mark.parametrize(
+    "hint",
+    [-1, True, "250", float("nan"), float("inf"), 10**400],
+    ids=["negative", "bool", "str", "nan", "inf", "huge-int"],
+)
+async def test_unusable_busy_hint_is_not_retried(hint):
+    """A hint that is not a finite, non-negative number within the budget must fall
+    back to clear-and-error, never sleep on it (NaN would return at once; a huge int
+    would raise OverflowError out of ``run_tts``)."""
+    client = _CommitLog([_busy(hint)])
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert any(isinstance(f, ErrorFrame) for f in frames)
+    assert len(client.commit_ids) == 1
+    assert client.clears == 1
+
+
+class _FailRetryCommit(_CommitLog):
+    """The first commit goes out; the re-sent one fails (connection dropped during
+    the wait)."""
+
+    async def commit(self, *, event_id: str | None = None, **kwargs) -> None:
+        if self.commit_ids:
+            self.commit_ids.append(event_id)
+            raise ConnectionError("socket closed")
+        await super().commit(event_id=event_id, **kwargs)
+
+
+async def test_busy_retry_commit_send_failure_clears_and_errors():
+    client = _FailRetryCommit([_busy(10)])
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    errors = [f for f in frames if isinstance(f, ErrorFrame)]
+    assert len(errors) == 1 and "commit failed" in errors[0].error
+    assert isinstance(frames[-1], TTSStoppedFrame)
+    assert len(client.commit_ids) == 2
+    assert client.clears == 1 and client.cancels == []
+
+
+def test_busy_retry_params_reject_negative_or_nan_values():
+    with pytest.raises(ValueError):
+        _service(busy_retries=-1)
+    with pytest.raises(ValueError):
+        _service(busy_retry_budget_s=-0.1)
+    with pytest.raises(ValueError):
+        _service(busy_retry_budget_s=float("nan"))
 
 
 async def test_cancel_before_commit_clears_dirty_buffer():

@@ -180,7 +180,7 @@ def _require(name: str, value: str | None, pattern: re.Pattern[str], hint: str) 
     if not value:
         print(f"error: {name} is required", file=sys.stderr)
         sys.exit(2)
-    if not pattern.match(value):
+    if not pattern.fullmatch(value):
         print(
             f"error: {name}={value!r} rejected by allowlist ({hint})",
             file=sys.stderr,
@@ -191,7 +191,7 @@ def _require(name: str, value: str | None, pattern: re.Pattern[str], hint: str) 
 
 def main() -> None:
     label = os.environ.get("PIPECAT_TTS_LABEL") or DEFAULT_LABEL
-    if not _LABEL_RE.match(label):
+    if not _LABEL_RE.fullmatch(label):
         print(
             f"error: PIPECAT_TTS_LABEL={label!r} rejected by allowlist (alphanumerics / . _ -)",
             file=sys.stderr,
@@ -218,14 +218,14 @@ def main() -> None:
 
     # MODEL and AUTH_TOKEN_FILE are optional. Validate when present.
     model = os.environ.get("MODEL") or None
-    if model is not None and not _MODEL_RE.match(model):
+    if model is not None and not _MODEL_RE.fullmatch(model):
         print(
             f"error: MODEL={model!r} rejected by allowlist (alphanumerics / . _ / -)",
             file=sys.stderr,
         )
         sys.exit(2)
     auth_token_file = os.environ.get("AUTH_TOKEN_FILE") or None
-    if auth_token_file is not None and not _ABSPATH_RE.match(auth_token_file):
+    if auth_token_file is not None and not _ABSPATH_RE.fullmatch(auth_token_file):
         print(
             f"error: AUTH_TOKEN_FILE={auth_token_file!r} rejected by allowlist (absolute path)",
             file=sys.stderr,
@@ -260,7 +260,7 @@ def main() -> None:
     extra_env: dict[str, str] = {}
     extra_langs = os.environ.get("PIPECAT_TTS_KOKORO_EXTRA_LANGS")
     if extra_langs:
-        if not _EXTRA_LANGS_RE.match(extra_langs):
+        if not _EXTRA_LANGS_RE.fullmatch(extra_langs):
             print(
                 f"error: PIPECAT_TTS_KOKORO_EXTRA_LANGS={extra_langs!r} rejected by "
                 "allowlist (comma-separated ISO codes, e.g. ja,zh)",
@@ -279,7 +279,7 @@ def main() -> None:
                 "(only the phonon backend reads it).",
                 file=sys.stderr,
             )
-        elif not _PHONON_VOICES_RE.match(phonon_voices):
+        elif not _PHONON_VOICES_RE.fullmatch(phonon_voices):
             print(
                 f"error: PIPECAT_TTS_PHONON_VOICES={phonon_voices!r} rejected by "
                 "allowlist (comma-separated catalog slugs, e.g. zoey,juniper)",
@@ -296,7 +296,7 @@ def main() -> None:
     for ping_var in ("TTS_WS_PING_INTERVAL", "TTS_WS_PING_TIMEOUT"):
         ping_val = os.environ.get(ping_var)
         if ping_val:
-            if not _KEEPALIVE_RE.match(ping_val):
+            if not _KEEPALIVE_RE.fullmatch(ping_val):
                 print(
                     f"error: {ping_var}={ping_val!r} rejected by allowlist "
                     "(a positive number, or none/off/disable to disable)",

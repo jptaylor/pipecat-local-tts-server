@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -431,6 +432,86 @@ async def test_quantize_failure_leaves_no_dir_and_raises(seams, quant, monkeypat
     await _started(monkeypatch, model="phonon-q8")
     assert len(quant.calls) == 2
     assert len(seams.load_calls) == 1
+
+
+def _plant(root: Path, name: str, age_s: float) -> Path:
+    """A dir holding one file, with both mtimes ``age_s`` seconds in the past."""
+    d = root / name
+    d.mkdir(parents=True)
+    f = d / "weights.safetensors"
+    f.write_bytes(b"x")
+    t = time.time() - age_s
+    os.utime(f, (t, t))
+    os.utime(d, (t, t))
+    return d
+
+
+@pytest.mark.asyncio
+async def test_start_sweeps_only_stale_quantize_temp_dirs(seams, quant, monkeypatch, tmp_path):
+    root = _qroot(tmp_path)
+    base = PH._quantized_dir(_MODEL_SHA, 8).name
+    day = 24 * 3600.0
+    stale = _plant(root, f".{base}.tmp-111-222", day)
+    fresh = _plant(root, f".{base}.tmp-333-444", 60.0)
+    odd_name = _plant(root, f".{base}.tmp-notapid", day)  # not our naming scheme
+    other = _plant(root, "keep-me", day)  # a completed dir, however old
+    target = _plant(tmp_path / "elsewhere", "payload", day)
+    link = root / f".{base}.tmp-555-666"
+    link.symlink_to(target, target_is_directory=True)
+    plain_file = root / f".{base}.tmp-777-888"
+    plain_file.write_bytes(b"x")
+    os.utime(plain_file, (time.time() - day,) * 2)
+
+    await _started(monkeypatch, model="phonon-q8")
+
+    assert not stale.exists()
+    for kept in (fresh, odd_name, other, target, plain_file):
+        assert kept.exists(), kept
+    assert link.is_symlink()
+    assert len(quant.calls) == 1  # the sweep did not stop the build
+
+
+def test_sweep_age_boundary_is_ten_minutes(tmp_path):
+    assert PH._STALE_TMP_AGE_S == 600.0
+    root = tmp_path / "phonon"
+    young = _plant(root, ".k.tmp-1-2", 9 * 60.0)
+    old = _plant(root, ".k.tmp-3-4", 11 * 60.0)
+    PH._sweep_stale_tmp(root)
+    assert young.exists()
+    assert not old.exists()
+
+
+def test_sweep_survives_missing_parent_and_unreadable_entries(tmp_path, monkeypatch):
+    PH._sweep_stale_tmp(tmp_path / "does-not-exist")  # no cache dir yet: no error
+    root = tmp_path / "phonon"
+    stale = _plant(root, ".k.tmp-1-2", 24 * 3600.0)
+
+    def boom(*_a, **_k):
+        raise OSError("denied")
+
+    monkeypatch.setattr(PH.shutil, "rmtree", boom)
+    PH._sweep_stale_tmp(root)  # a failed delete is swallowed, entry left in place
+    assert stale.exists()
+
+
+def test_sweep_skips_an_entry_that_vanishes_mid_scan_and_continues(tmp_path, monkeypatch):
+    """An entry another process renames/removes between ``scandir`` and ``stat``
+    (a concurrent convert finishing) raises OSError for that entry only."""
+    root = tmp_path / "phonon"
+    day = 24 * 3600.0
+    raced = _plant(root, ".a.tmp-1-2", day)
+    other = _plant(root, ".b.tmp-3-4", day)
+    real = PH._newest_mtime
+
+    def flaky(path: str) -> float:
+        if path.endswith(".a.tmp-1-2"):
+            raise FileNotFoundError(path)
+        return real(path)
+
+    monkeypatch.setattr(PH, "_newest_mtime", flaky)
+    PH._sweep_stale_tmp(root)
+    assert raced.exists()  # unreadable entry left alone, not an error
+    assert not other.exists()  # and the scan carried on to the next one
 
 
 def test_quantized_dir_key_tracks_version(monkeypatch, tmp_path):

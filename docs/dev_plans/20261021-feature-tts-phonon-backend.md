@@ -507,7 +507,9 @@ silently clipped to 45.1 s with a normal `response.audio.done` (measured; docume
 comment; qwen3/fish have tripwires, phonon has none, so a guard is a design decision tied to the
 deferred shared-tripwire helper); (2) a SIGKILL mid-quantize leaves a `.<key>.tmp-<pid>-<tid>` dir in the
 cache (needs a stale-age policy); (3) the plist voices regex accepts a trailing newline, same as the
-existing kokoro/ping regexes.
+existing kokoro/ping regexes. **Update 2026-10-23** (`20261023-fix-phonon-followups.md`): (1) waived
+(the tripwire already makes it explicit); (2) fixed: quantized-alias start sweeps `.<name>.tmp-<pid>-<tid>`
+dirs older than 1 h; (3) fixed: every plist value is validated with `fullmatch`.
 
 **Deferred Minor findings fixed (2026-10-22, after the conduct hand-back):** all 14 Phase 1/2/3 Minor
 items below are fixed in one follow-up commit (hostile-env-token and `ALBA`/whitespace lean tests;
@@ -529,6 +531,9 @@ second was not confirmed as `busy` because the check hid the error text, which i
 documented behaviour (protocol §7), so the smoke now honours `retry_after_ms` and prints each retry. A
 client that does back-to-back commits must do the same. UNCHECKED: whether the reference Pipecat adapter
 (`examples/pipecat_tts_service.py`) retries on `busy`; it mentions `BUSY` only in comments I skimmed.
+**Resolved 2026-10-23:** it did not retry (it cleared the buffer and emitted an `ErrorFrame`); it now
+re-sends the commit after `retry_after_ms`, bounded by `busy_retries` and `busy_retry_budget_s`
+(`20261023-fix-phonon-followups.md`).
 
 **Scope addition (2026-10-22, user decision; NOT in the reviewed contract):** `--model` accepts the
 aliases `phonon` (fp, = the default), `phonon-q8`, `phonon-q4` (`_MODEL_ALIASES` in
