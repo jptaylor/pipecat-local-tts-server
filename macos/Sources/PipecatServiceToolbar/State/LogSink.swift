@@ -1,6 +1,7 @@
 import Foundation
 
-/// Appends a server's stderr to `~/Library/Logs/pipecat-tts/<backend>.app.log`,
+/// Appends a server's stderr to `~/Library/Logs/Pipecat Service Toolbar/<service>.app.log`
+/// (`AppPaths.appLog`),
 /// rotating once to `.1` past 20 MB.
 @MainActor
 final class LogSink {

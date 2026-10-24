@@ -125,6 +125,10 @@ PIPECAT_TOOLBAR_E2E=1 swift test --package-path macos --filter EndToEnd   # real
 swift run --package-path macos PipecatServiceToolbar --snapshot /tmp/shots  # render the UI
 ```
 
+Unbundled runs find their tools through `PIPECAT_TOOLBAR_UV`, `PIPECAT_TOOLBAR_WHEEL`,
+`PIPECAT_TOOLBAR_CONSTRAINTS`, `PIPECAT_TOOLBAR_HELPER` and `PIPECAT_TOOLBAR_REPO` (see
+[Architecture](docs/architecture.md#development-overrides)); a built app uses its bundle.
+
 Sign for distribution with `SIGN_IDENTITY="Developer ID Application: …" just app-build`.
 
 ## License

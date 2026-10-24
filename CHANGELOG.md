@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HF_TOKEN` reaches only `prefetch` and `serve`, never `uv`. The Apple Speech
   server caps clients at 8 and decodes one at a time, and survives Stop with a
   decode in flight; microphone audio is resampled without per-buffer seams.
+  Model deletion refuses a path whose backend directory is a symlink out of the
+  cache; stopping a subprocess also ends its descendants (process group) and never
+  hangs on a failed or refused launch; a server exit reported after a removal no
+  longer marks the service installed; quit cancels an Apple Speech model install;
+  the Apple Speech server closes a client that stops reading its replies.
   `just app-build` / `app-open` / `app-run` / `app-test`.
 
 ### Changed

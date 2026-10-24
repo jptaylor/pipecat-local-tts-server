@@ -30,16 +30,34 @@ flowchart LR
 | Layer | Where | Responsibility |
 |---|---|---|
 | Catalog | `PipecatToolbarCore/Service.swift` | Each service's kind, runtime, port, model, licence and copy strings. |
-| Tools | `ToolLocator.swift` | Finds `uv`, the TTS wheel, the `uv.lock` constraints and the STT helper: bundle first, then `PIPECAT_TOOLBAR_*` overrides, then the repo checkout. |
-| Environments | `EnvironmentManager.swift` (actor) | Python, venvs, packages and model prefetch. Runs the offline cache checks and removal (which also probes outdated environments, falls back to the model's folder under `AppPaths.hubDir`, and throws `RemovalError` for model folders it cannot delete). It deletes only `models--*` folders directly in `AppPaths.hubDir` and `<backend>/<key>` folders in `AppPaths.derivedModelsDir`, whatever paths the probe reports. Builds every command line by runtime. |
-| Processes | `Subprocess.swift` | `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL. |
-| Protocols | `TTSClient.swift`, `STTClient.swift`, `STTWebSocketServer.swift` | WebSocket clients for both wire protocols, plus a native stt-protocol server. |
+| Tools | `ToolLocator.swift` | Finds `uv`, the TTS wheel, the `uv.lock` constraints and the STT helper: bundle first, then the overrides below, then the repo checkout. |
+| Environments | `EnvironmentManager.swift` (actor) | Python, venvs, packages and model prefetch. Runs the offline cache checks and removal (which also probes outdated environments, falls back to the model's folder under `AppPaths.hubDir`, and throws `RemovalError` for model folders it cannot delete). It deletes only `models--*` folders directly in `AppPaths.hubDir` and `<backend>/<key>` folders in `AppPaths.derivedModelsDir`, whatever paths the probe reports: every component above the folder must resolve, symlinks included, to exactly that root or `<root>/<backend>`, so a symlinked backend directory can't carry a deletion outside it. Builds every command line by runtime. |
+| Processes | `Subprocess.swift` | `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL to the child's process group. Its exit always resolves (`notLaunched` for a failed launch, or a `stop()` before `run()`, which refuses the launch), and `stop()` returns once no process of the group is left. |
+| Ports | `PortProbe.swift` | Whether a loopback port is free and, if not, who holds it (`lsof`, plus a loaded `pipecat.tts-server.<backend>` launchd agent): the "port busy" failure in the README's Problems section. |
+| Download sizes | `HubSizes.swift` | Approximate download size of a model repo from the public Hugging Face tree API, counting only the files mlx-audio fetches (shown in Add Models before install). |
+| Protocols | `TTSClient.swift`, `STTClient.swift`, `STTWebSocketServer.swift`, `PCMStreamConverter.swift` | WebSocket clients for both wire protocols, plus a native stt-protocol server; `STTWire` is the one definition of the stt audio format. |
 | State | `AppModel`, `ServiceModel` (`@MainActor @Observable`) | Per-service phase machine, page navigation, delete confirmation. |
 | Audio | `AudioPlayer`, `TryItSession`, `STTTryItSession`, `AppleSpeech` | TTS playback, microphone and sample capture, SpeechAnalyzer. |
 | Views | `PanelView`, `ServiceDetailView`, `Components`, `Brand` | Running list, catalog, detail page, right-click menu, catmark artwork. |
 
 `PipecatToolbarCore` has no UI. Unit tests and the opt-in end-to-end tests
-target it.
+target it; `ServiceModelTests` also imports the app target (`@testable`) for
+`ServiceModel`'s exit and quit edges.
+
+### Development overrides
+
+`ToolLocator` reads these environment variables (all optional). They apply
+only when the app runs without bundled tools (`swift run`, `just app-run`); a
+built `.app` always uses its bundle.
+
+| Variable | Overrides |
+|---|---|
+| `PIPECAT_TOOLBAR_UV` | The `uv` binary (else `~/.local/bin`, `~/.cargo/bin`, Homebrew, `PATH`). |
+| `PIPECAT_TOOLBAR_WHEEL` | The TTS server wheel (used only if the file exists). |
+| `PIPECAT_TOOLBAR_CONSTRAINTS` | The `uv.lock` constraints file installed with that wheel. |
+| `PIPECAT_TOOLBAR_HELPER` | The STT helper script (`macos/Helper/pipecat_app_helper.py`). |
+| `PIPECAT_TOOLBAR_REPO` | The repo checkout to build the wheel from when no wheel is given. |
+| `PIPECAT_TOOLBAR_E2E` | Set to `1` to run the end-to-end tests (real installs). |
 
 ## Runtimes
 
@@ -97,7 +115,7 @@ Every Python server, and the native server, follows one contract.
    crashed, and the server shuts down as if sent SIGTERM. So servers never
    outlive the app.
 4. **Stop.** Stop sends SIGTERM and closes stdin, then sends SIGKILL after
-   10 s. Quitting the app stops all servers in parallel and aborts any in-flight installs or model downloads (`EnvironmentManager.shutdown()`), waiting for them and for removals before it exits. No new subprocess (an install step or an offline `prefetch --check` probe) starts after that. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first. An install queued behind a sibling's leaves the queue when cancelled and records nothing; the variant marker (`.variants/<service>`) is written only once packages are in and no Cancel has landed, so a cancel during the model download leaves the variant installed with weights to resume (needs model). An install step waits at most 2 s after its process exits for the output pipes to close (a grandchild such as a build backend can hold them), so the family lock is always released.
+   10 s. Quitting the app stops all servers in parallel and aborts any in-flight installs or model downloads (`EnvironmentManager.shutdown()`), waiting for them and for removals before it exits. No new subprocess (an install step or an offline `prefetch --check` probe) starts after that. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first. An install queued behind a sibling's leaves the queue when cancelled and records nothing; the variant marker (`.variants/<service>`) is written only once packages are in and no Cancel has landed, so a cancel during the model download leaves the variant installed with weights to resume (needs model). An install step waits at most 2 s after its process exits for the output pipes to close (a grandchild such as a build backend can hold them), so the family lock is always released. Signals go to the child's process group, and a stopped step ends only once its descendants are gone too, so a removal or the next install never races a surviving grandchild. A server exit the app asked for only completes a Stop (`stopping` -> `installed`); reported after the stdout drain, it never overrides a removal that finished first. Quit also cancels an Apple Speech model install and waits up to 5 s for it.
 
 `tts_server` implements this natively (`serve --supervised`,
 `tts_server/supervise.py`). The STT engines get it from the helper, which wraps
@@ -108,7 +126,14 @@ Every Python server, and the native server, follows one contract.
 - **TTS.** This repo's `docs/protocol.md`. Clients send JSON text, then commit.
   Audio streams back as base64 pcm16 deltas at the model's rate. The app's
   `TTSClient` plays it through `AVAudioEngine`, coalescing 20 ms frames into
-  100 ms buffers. Try it tags each request's append and commit with an
+  100 ms buffers. Every Try it request is `input_text.clear`, `append`,
+  `commit` (`TTSRequestQueue`): the server keeps its buffer on any refusal for a
+  retry Try it never makes, so the clear stops that text prefixing the next
+  request. Stop's `response.cancel` is queued behind the frames already asked
+  for, so it never overtakes the commit it stops (a cancel before the commit is
+  a no-op and the commit would hold the connection's one in-flight slot), and a
+  stopped request sends no more frames (docs/protocol.md §3). Try it tags each
+  request's append and commit with an
   `event_id`; the server echoes it as `previous_event_id` on
   `input_text.committed` (which names the `response_id`) and on any `error`
   refusing the request (`{type: "error", error: {code, message}}`).
@@ -128,7 +153,7 @@ Every Python server, and the native server, follows one contract.
 
   It rejects requests with an `Origin` header, as the Python servers do. It
   serves at most 8 clients at once and runs their transcriptions one at a
-  time. A connection holds the server weakly, so its late callbacks after Stop
+  time, and closes a client with more than 1 MiB of replies it has not read. A connection holds the server weakly, so its late callbacks after Stop
   are safe. Microphone and sample audio go through one resampler per recording
   (`PCMStreamConverter`), so buffer edges join without seams.
 
@@ -191,7 +216,7 @@ the bare file name.
 
 | Suite | What it covers |
 |---|---|
-| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots, logo parsing, `Subprocess` stdin and kill handling and exit-after-drain ordering, install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, Try-it routing of every event by request (`ResponseTracker`) and decoding of real server frames (`Fixtures/tts_wire_frames.json`), seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, which processes get `HF_TOKEN`. |
+| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion and the one stt wire format, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots (on disk, with symlinked leaves, backend directories and roots), logo parsing, `Subprocess` stdin and kill handling, exit-after-drain ordering and its lifecycle table (launch failure, stop before launch, descendants that obey or ignore SIGTERM), install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, Try-it routing of every event by request (`ResponseTracker`), request frame order against Stop at every point (`TTSRequestQueue`) and decoding of real server frames (`Fixtures/tts_wire_frames.json`, which also holds the request frames the server was sent), `ServiceModel` exits against every phase and quit during an Apple Speech install, seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, the unread-reply cap, which processes get `HF_TOKEN`. |
 | Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403). |
 | End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny and Kyutai against the built bundle, then serve and use each. |
 | Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and `PrefetchEvent.swift` and checks their backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases and supervised error codes against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server. |

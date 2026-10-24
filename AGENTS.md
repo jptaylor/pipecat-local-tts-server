@@ -72,7 +72,9 @@ CI splits into a **lean** job (client-only, asserts no mlx/numpy import; runs an
 explicit allow-list of lean test files — extend it when adding a lean test), an
 **examples** job (pinned pipecat-ai), and a **macOS smoke** job (`--all-extras`;
 verifies every backend extra resolves and its module imports — kokoro / voxtral_tts
-/ pocket_tts / dia / qwen3_tts / fish_tts / phonon — does not run synthesis). See
+/ pocket_tts / dia / qwen3_tts / fish_tts / phonon — does not run synthesis), and a
+**macOS app** job (`test-macos-app`, macos-15: `swift build` + `swift test --package-path
+macos`, with the lean env synced for the live tone-server test). See
 `.github/workflows/test.yml`.
 
 A separate **release** workflow (`.github/workflows/release.yml`) runs only when a
