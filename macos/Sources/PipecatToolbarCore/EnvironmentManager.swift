@@ -624,9 +624,10 @@ public actor EnvironmentManager {
     // MARK: - Remove
 
     /// Uninstalls a variant. With `deleteModel`, also deletes its model files
-    /// that no installed sibling uses (`knownFolders` when the environment can't
-    /// report them). The family environment goes with its last variant.
-    public func remove(_ backend: Service, deleteModel: Bool, knownFolders: [URL] = []) async throws {
+    /// that no installed sibling uses (`known`, the last check the app saw,
+    /// when the environment can't report them). The repo-to-folder mapping
+    /// lives here. The family environment goes with its last variant.
+    public func remove(_ backend: Service, deleteModel: Bool, known: ModelCacheStatus? = nil) async throws {
         cancel(backend)
         try await lockFamily(backend.family)
         defer { unlockFamily(backend.family) }
@@ -638,9 +639,9 @@ public actor EnvironmentManager {
             // weights are; only fall back to the cached/derived folders if it can't.
             // Every repo the check names counts, cached or partial, and so does the
             // service's model repo: a partial download is still gigabytes on disk.
-            let status = await modelCacheStatus(backend, includeOutdated: true)
+            let status = await modelCacheStatus(backend, includeOutdated: true) ?? known
             let repos = (status?.repoIDs ?? []) + [backend.info.modelRepo].compactMap { $0 }
-            let own = (status.map { $0.repoFolders + $0.derivedFolders } ?? knownFolders)
+            let own = (status.map { $0.repoFolders + $0.derivedFolders } ?? [])
                 + repos.map { paths.hubDir.appending(path: Self.cacheFolderName(repo: $0)) }
             var shared: [URL] = []
             var sharedRepos = siblings.compactMap(\.info.modelRepo)

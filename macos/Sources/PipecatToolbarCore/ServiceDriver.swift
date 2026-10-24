@@ -12,7 +12,8 @@ public protocol ServiceEnvironment: Sendable {
     func isRequested(_ service: Service) -> Bool
     func modelCacheStatus(_ backend: Service, includeOutdated: Bool) async -> ModelCacheStatus?
     func install(_ backend: Service, mode: InstallMode) -> AsyncThrowingStream<InstallEvent, Error>
-    func remove(_ backend: Service, deleteModel: Bool, knownFolders: [URL]) async throws
+    /// `known`: what the last check saw, for when the environment can no longer report it.
+    func remove(_ backend: Service, deleteModel: Bool, known: ModelCacheStatus?) async throws
     func serveArguments(for info: ServiceInfo, port: Int) -> [String]?
 }
 
@@ -278,12 +279,8 @@ public final class ServiceDriver {
         case .shutdown: await shutdown()
         case .removeEnvironment(let deleteModel, let removal):
             guard let environment else { return }
-            // What the last check saw, for when the environment can no longer report it.
-            let hub = host?.servicePaths?.hubDir
-            let known = (cache?.repoFolders ?? []) + (cache?.derivedFolders ?? [])
-                + (cache?.repoIDs ?? []).compactMap { repo in hub?.appending(path: EnvironmentManager.cacheFolderName(repo: repo)) }
             do {
-                try await environment.remove(service, deleteModel: deleteModel, knownFolders: known)
+                try await environment.remove(service, deleteModel: deleteModel, known: state.cache)
             } catch {
                 send(.removalFailed(error.localizedDescription, removal: removal))
                 return

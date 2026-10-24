@@ -74,7 +74,7 @@ import Testing
         func install(_ backend: Service, mode: InstallMode) -> AsyncThrowingStream<InstallEvent, Error> {
             AsyncThrowingStream { $0.finish() }
         }
-        func remove(_ backend: Service, deleteModel: Bool, knownFolders: [URL]) async throws {}
+        func remove(_ backend: Service, deleteModel: Bool, known: ModelCacheStatus?) async throws {}
         func serveArguments(for info: ServiceInfo, port: Int) -> [String]? { ["serve"] }
     }
 
@@ -107,7 +107,7 @@ import Testing
         func install(_ backend: Service, mode: InstallMode) -> AsyncThrowingStream<InstallEvent, Error> {
             AsyncThrowingStream { $0.finish() }
         }
-        func remove(_ backend: Service, deleteModel: Bool, knownFolders: [URL]) async throws {}
+        func remove(_ backend: Service, deleteModel: Bool, known: ModelCacheStatus?) async throws {}
         func serveArguments(for info: ServiceInfo, port: Int) -> [String]? { ["serve"] }
     }
 
@@ -148,7 +148,7 @@ import Testing
             lock.withLock { status = .ready(Self.marker) }
             return AsyncThrowingStream { $0.finish() }
         }
-        func remove(_ backend: Service, deleteModel: Bool, knownFolders: [URL]) async throws {
+        func remove(_ backend: Service, deleteModel: Bool, known: ModelCacheStatus?) async throws {
             lock.withLock {
                 status = .missing
                 requested = false

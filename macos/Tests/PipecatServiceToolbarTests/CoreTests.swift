@@ -848,7 +848,7 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: repo.deletingLastPathComponent().path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: repo.deletingLastPathComponent().path) }
         await #expect(throws: RemovalError.self) {
-            try await manager.remove(.pocketTTS, deleteModel: true, knownFolders: [repo])
+            try await manager.remove(.pocketTTS, deleteModel: true, known: ModelCacheStatus(cached: false, sizeBytes: 0, repoFolders: [repo]))
         }
     }
 
