@@ -46,7 +46,7 @@ struct EndToEndTests {
     func startServer(_ service: Service, _ manager: EnvironmentManager, paths: AppPaths) async throws -> (Subprocess, Int) {
         let args = try #require(manager.serveArguments(for: service.info, port: 0))
         let server = Subprocess(
-            .init(executable: paths.python(service), arguments: args, environment: ProcessEnvironment.base(), holdStdin: true))
+            .init(executable: paths.python(service), arguments: args, environment: ProcessEnvironment.huggingFace(), holdStdin: true))
         try server.run()
         for await line in server.stdout {
             guard let event = ServerCLIEvent.parse(line) else { continue }

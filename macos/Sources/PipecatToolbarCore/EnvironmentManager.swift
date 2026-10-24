@@ -461,7 +461,7 @@ public actor EnvironmentManager {
         guard let args = prefetchArguments(for: backend.info, check: false) else {
             throw InstallError(stage: .model, message: "The STT helper script is missing from this build.", logTail: [])
         }
-        let sub = Subprocess(.init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.base()))
+        let sub = Subprocess(.init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.huggingFace()))
         running[backend] = sub
         defer { running[backend] = nil }
         try sub.run()

@@ -182,10 +182,20 @@ public enum ProcessEnvironment {
             "DO_NOT_TRACK": "1",
         ]
         env["TMPDIR"] = inherited["TMPDIR"] ?? NSTemporaryDirectory()
-        // Honour a user's own Hugging Face configuration (cache location, token).
-        for key in ["HF_HOME", "HF_HUB_CACHE", "HF_TOKEN", "XDG_CACHE_HOME", "PIPECAT_TTS_PHONON_VOICES"] {
+        // Honour a user's own Hugging Face configuration (cache location). The
+        // token is not here: see `huggingFace()`.
+        for key in ["HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME", "PIPECAT_TTS_PHONON_VOICES"] {
             if let value = inherited[key] { env[key] = value }
         }
+        return env
+    }
+
+    /// `base()` plus the user's `HF_TOKEN`, for the processes that download
+    /// models (`prefetch`, `serve`) and nothing else: `uv` runs package build
+    /// scripts, which must never see the credential.
+    public static func huggingFace() -> [String: String] {
+        var env = base()
+        if let token = ProcessInfo.processInfo.environment["HF_TOKEN"] { env["HF_TOKEN"] = token }
         return env
     }
 

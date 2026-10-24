@@ -1203,6 +1203,19 @@ final class ConcurrencyGauge: @unchecked Sendable {
     var peak: Int { lock.withLock { max } }
 }
 
+@Suite(.serialized) struct CredentialEnvironmentTests {
+    /// `uv` runs package build scripts: it never sees the Hugging Face token.
+    @Test func onlyModelProcessesGetTheHuggingFaceToken() throws {
+        let saved = ProcessInfo.processInfo.environment["HF_TOKEN"]
+        setenv("HF_TOKEN", "hf_test_secret", 1)
+        defer { if let saved { setenv("HF_TOKEN", saved, 1) } else { unsetenv("HF_TOKEN") } }
+        let paths = try InstallCancellationTests.paths()
+        #expect(ProcessEnvironment.uv(paths: paths)["HF_TOKEN"] == nil)
+        #expect(ProcessEnvironment.base()["HF_TOKEN"] == nil)
+        #expect(ProcessEnvironment.huggingFace()["HF_TOKEN"] == "hf_test_secret")
+    }
+}
+
 @Suite struct PCMStreamConverterTests {
     /// A 440 Hz tone at 48 kHz float, in microphone-tap-sized buffers.
     static func toneBuffers(seconds: Double = 1, chunk: Int = 4096) -> [AVAudioPCMBuffer] {

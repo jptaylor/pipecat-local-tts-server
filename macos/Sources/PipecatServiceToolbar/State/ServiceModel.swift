@@ -383,7 +383,7 @@ final class ServiceModel: Identifiable {
             return
         }
         let sub = Subprocess(
-            .init(executable: app.paths.python(service), arguments: args, environment: ProcessEnvironment.base(), holdStdin: true))
+            .init(executable: app.paths.python(service), arguments: args, environment: ProcessEnvironment.huggingFace(), holdStdin: true))
         let sink = LogSink(url: app.paths.appLog(service))
         sink.write("---- \(Date().formatted(.iso8601)) starting \(service.rawValue) on \(ServiceCatalog.host):\(port)")
         do {
