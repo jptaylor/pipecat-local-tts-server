@@ -433,6 +433,32 @@ async def test_quantize_failure_leaves_no_dir_and_raises(seams, quant, monkeypat
     assert len(seams.load_calls) == 1
 
 
+def _dead_pid() -> int:
+    """A pid that just exited (reaped), so ``os.kill(pid, 0)`` finds no process."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+def test_conversion_sweeps_temp_dirs_of_dead_processes(quant):
+    """A conversion killed by SIGTERM/os._exit skips its ``finally``; the next
+    conversion of the same key removes that dead pid's temp dir, and leaves a live
+    process's (a concurrent conversion) and other keys' alone."""
+    final = PH._quantized_dir(_MODEL_SHA, 8)
+    final.parent.mkdir(parents=True)
+    other = PH._quantized_dir(_MODEL_SHA, 4)
+    dead = final.parent / f".{final.name}.tmp-{_dead_pid()}-123"
+    live = final.parent / f".{final.name}.tmp-{os.getppid()}-456"
+    same_process = final.parent / f".{final.name}.tmp-{os.getpid()}-789"
+    other_dead = final.parent / f".{other.name}.tmp-{_dead_pid()}-1"
+    junk = final.parent / f".{final.name}.tmp-notapid-1"
+    for d in (dead, live, same_process, other_dead, junk):
+        (d / "partial").mkdir(parents=True)
+    assert PH._ensure_quantized("snap", _MODEL_SHA, 8) == str(final)
+    assert not dead.exists(), "a dead conversion's temp dir survived"
+    assert live.exists() and same_process.exists() and other_dead.exists() and junk.exists()
+
+
 def test_quantized_dir_key_tracks_version(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     monkeypatch.setattr(PH, "_mlx_audio_version", lambda: "1.0")
