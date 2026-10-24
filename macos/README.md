@@ -102,8 +102,9 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
   pinned to `uv.lock`, then `python -m tts_server prefetch` and
   `serve --supervised`.
 - **Whisper, Kyutai**: PyPI packages hash-pinned to the last transitive
-  dependency (`constraints/stt-<engine>.txt`, `uv pip install --require-hashes`)
-  and model weights pinned to a commit, run by the bundled
+  dependency (`constraints/stt-<engine>.txt`, `uv pip install --require-hashes`;
+  a bundled app missing that file refuses the install rather than resolve
+  unpinned) and model weights pinned to a commit, run by the bundled
   `Helper/pipecat_app_helper.py`. Kyutai runs as a `moshi_mlx` backend inside
   `stt_server`.
 - **Apple Speech**: SpeechAnalyzer in the app process, behind a Swift

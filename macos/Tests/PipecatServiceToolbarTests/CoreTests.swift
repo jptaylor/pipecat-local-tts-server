@@ -163,7 +163,7 @@ import Testing
         case .sttHelper(let engine, _): pins.appending(path: "stt-\(engine).txt")
         default: lock
         }
-        #expect(tools.constraints(for: service.info) == expected)
+        #expect(try tools.constraints(for: service.info) == expected)
         let constraint = try #require(args.firstIndex(of: "--constraint"))
         #expect(args[constraint + 1] == expected?.lastPathComponent)
         // uv runs from the file's folder (the bundle path has spaces uv would split).
@@ -176,12 +176,47 @@ import Testing
         }
     }
 
-    @Test func sttConstraintsAreOptionalPerEngine() {
+    /// A missing `stt-<engine>.txt` is optional only for repository and override
+    /// runs; a bundled build fails closed (its pins are what the build shipped).
+    @Test(arguments: [Tools.Source.override, .repository, .bundle])
+    func sttConstraintsAreOptionalOnlyOutsideTheBundle(source: Tools.Source) throws {
         let tools = Tools(
             uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil,
-            sttConstraints: URL(filePath: "/nonexistent"), source: .override)
-        #expect(tools.constraints(for: Service.kyutai.info) == nil)
-        #expect(tools.constraints(for: Service.appleSpeech.info) == nil)
+            sttConstraints: URL(filePath: "/nonexistent"), source: source)
+        if source == .bundle {
+            #expect(throws: ToolLocatorError.self) { try tools.constraints(for: Service.kyutai.info) }
+        } else {
+            #expect(try tools.constraints(for: Service.kyutai.info) == nil)
+        }
+        #expect(try tools.constraints(for: Service.appleSpeech.info) == nil)
+        let present = FileManager.default.temporaryDirectory.appending(path: "stt-constraints-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: present, withIntermediateDirectories: true)
+        try "x==1 --hash=sha256:00\n".write(to: present.appending(path: "stt-kyutai.txt"), atomically: true, encoding: .utf8)
+        let found = Tools(
+            uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil,
+            sttConstraints: present, source: source)
+        #expect(try found.constraints(for: Service.kyutai.info)?.lastPathComponent == "stt-kyutai.txt")
+    }
+
+    /// A bundled STT install with no pins file is refused at the packages step.
+    @Test func aBundledSTTInstallWithoutPinsIsRefused() async throws {
+        let paths = try InstallCancellationTests.paths()
+        let uv = paths.supportDir.appending(path: "uv")
+        try "#!/bin/sh\n[ \"$1\" = venv ] && mkdir -p \"$4/bin\" && printf '#!/bin/sh\\necho 3.12.0\\n' > \"$4/bin/python\" && chmod 755 \"$4/bin/python\"\nexit 0\n"
+            .write(to: uv, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
+        let manager = EnvironmentManager(
+            paths: paths,
+            tools: Tools(
+                uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil,
+                sttConstraints: paths.supportDir.appending(path: "missing"), source: .bundle))
+        do {
+            try await manager.install(.kyutai).consume { _ in }
+            Issue.record("an unpinned bundled STT install went ahead")
+        } catch let error as InstallError {
+            #expect(error.stage == .packages && error.message.contains("stt-"), "\(error.message)")
+        }
+        #expect(!manager.isRequested(.kyutai))
     }
 
     /// A built environment as `install` leaves it: an executable python and the marker.

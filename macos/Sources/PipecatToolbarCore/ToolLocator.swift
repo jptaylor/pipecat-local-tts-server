@@ -27,14 +27,19 @@ public struct Tools: Sendable, Equatable {
     }
 
     /// The constraints file `uv pip install` gets for a service: the `uv.lock`
-    /// export for TTS, the engine's hash-pinned file for STT (nil when absent).
-    public func constraints(for info: ServiceInfo) -> URL? {
+    /// export for TTS, the engine's hash-pinned file for STT. A missing STT file
+    /// is optional for repository and override runs (nil) but fails closed for a
+    /// bundled build, whose hash pins are what it shipped.
+    public func constraints(for info: ServiceInfo) throws -> URL? {
         switch info.runtime {
         case .ttsServer: return constraints
         case .sttHelper(let engine, _):
             guard let file = sttConstraints?.appending(path: "stt-\(engine).txt"),
                 FileManager.default.fileExists(atPath: file.path)
-            else { return nil }
+            else {
+                if source == .bundle { throw ToolLocatorError.sttConstraintsMissing("stt-\(engine).txt") }
+                return nil
+            }
             return file
         case .appleSpeech: return nil
         }
@@ -59,6 +64,7 @@ public enum ToolLocatorError: LocalizedError, Sendable {
     case uvNotFound
     case wheelNotFound
     case buildFailed(String)
+    case sttConstraintsMissing(String)
 
     public var errorDescription: String? {
         switch self {
@@ -68,6 +74,8 @@ public enum ToolLocatorError: LocalizedError, Sendable {
             "The server wheel was not found. Build the app with `just app-build`, or set PIPECAT_TOOLBAR_WHEEL."
         case .buildFailed(let detail):
             "Building the server wheel failed: \(detail)"
+        case .sttConstraintsMissing(let file):
+            "This build is missing its hash pins (\(file)), so the speech engine can't be installed safely. Reinstall the app."
         }
     }
 }

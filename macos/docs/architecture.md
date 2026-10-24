@@ -58,7 +58,7 @@ built `.app` always uses its bundle.
 | `PIPECAT_TOOLBAR_WHEEL` | The TTS server wheel (used only if the file exists). |
 | `PIPECAT_TOOLBAR_CONSTRAINTS` | The `uv.lock` constraints file installed with that wheel. |
 | `PIPECAT_TOOLBAR_HELPER` | The STT helper script (`macos/Helper/pipecat_app_helper.py`). |
-| `PIPECAT_TOOLBAR_STT_CONSTRAINTS` | The folder of hash-pinned `stt-<engine>.txt` constraints (else `macos/constraints/` of the checkout). |
+| `PIPECAT_TOOLBAR_STT_CONSTRAINTS` | The folder of hash-pinned `stt-<engine>.txt` constraints (else `macos/constraints/` of the checkout). Outside the bundle a missing file installs unpinned; a bundled build refuses the install instead (`Tools.constraints(for:)` throws). |
 | `PIPECAT_TOOLBAR_REPO` | The repo checkout to build the wheel from when no wheel is given. |
 | `PIPECAT_TOOLBAR_E2E` | Set to `1` to run the end-to-end tests (real installs). |
 

@@ -436,7 +436,14 @@ public actor EnvironmentManager {
         // uv splits a `--constraint` path at spaces (and the app bundle name has
         // them), so run from the file's directory and pass the bare name.
         var workingDir: URL?
-        if constrained, let constraints = tools.constraints(for: info) {
+        let pins: URL?
+        do {
+            pins = constrained ? try tools.constraints(for: info) : nil
+        } catch {
+            // A bundled build never installs an STT engine without its hash pins.
+            throw InstallError(stage: .packages, message: error.localizedDescription, logTail: [])
+        }
+        if let constraints = pins {
             args += ["--constraint", constraints.lastPathComponent]
             workingDir = constraints.deletingLastPathComponent()
             // The STT constraints carry a sha256 for every wheel (the uv.lock export does not).
