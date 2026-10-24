@@ -130,20 +130,32 @@ TRY_IT_FIXTURE = (
 _VOLATILE = {"event_id", "response_id"}
 
 
-# The frames ``TTSRequestQueue.frames("Hello", voice: nil, eventID: "tryit-1")``
-# sends (the Swift tests compare against the fixture's copy).
+# The frames ``TTSClientFrame.request`` sends for request ``tryit-1`` ("Hello",
+# default voice); the Swift tests compare against the fixture's copy.
 _TRY_IT_REQUEST = [
-    {"type": "input_text.clear"},
+    {"type": "input_text.clear", "event_id": "tryit-1.clear"},
     {"type": "input_text.append", "text": "Hello", "event_id": "tryit-1.append"},
     {"type": "input_text.commit", "event_id": "tryit-1"},
 ]
 
 
+def _try_it_frames(n: int, text: str, voice: str | None = None) -> list[dict]:
+    """Request ``tryit-<n>`` as the app's ``TTSRequestMachine`` sends it."""
+    commit = {"type": "input_text.commit", "event_id": f"tryit-{n}"}
+    if voice is not None:
+        commit["voice"] = voice
+    return [
+        {"type": "input_text.clear", "event_id": f"tryit-{n}.clear"},
+        {"type": "input_text.append", "text": text, "event_id": f"tryit-{n}.append"},
+        commit,
+    ]
+
+
 async def _try_it_exchange() -> dict:
-    """The frames the real server sends for the exchange the app's Try it runs:
-    each request is an ``input_text.clear``, an ``input_text.append`` (event id
-    ``<id>.append``) and an ``input_text.commit`` (event id ``<id>``), then Stop
-    sends ``response.cancel``."""
+    """The frames the real server sends for the exchanges the app's Try it runs:
+    each request is an ``input_text.clear`` (event id ``<id>.clear``), an
+    ``input_text.append`` (``<id>.append``) and an ``input_text.commit``
+    (``<id>``); Stop sends ``response.cancel`` after the commit."""
     from tts_server.backend import ToneBackend
 
     from ._helpers import connected_client, next_event, running_server
@@ -151,26 +163,35 @@ async def _try_it_exchange() -> dict:
     async def send(client, frame: dict) -> None:
         await client._ws.send(json.dumps(frame))
 
+    assert _try_it_frames(1, "Hello") == _TRY_IT_REQUEST
     frames: dict = {"request": _TRY_IT_REQUEST}
-    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
-        for frame in _TRY_IT_REQUEST:
-            await send(client, frame)
-        frames["cleared"] = await next_event(client, "input_text.cleared")
-        frames["committed"] = await next_event(client, "input_text.committed")
-        frames["created"] = await next_event(client, "response.created")
-        # A second request while the first is in flight is refused (K=1).
-        await send(client, {"type": "input_text.clear"})
-        await next_event(client, "input_text.cleared")
-        await send(
-            client, {"type": "input_text.append", "text": "Again", "event_id": "tryit-2.append"}
-        )
-        await send(client, {"type": "input_text.commit", "event_id": "tryit-2"})
-        frames["error_busy"] = await next_event(client, "error")
-        await send(client, {"type": "input_text.append", "event_id": "tryit-3.append"})
-        frames["error_append"] = await next_event(client, "error")
-        frames["audio"] = await next_event(client, "response.audio.delta")
-        await send(client, {"type": "response.cancel"})
-        frames["cancelled"] = await next_event(client, "response.cancelled")
+    async with running_server(ToneBackend()) as srv:
+        async with connected_client(srv) as (client, _hello):
+            for frame in _TRY_IT_REQUEST:
+                await send(client, frame)
+            frames["cleared"] = await next_event(client, "input_text.cleared")
+            frames["committed"] = await next_event(client, "input_text.committed")
+            frames["created"] = await next_event(client, "response.created")
+            # A second request while the first is in flight is refused (K=1).
+            for frame in _try_it_frames(2, "Again"):
+                await send(client, frame)
+            await next_event(client, "input_text.cleared")
+            frames["error_busy"] = await next_event(client, "error")
+            await send(client, {"type": "input_text.append", "event_id": "tryit-3.append"})
+            frames["error_append"] = await next_event(client, "error")
+            frames["audio"] = await next_event(client, "response.audio.delta")
+            await send(client, {"type": "response.cancel"})
+            frames["cancelled"] = await next_event(client, "response.cancelled")
+        # A fresh connection: a voice the server does not advertise is refused,
+        # then a request plays to the end.
+        async with connected_client(srv) as (client, _hello):
+            for frame in _try_it_frames(4, "Hello", voice="nope"):
+                await send(client, frame)
+            frames["error_voice"] = await next_event(client, "error")
+            for frame in _try_it_frames(5, "Hello"):
+                await send(client, frame)
+            await next_event(client, "input_text.committed")
+            frames["done"] = await next_event(client, "response.audio.done")
     frames["audio"]["audio"] = "AID/fw=="  # four pcm16 bytes: -32768 then 32767
     frames["audio"]["seq"] = 0
     return frames
@@ -199,6 +220,8 @@ async def test_swift_try_it_fixture_is_what_the_server_sends():
     assert fixture["committed"]["response_id"] == fixture["created"]["response_id"]
     assert fixture["error_busy"]["previous_event_id"] == "tryit-2"
     assert fixture["error_append"]["previous_event_id"] == "tryit-3.append"
+    assert fixture["cleared"]["previous_event_id"] == "tryit-1.clear"
+    assert fixture["error_voice"]["previous_event_id"] == "tryit-4"
     assert fixture["request"] == _TRY_IT_REQUEST
 
 

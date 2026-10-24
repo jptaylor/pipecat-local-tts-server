@@ -1,7 +1,7 @@
 """The request lifecycle on one persistent connection (docs/protocol.md §4).
 
-Server truth the app's Try it client (``macos/.../TTSClient.swift``,
-``TTSRequestQueue``) is built on, over the whole state space:
+Server truth the app's Try it client (``macos/.../TTSRequestMachine.swift``)
+is built on, over the whole state space:
 
 - states: idle (empty buffer), appended, refused (every pre-admission refusal
   of an ``input_text.append`` or ``input_text.commit``), in flight, cancelled;
