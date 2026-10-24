@@ -121,12 +121,22 @@ are validated against the advertised lists (fail-closed); `speed` is clamped to
 
 - Keep the lean base import-clean: never import mlx/numpy/torch at module load in
   `tts_server` or its backends — lazy-import inside `start()`/`_get_model`.
-- Backends implement the `TTSBackend`/`TTSStream` protocols in `tts_server/backend.py`;
-  register them in `tts_server/backends/__init__.py` (`make_backend`). The server
-  depends only on the abstract protocol types.
+- Backends implement the `TTSBackend`/`TTSStream` protocols in `tts_server/backend.py`
+  and are registered with **one** `BackendEntry` in `BACKENDS`
+  (`tts_server/backends/__init__.py`: module, class, `DEFAULT_*_MODEL` attribute).
+  That registry is the only list of backend names: `make_backend`, the CLI
+  `--backend` choices (`BACKEND_CHOICES`), the default-model fallback and the
+  `prefetch` dispatch derive from it (`tests/test_backend_registry.py` checks it
+  against the Swift catalog and the justfile). The server depends only on the
+  abstract protocol types.
 - Each backend module also exports `prefetch_specs(model) -> list[SnapshotSpec]`
-  (`tts_server/prefetch.py`) naming every HF snapshot its `start()` downloads, so
-  `prefetch` and the macOS app stay in sync with `serve`.
+  (the `BackendPrefetch` protocol in `tts_server/backend.py`; optional
+  `prefetch_finalize` / `prefetch_check_extra`) naming every HF snapshot its
+  `start()` downloads, so `prefetch` and the macOS app stay in sync with `serve`.
+- Supervised-mode policy (`--supervised` JSON lines, exit codes, stdin EOF, the
+  hard exit mid-startup) lives in `tts_server/supervise.py`; `server.serve()` only
+  takes the abstract `ServeLifecycle` hook and must not import `supervise` or end
+  the process (`tests/test_supervise_lifecycle.py`).
 - `language` values are BACKEND-SPECIFIC, not a normalized ISO namespace: each
   backend advertises its model's native vocabulary (`kokoro`/`voxtral_tts` use
   ISO 639-1 codes like `"en"`; `qwen3_tts` uses full words like `"english"`

@@ -85,6 +85,10 @@ New stdlib-only module `tts_server/supervise.py`:
   went away mid-load, log and `os._exit(0)` (executor thread mid-download cannot be
   cancelled; hf `.incomplete` blobs resume). After ready, EOF takes the exact SIGTERM
   path. The existing unused `ready` callback is the hook for the ready line.
+  *(Superseded in review: `stop_on_stdin_eof` became the abstract `lifecycle=`
+  (`ServeLifecycle`) hook; the watcher, the `os._exit(0)` and the ready/error lines
+  live in `tts_server/supervise.py` (`run_supervised`, `StdinEofLifecycle`), so
+  `server.py` never imports `supervise`. Same behaviour.)*
 
 `tts_server/__main__.py` (`_cmd_serve`, [__main__.py:212](tts_server/__main__.py:212)):
 - `--supervised` (store_true). In supervised mode: `redirect_stdout_to_stderr()`, then a

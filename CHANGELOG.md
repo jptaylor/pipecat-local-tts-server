@@ -60,6 +60,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (both still `RuntimeError` subclasses).
 - `TTSServer.listening_port()` returns `None` for a Unix socket instead of a
   character of its path; `TTSServer` exposes read-only `backend` and `config`.
+- Backend names live in one registry, `tts_server.backends.BACKENDS` (module,
+  class, default-model constant, prefetch hooks per backend). `make_backend`, the
+  `--backend` choices of `serve`/`prefetch` (`__main__.BACKEND_CHOICES`), the
+  default-model fallback and the `prefetch` dispatch all derive from it; the hook
+  shapes are Protocols in `tts_server.backend` (`BackendPrefetch`,
+  `SupportsPrefetchFinalize`, `SupportsPrefetchCheckExtra`). No CLI or output change.
+- `serve()` takes `lifecycle=` (a `tts_server.server.ServeLifecycle`: `attach`,
+  `startup_abandoned`) instead of the unreleased `stop_on_stdin_eof=`. The
+  `--supervised` policy (ready/error lines, exit codes, stdin-EOF stop, hard exit
+  when the supervisor leaves mid-startup) moved to `tts_server.supervise`
+  (`run_supervised`, `StdinEofLifecycle`, `emit_ready`); `server` no longer imports
+  `supervise` or calls `os._exit`. JSON lines and exit codes are unchanged.
 
 ## [0.6.0] - 2026-10-22
 
