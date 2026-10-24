@@ -381,7 +381,7 @@ import Testing
         let hello = try await client.connect()
         #expect(hello.backend == "tone" && hello.rate == 24000)
 
-        try await client.speak("Hello there.", voice: nil)
+        try await client.speak("Hello there.", voice: nil, eventID: "tryit-1")
         var frames = 0
         var finished = false
         while let event = try await client.next() {
@@ -650,84 +650,125 @@ final class Lines: @unchecked Sendable {
 }
 
 @Suite struct ResponseTrackerTests {
+    static let busy = "The server is busy. Try again in a moment."
+
+    /// Request 1 played as `r1` and was stopped; request 2 is current as `r2`.
+    static func twoRequests() -> (ResponseTracker, old: String, new: String) {
+        var t = ResponseTracker()
+        let old = t.committed()
+        _ = t.route(.committed(responseID: "r1", previousEventID: old), speaking: true)
+        t.abandon()
+        let new = t.committed()
+        _ = t.route(.committed(responseID: "r2", previousEventID: new), speaking: true)
+        return (t, old, new)
+    }
+
     @Test func staleCancelAfterStopDoesNotStopTheNextUtterance() {
         var t = ResponseTracker()
-        t.committed()
-        t.created("r1")
+        let first = t.committed()
+        _ = t.route(.committed(responseID: "r1", previousEventID: first), speaking: true)
         #expect(t.isCurrent("r1"))
         t.abandon()  // Stop
-        t.committed()  // Speak again before r1's cancel acknowledgement
-        #expect(!t.isCurrent("r1"))  // the late response.cancelled{r1} is ignored
-        t.created("r2")
+        let second = t.committed()  // Speak again before r1's cancel acknowledgement
+        #expect(t.route(.cancelled(responseID: "r1"), speaking: true) == .ignore)
+        _ = t.route(.committed(responseID: "r2", previousEventID: second), speaking: true)
         #expect(t.isCurrent("r2") && !t.isCurrent("r1"))
     }
 
-    @Test func stopBeforeCreatedSkipsThatResponse() {
+    /// The reported bug: Stop abandons a commit before its refusal arrives; the
+    /// late refusal must not fail the next request.
+    @Test func lateRefusalOfAStoppedRequestIsIgnored() {
         var t = ResponseTracker()
-        t.committed()
+        let first = t.committed()
         t.abandon()
-        t.committed()
-        t.created("r1")  // the abandoned commit's response
-        #expect(!t.isCurrent("r1") && t.current == nil)
-        t.created("r2")
-        #expect(t.isCurrent("r2"))
+        let second = t.committed()
+        #expect(t.route(.error(code: "busy", message: "", previousEventID: first), speaking: true) == .ignore)
+        _ = t.route(.committed(responseID: "r2", previousEventID: second), speaking: true)
+        #expect(t.route(.audio(responseID: "r2", seq: 0, pcm: Data([1, 2])), speaking: true) == .play(Data([1, 2])))
     }
 
-    @Test func refusedCommitCreatesNothing() {
-        var t = ResponseTracker()
-        t.committed()
-        t.refused()  // e.g. busy
-        t.committed()
-        t.created("r2")
-        #expect(t.isCurrent("r2"))
-        #expect(!t.isCurrent(nil))
+    /// Every event type x request ownership x speaking, against the table.
+    @Test func everyEventIsRoutedByItsOwner() {
+        enum Own: CaseIterable { case current, stale, none }
+        enum Kind: CaseIterable { case audio, done, cancelled, failed, busy, refused, appendRefused }
+        let pcm = Data([0, 1])
+        for own in Own.allCases {
+            for kind in Kind.allCases {
+                for speaking in [true, false] {
+                    var (t, old, new) = Self.twoRequests()
+                    let rid: String? = own == .current ? "r2" : own == .stale ? "r1" : nil
+                    let request: String? = own == .current ? new : own == .stale ? old : nil
+                    let event: TTSEvent
+                    switch kind {
+                    case .audio: event = .audio(responseID: rid ?? "", seq: 0, pcm: pcm)
+                    case .done: event = .done(responseID: rid ?? "", durationMs: nil)
+                    case .cancelled: event = .cancelled(responseID: rid ?? "")
+                    case .failed: event = .failed(responseID: rid, message: "boom")
+                    case .busy: event = .error(code: "busy", message: "backlog", previousEventID: request)
+                    case .refused: event = .error(code: "invalid_config", message: "bad", previousEventID: request)
+                    case .appendRefused:
+                        event = .error(
+                            code: "payload_too_large", message: "long", previousEventID: request.map(ResponseTracker.appendID))
+                    }
+                    let expected: TryItAction
+                    switch (kind, own, speaking) {
+                    case (.audio, .current, true): expected = .play(pcm)
+                    case (.done, .current, true): expected = .finish
+                    case (.cancelled, .current, _): expected = .stopped
+                    case (.failed, .current, _), (.failed, .none, true): expected = .fail("boom")
+                    case (.busy, .current, _), (.busy, .none, true): expected = .fail(Self.busy)
+                    case (.refused, .current, _), (.refused, .none, true): expected = .fail("bad")
+                    case (.appendRefused, .current, _), (.appendRefused, .none, true): expected = .fail("long")
+                    default: expected = .ignore
+                    }
+                    #expect(t.route(event, speaking: speaking) == expected, "\(kind) \(own) speaking=\(speaking)")
+                }
+            }
+        }
     }
 
-    /// Every sequence of up to 7 operations, against a direct model: the
-    /// server answers commits in order, and only the newest, un-stopped commit's
-    /// response is current.
-    @Test func matchesTheCommitOrderModelForEverySequence() {
-        enum Op: CaseIterable { case commit, created, refused, abandon }
+    /// Every sequence of up to 6 operations, against a direct model: the server
+    /// answers commits in order (accepting or refusing each), echoing its id, and
+    /// only the newest, un-stopped commit counts.
+    @Test func matchesTheCommitModelForEverySequence() {
+        enum Op: CaseIterable { case commit, accept, refuse, abandon }
         func check(_ ops: [Op]) {
             var tracker = ResponseTracker()
-            // Model: commits awaiting an answer, by index; which index is wanted.
-            var pending: [Int] = []
-            var wantedCommit: Int?
+            var pending: [(index: Int, id: String)] = []
+            var wanted: Int?
             var currentCommit: Int?
             var commits = 0
-            var ids: [Int: String] = [:]
             for op in ops {
                 switch op {
                 case .commit:
-                    pending.append(commits)
-                    wantedCommit = commits
+                    let id = tracker.committed()
+                    pending.append((commits, id))
+                    wanted = commits
                     currentCommit = nil
                     commits += 1
-                    tracker.committed()
-                case .created:
+                case .accept:
                     guard !pending.isEmpty else { return }  // the server never does this
-                    let commit = pending.removeFirst()
-                    let id = "r\(commit)"
-                    ids[commit] = id
-                    if commit == wantedCommit { currentCommit = commit }
-                    tracker.created(id)
-                case .refused:
+                    let (index, id) = pending.removeFirst()
+                    if index == wanted { currentCommit = index }
+                    #expect(tracker.route(.committed(responseID: "r\(index)", previousEventID: id), speaking: true) == .ignore)
+                case .refuse:
                     guard !pending.isEmpty else { return }
-                    pending.removeFirst()
-                    tracker.refused()
+                    let (index, id) = pending.removeFirst()
+                    let action = tracker.route(.error(code: "invalid_config", message: "no", previousEventID: id), speaking: true)
+                    #expect(action == (index == wanted ? .fail("no") : .ignore), "\(ops)")
                 case .abandon:
-                    wantedCommit = nil
+                    wanted = nil
                     currentCommit = nil
                     tracker.abandon()
                 }
-                #expect(tracker.current == currentCommit.flatMap { ids[$0] }, "\(ops)")
-                for (commit, id) in ids where commit != currentCommit {
-                    #expect(!tracker.isCurrent(id), "\(ops)")
+                #expect(tracker.current == currentCommit.map { "r\($0)" }, "\(ops)")
+                for index in 0..<commits where index != currentCommit {
+                    #expect(!tracker.isCurrent("r\(index)"), "\(ops)")
                 }
             }
         }
         var sequences: [[Op]] = [[]]
-        for _ in 0..<7 {
+        for _ in 0..<6 {
             sequences = sequences.flatMap { seq in Op.allCases.map { seq + [$0] } }
             sequences.forEach(check)
         }
@@ -823,5 +864,56 @@ final class Lines: @unchecked Sendable {
         await manager.shutdown(grace: .milliseconds(200), drain: .milliseconds(200))
         #expect(await manager.modelCacheStatus(.pocketTTS) == nil)
         #expect(!FileManager.default.fileExists(atPath: ran.path), "a probe ran after shutdown")
+    }
+}
+
+// MARK: - Review round 2
+
+/// Frames the real TTS server sent (`tests/test_macos_catalog_drift.py` checks
+/// the fixture against a live server on every Python run).
+@Suite struct WireFixtureTests {
+    static func frames() throws -> [String: String] {
+        let url = URL(filePath: #filePath).deletingLastPathComponent().appending(path: "Fixtures/tts_wire_frames.json")
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        return try object.mapValues { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }
+    }
+
+    @Test func errorFrameCarriesTheServerCodeAndMessage() throws {
+        let frames = try Self.frames()
+        let busy = try #require(frames["error_busy"])
+        let append = try #require(frames["error_append"])
+        #expect(
+            TTSEvent.decode(busy)
+                == .error(code: "busy", message: "synthesis backlog full; retry after backoff", previousEventID: "tryit-2"))
+        #expect(
+            TTSEvent.decode(append)
+                == .error(code: "invalid_config", message: "input_text.append missing text", previousEventID: "tryit-3.append"))
+    }
+
+    /// The fixture's exchange as Try it sees it: request 1 plays, is stopped,
+    /// and request 2 is refused. Every frame is routed to the request it names.
+    @Test func realFramesRouteToTheirRequest() throws {
+        let frames = try Self.frames()
+        func event(_ name: String) throws -> TTSEvent {
+            let frame = try #require(frames[name])
+            return try #require(TTSEvent.decode(frame))
+        }
+        guard case .committed(let rid, _) = try event("committed") else {
+            Issue.record("not input_text.committed")
+            return
+        }
+        var t = ResponseTracker()
+        #expect(t.committed() == "tryit-1")  // the fixture's ids are the ones the app mints
+        #expect(t.route(try event("committed"), speaking: true) == .ignore)
+        #expect(t.isCurrent(rid))
+        #expect(t.route(try event("created"), speaking: true) == .ignore)
+        #expect(t.route(try event("audio"), speaking: true) == .play(Data([0x00, 0x80, 0xFF, 0x7F])))
+        t.abandon()  // Stop
+        #expect(t.route(try event("audio"), speaking: true) == .ignore)
+        #expect(t.route(try event("cancelled"), speaking: true) == .ignore)
+        #expect(t.committed() == "tryit-2")
+        #expect(t.route(try event("error_busy"), speaking: true) == .fail(ResponseTrackerTests.busy))
+        // A refusal naming another request (here a later one) is not this one's.
+        #expect(t.route(try event("error_append"), speaking: true) == .ignore)
     }
 }

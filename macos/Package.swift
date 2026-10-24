@@ -29,7 +29,9 @@ let package = Package(
         .testTarget(
             name: "PipecatServiceToolbarTests",
             dependencies: ["PipecatToolbarCore"],
-            path: "Tests/PipecatServiceToolbarTests"
+            path: "Tests/PipecatServiceToolbarTests",
+            // Read by path: real server frames, verified by tests/test_macos_catalog_drift.py.
+            exclude: ["Fixtures"]
         ),
     ]
 )

@@ -16,12 +16,15 @@ public struct ServerHello: Sendable, Equatable {
 public enum TTSEvent: Sendable, Equatable {
     case hello(ServerHello)
     case status(voices: [String], queueDepth: Int?)
+    /// `input_text.committed`: the commit whose `event_id` was `previousEventID` became `responseID`.
+    case committed(responseID: String, previousEventID: String?)
     case responseCreated(id: String)
     case audio(responseID: String, seq: Int, pcm: Data)
     case done(responseID: String, durationMs: Int?)
     case cancelled(responseID: String)
     case failed(responseID: String?, message: String)
-    case error(code: String, message: String)
+    /// `previousEventID` is the `event_id` of the client frame the server refused, if it had one.
+    case error(code: String, message: String, previousEventID: String?)
     case other(type: String)
 
     public static func decode(_ text: String) -> TTSEvent? {
@@ -47,6 +50,8 @@ public enum TTSEvent: Sendable, Equatable {
                     languages: caps["languages"] as? [String] ?? []))
         case "server.status":
             return .status(voices: obj["voices"] as? [String] ?? [], queueDepth: obj["queue_depth"] as? Int)
+        case "input_text.committed":
+            return .committed(responseID: rid ?? "", previousEventID: obj["previous_event_id"] as? String)
         case "response.created":
             return .responseCreated(id: rid ?? "")
         case "response.audio.delta":
@@ -62,7 +67,11 @@ public enum TTSEvent: Sendable, Equatable {
             let err = obj["error"] as? [String: Any]
             return .failed(responseID: rid, message: err?["message"] as? String ?? "Synthesis failed")
         case "error":
-            return .error(code: obj["code"] as? String ?? "error", message: obj["message"] as? String ?? "")
+            // Nested, OpenAI-Realtime style: {type: "error", error: {type, code, message}} (docs/protocol.md §7).
+            let err = obj["error"] as? [String: Any] ?? [:]
+            return .error(
+                code: err["code"] as? String ?? "error", message: err["message"] as? String ?? "",
+                previousEventID: obj["previous_event_id"] as? String)
         default:
             return .other(type: type)
         }
@@ -127,10 +136,12 @@ public actor TTSClient {
         try await send(["type": "server.status"])
     }
 
-    /// Appends `text` and commits it as one response.
-    public func speak(_ text: String, voice: String?) async throws {
-        try await send(["type": "input_text.append", "text": text])
-        var commit: [String: String] = ["type": "input_text.commit"]
+    /// Appends `text` and commits it as one response. The commit carries
+    /// `eventID` and the append `ResponseTracker.appendID(eventID)`, so the
+    /// server's replies (and refusals) name the request they answer.
+    public func speak(_ text: String, voice: String?, eventID: String) async throws {
+        try await send(["type": "input_text.append", "text": text, "event_id": ResponseTracker.appendID(eventID)])
+        var commit: [String: String] = ["type": "input_text.commit", "event_id": eventID]
         if let voice { commit["voice"] = voice }
         try await send(commit)
     }
@@ -150,48 +161,100 @@ public actor TTSClient {
     }
 }
 
-/// Which `response_id` on one connection belongs to the request the user is
-/// waiting for, so events of an abandoned request (a late `response.cancelled`
-/// or audio after Stop) never act on the next one.
+/// Which server events on one connection belong to the request the user is
+/// waiting for, so events of an abandoned request (a late `response.cancelled`,
+/// audio after Stop, a refusal of a stopped commit) never act on the next one.
 ///
-/// The server answers each `input_text.commit` with exactly one
-/// `response.created` (or, if it refuses the commit, an `error`), in commit
-/// order. So the response created when no other commit is outstanding belongs
-/// to the newest commit, and only that one is current, until it is abandoned.
+/// Each request's frames carry an `event_id` (`committed()` mints it). The
+/// server echoes it as `previous_event_id` on `input_text.committed`, which
+/// names the request's `response_id`, and on any `error` refusing one of its
+/// frames. Ownership is by those ids, never by arrival order.
 public struct ResponseTracker: Sendable, Equatable {
-    /// Commits sent whose `response.created` (or refusal) has not arrived.
-    private var outstanding = 0
-    /// The newest commit is still wanted (not stopped).
-    private var wanted = false
+    public enum Owner: Sendable, Equatable {
+        /// Answers the newest, un-stopped request.
+        case current
+        /// Answers an older or stopped request.
+        case stale
+        /// Names no request (the server could not correlate it).
+        case unknown
+    }
+
+    private var serial = 0
+    /// The event id of the newest request, while it is still wanted.
+    private var request: String?
     public private(set) var current: String?
 
     public init() {}
 
-    /// A commit is about to be sent: it is now the request that counts.
-    public mutating func committed() {
-        outstanding += 1
-        wanted = true
+    /// A request is about to be sent: it is now the one that counts. Returns the
+    /// `event_id` its commit carries.
+    public mutating func committed() -> String {
+        serial += 1
+        let id = "tryit-\(serial)"
+        request = id
         current = nil
+        return id
     }
 
     /// The user stopped: nothing in flight counts any more.
     public mutating func abandon() {
-        wanted = false
+        request = nil
         current = nil
     }
 
-    public mutating func created(_ id: String) {
-        guard outstanding > 0 else { return }
-        outstanding -= 1
-        if outstanding == 0, wanted { current = id }
+    /// The `event_id` the append of request `id` carries.
+    public static func appendID(_ id: String) -> String { id + ".append" }
+
+    public func owner(of previousEventID: String?) -> Owner {
+        guard let previousEventID else { return .unknown }
+        guard let request, previousEventID == request || previousEventID == Self.appendID(request) else { return .stale }
+        return .current
     }
 
-    /// The server refused a commit (an `error` frame): it will create no response.
-    public mutating func refused() {
-        if outstanding > 0 { outstanding -= 1 }
-    }
+    public func isCurrent(_ responseID: String?) -> Bool { responseID != nil && responseID == current }
 
-    public func isCurrent(_ id: String?) -> Bool { id != nil && id == current }
+    /// What `event` means for the request in flight. `speaking`: its audio is
+    /// still wanted (Try it is playing it).
+    public mutating func route(_ event: TTSEvent, speaking: Bool) -> TryItAction {
+        switch event {
+        case .status(let voices, _):
+            return .voices(voices)
+        case .committed(let rid, let previous):
+            if owner(of: previous) == .current { current = rid }
+            return .ignore
+        case .audio(let rid, _, let pcm):
+            return speaking && isCurrent(rid) ? .play(pcm) : .ignore
+        case .done(let rid, _):
+            return speaking && isCurrent(rid) ? .finish : .ignore
+        case .cancelled(let rid):
+            return isCurrent(rid) ? .stopped : .ignore
+        case .failed(let rid, let message):
+            if isCurrent(rid) || (rid == nil && speaking) { return .fail(message) }
+            return .ignore
+        case .error(let code, let message, let previous):
+            switch owner(of: previous) {
+            case .current: break
+            case .stale: return .ignore
+            // Uncorrelated (the server's own failure): it can only hurt the request playing.
+            case .unknown: guard speaking else { return .ignore }
+            }
+            return .fail(code == "busy" ? "The server is busy. Try again in a moment." : message)
+        case .hello, .responseCreated, .other:
+            return .ignore
+        }
+    }
+}
+
+/// What Try it does with one server event (`ResponseTracker.route`).
+public enum TryItAction: Sendable, Equatable {
+    case ignore
+    case voices([String])
+    case play(Data)
+    /// The response is complete: play out what is queued.
+    case finish
+    /// The server cancelled the response.
+    case stopped
+    case fail(String)
 }
 
 /// Little-endian pcm16 -> Float32 in [-1, 1), as the server documents its frames.

@@ -1,0 +1,49 @@
+{
+  "audio": {
+    "audio": "AID/fw==",
+    "event_id": "evt_c2629260d8a14fc3",
+    "response_id": "resp_6bc858c09e5146ef",
+    "seq": 0,
+    "type": "response.audio.delta"
+  },
+  "cancelled": {
+    "event_id": "evt_1d5578653dbd4829",
+    "response_id": "resp_6bc858c09e5146ef",
+    "type": "response.cancelled"
+  },
+  "committed": {
+    "event_id": "evt_bcb71c3c42aa4857",
+    "previous_event_id": "tryit-1",
+    "response_id": "resp_6bc858c09e5146ef",
+    "type": "input_text.committed"
+  },
+  "created": {
+    "event_id": "evt_84a7ac141f834b92",
+    "response_id": "resp_6bc858c09e5146ef",
+    "type": "response.created"
+  },
+  "error_append": {
+    "error": {
+      "code": "invalid_config",
+      "event_id": "tryit-3.append",
+      "message": "input_text.append missing text",
+      "type": "invalid_request_error"
+    },
+    "event_id": "evt_ec64d5cbb6154ce6",
+    "previous_event_id": "tryit-3.append",
+    "type": "error"
+  },
+  "error_busy": {
+    "error": {
+      "code": "busy",
+      "event_id": "tryit-2",
+      "message": "synthesis backlog full; retry after backoff",
+      "retry_after_ms": 250,
+      "type": "rate_limit_error"
+    },
+    "event_id": "evt_756520a8f40a40ef",
+    "previous_event_id": "tryit-2",
+    "retry_after_ms": 250,
+    "type": "error"
+  }
+}

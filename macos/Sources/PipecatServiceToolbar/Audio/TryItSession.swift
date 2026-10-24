@@ -69,8 +69,8 @@ final class TryItSession {
             guard let hello else { return }
             try player.begin(rate: hello.rate)
             phase = .speaking
-            responses.committed()
-            try await client.speak(trimmed, voice: voice)
+            let request = responses.committed()
+            try await client.speak(trimmed, voice: voice, eventID: request)
         } catch {
             fail(error.localizedDescription)
         }
@@ -140,32 +140,21 @@ final class TryItSession {
     }
 
     private func handle(_ event: TTSEvent) {
-        switch event {
-        case .status(let voices, _):
+        switch responses.route(event, speaking: phase == .speaking) {
+        case .ignore:
+            break
+        case .voices(let voices):
             self.voices = voices
             if let voice, !voices.contains(voice) { self.voice = nil }
-        case .responseCreated(let id):
-            responses.created(id)
-        // Events of a stopped request (a late cancel acknowledgement, its last
-        // audio) belong to an older response id and are ignored.
-        case .audio(let rid, _, let pcm):
-            guard phase == .speaking, responses.isCurrent(rid) else { return }
+        case .play(let pcm):
             player.enqueue(pcm16: pcm)
-        case .done(let rid, _):
-            guard phase == .speaking, responses.isCurrent(rid) else { return }
+        case .finish:
             player.finish()
-        case .cancelled(let rid):
-            guard responses.isCurrent(rid) else { return }
+        case .stopped:
             player.stop()
             if phase == .speaking { phase = .idle }
-        case .failed(let rid, let message):
-            guard rid == nil || responses.isCurrent(rid) else { return }
+        case .fail(let message):
             fail(message)
-        case .error(let code, let message):
-            responses.refused()
-            fail(code == "busy" ? "The server is busy. Try again in a moment." : message)
-        case .hello, .other:
-            break
         }
     }
 
