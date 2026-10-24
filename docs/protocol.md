@@ -92,6 +92,27 @@ mid-sentence** (a half-sentence commit makes the model apply sentence-final pros
 mid-phrase: measured +22% duration and a ~389 ms spurious pause on Kokoro). `max_text_chars`
 is the hard server cap (reject beyond it).
 
+**The buffer on a reused connection (v0.1, unchanged behaviour, stated explicitly).** Only
+an *admitted* commit (answered by `input_text.committed`) consumes the buffer. Every refusal
+leaves it exactly as it was — a refused `input_text.append` (e.g. `payload_too_large`) and a
+refused `input_text.commit` alike (`busy`, `buffer_empty`, `payload_too_large`, and
+`invalid_config` for a bad `voice`/`language`/`extras`, an unknown field, `audio_format`, or a
+backend's text validation) — so a client can retry the same commit after `busy`.
+`response.cancel` targets the active response, never the buffer: a cancel that reaches the
+server before its commit is a no-op, and that commit is then admitted. So a client that reuses
+a connection:
+
+- MUST send `input_text.clear` before a new request (or after a refusal it will not retry),
+  else the retained text is synthesized as the start of its next request;
+- MUST send a barge-in `response.cancel` after the commit it stops, never before it, else the
+  stopped commit is admitted and holds the connection's in-flight slot (`K=1`), and the next
+  commit is refused `busy` until that synthesis ends.
+
+`input_text.clear` is valid in every state (it never touches a response in flight) and is
+always acknowledged with `input_text.cleared`. The app's Try it client sends
+`clear` → `append` → `commit` for every request and orders Stop's cancel behind them;
+`tests/test_request_lifecycle.py` pins this table against the server.
+
 **Per-connection isolation:** each connection has its own session state (text buffer,
 config, `response_id` space). Connections never see each other's text or audio. The model and
 its GPU (Metal) lock are shared; the server schedules commits round-robin across connections,

@@ -67,6 +67,7 @@ jobs:
             tests/test_auth.py \
             tests/test_resource_limits.py \
             tests/test_backpressure.py \
+            tests/test_request_lifecycle.py \
             tests/test_multiconn_fairness.py \
             tests/test_render_tts_plist.py \
             tests/test_justfile_recipes.py \

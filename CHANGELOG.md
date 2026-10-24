@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `docs/protocol.md` §3 now states the request lifecycle on a reused connection
+  (no wire change, protocol stays v0.1): every refusal of an append or commit keeps the
+  buffer, so a client that does not retry sends `input_text.clear` before its next
+  request, and a barge-in cancel must follow the commit it stops. "Try it" now does
+  both, so a refused request's text can no longer prefix the next one and Stop between
+  append and commit no longer leaves a synthesis holding the connection.
 - `_clear_stale_unix_socket` raises `SocketInUseError` / `SocketPathConflictError`
   (both still `RuntimeError` subclasses).
 - `TTSServer.listening_port()` returns `None` for a Unix socket instead of a
