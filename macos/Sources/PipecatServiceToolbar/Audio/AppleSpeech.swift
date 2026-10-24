@@ -110,7 +110,8 @@ enum AppleSpeechError: LocalizedError {
 enum PCMConverter {
     static let wireFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
 
-    /// Any PCM buffer -> pcm16 16 kHz mono bytes.
+    /// One whole PCM buffer -> pcm16 16 kHz mono bytes (a stream of buffers
+    /// goes through one `PCMStreamConverter` instead).
     static func pcm16(from buffer: AVAudioPCMBuffer) throws -> Data {
         let out = try convert(buffer, to: wireFormat)
         guard let channel = out.int16ChannelData else { return Data() }

@@ -63,8 +63,10 @@ final class STTTryItSession {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
+        // One converter per recording: the resampler's state carries across tap buffers.
+        let converter = PCMStreamConverter()
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            let pcm = try? PCMConverter.pcm16(from: buffer)
+            let pcm = try? converter.pcm16(from: buffer)
             let rms = Self.rms(buffer)
             Task { @MainActor in
                 guard let self, self.phase == .recording else { return }
@@ -121,14 +123,16 @@ final class STTTryItSession {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
         let collector = SampleCollector()
+        let converter = PCMStreamConverter()
         let audio: Data = try await withCheckedThrowingContinuation { continuation in
             synthesizer.write(utterance) { buffer in
                 guard let pcm = buffer as? AVAudioPCMBuffer else { return }
                 if pcm.frameLength == 0 {
+                    if let tail = try? converter.finish() { collector.append(tail) }
                     if collector.finish() { continuation.resume(returning: collector.data) }
                     return
                 }
-                if let chunk = try? PCMConverter.pcm16(from: pcm) { collector.append(chunk) }
+                if let chunk = try? converter.pcm16(from: pcm) { collector.append(chunk) }
             }
         }
         withExtendedLifetime(synthesizer) {}

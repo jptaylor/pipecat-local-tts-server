@@ -38,6 +38,14 @@ final class TryItSession {
             guard let self, self.phase == .speaking else { return }
             self.phase = .idle
         }
+        player.onInterrupted = { [weak self] in
+            guard let self, self.phase == .speaking else { return }
+            // Like Stop: the rest of this response is not wanted.
+            self.responses.abandon()
+            let client = self.client
+            Task { try? await client?.cancel() }
+            self.phase = .failed("Playback stopped: the audio output changed. Press Speak to try again.")
+        }
     }
 
     private static let textKey = "tryIt.text"

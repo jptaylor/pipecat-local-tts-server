@@ -20,14 +20,23 @@ final class AudioPlayer {
 
     /// Called once the last scheduled buffer of a finished response has played.
     var onDrained: (() -> Void)?
+    /// Called when the output device changed mid-utterance: the engine stopped
+    /// itself and the utterance is lost, so its owner must end it.
+    var onInterrupted: (() -> Void)?
 
     init() {
         engine.attach(node)
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
-            // Output device changed: the engine stopped itself. Drop this utterance.
-            MainActor.assumeIsolated { self?.stop() }
+            // Output device changed: the engine stopped itself. Drop this utterance
+            // and reconnect at the next begin() (the device's format may differ).
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.stop()
+                self.format = nil
+                self.onInterrupted?()
+            }
         }
     }
 
@@ -35,6 +44,7 @@ final class AudioPlayer {
     func begin(rate: Int) throws {
         stop()
         if format?.sampleRate != Double(rate) {
+            // Also after a configuration change, which leaves `format` nil.
             engine.stop()
             engine.disconnectNodeOutput(node)
             let fmt = AVAudioFormat(standardFormatWithSampleRate: Double(rate), channels: 1)!
@@ -49,7 +59,8 @@ final class AudioPlayer {
     }
 
     func enqueue(pcm16: Data) {
-        guard let format else { return }
+        // A stopped engine never plays (or completes) a buffer.
+        guard let format, engine.isRunning else { return }
         pending.append(contentsOf: PCM16.floats(from: pcm16))
         if Double(pending.count) >= format.sampleRate * 0.1 { flush() }
     }

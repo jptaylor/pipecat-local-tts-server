@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 
@@ -1200,4 +1201,59 @@ final class ConcurrencyGauge: @unchecked Sendable {
     func enter() { lock.withLock { now += 1; max = Swift.max(max, now) } }
     func leave() { lock.withLock { now -= 1 } }
     var peak: Int { lock.withLock { max } }
+}
+
+@Suite struct PCMStreamConverterTests {
+    /// A 440 Hz tone at 48 kHz float, in microphone-tap-sized buffers.
+    static func toneBuffers(seconds: Double = 1, chunk: Int = 4096) -> [AVAudioPCMBuffer] {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+        let total = Int(48000 * seconds)
+        return stride(from: 0, to: total, by: chunk).map { start in
+            let count = min(chunk, total - start)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+            buffer.frameLength = AVAudioFrameCount(count)
+            for i in 0..<count { buffer.floatChannelData![0][i] = 0.5 * sin(2 * .pi * 440 * Float(start + i) / 48000) }
+            return buffer
+        }
+    }
+
+    static func samples(_ data: Data) -> [Int16] {
+        data.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+    }
+
+    /// The largest jump between neighbouring samples: a 440 Hz tone at half
+    /// scale at 16 kHz moves at most ~2830 per sample; a seam jumps further.
+    static func maxStep(_ s: [Int16]) -> Int {
+        zip(s, s.dropFirst()).map { abs(Int($1) - Int($0)) }.max() ?? 0
+    }
+
+    @Test func buffersJoinWithoutSeams() throws {
+        let converter = PCMStreamConverter()
+        var out = Data()
+        for buffer in Self.toneBuffers() { out += try converter.pcm16(from: buffer) }
+        out += try converter.finish()
+        let s = Self.samples(out)
+        #expect(abs(s.count - 16000) <= 2, "\(s.count) samples for 1 s")
+        #expect(Self.maxStep(s) < 3200, "a seam: step \(Self.maxStep(s))")
+    }
+
+    /// The reported bug, as the app did it: a converter per buffer.
+    @Test func aConverterPerBufferLeavesSeams() throws {
+        var out = Data()
+        for buffer in Self.toneBuffers() {
+            let converter = PCMStreamConverter()
+            out += try converter.pcm16(from: buffer) + converter.finish()
+        }
+        #expect(Self.maxStep(Self.samples(out)) >= 3200)
+    }
+
+    @Test func aNewInputFormatStartsANewStream() throws {
+        let converter = PCMStreamConverter()
+        _ = try converter.pcm16(from: Self.toneBuffers(seconds: 0.1)[0])
+        let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1600))
+        buffer.frameLength = 1600
+        let out = try converter.pcm16(from: buffer) + converter.finish()
+        #expect(abs(out.count / 2 - 1600) <= 2)
+    }
 }
