@@ -406,3 +406,103 @@ import Testing
         await #expect(throws: (any Error).self) { _ = try await task.receive() }
     }
 }
+
+@Suite struct LifecycleTests {
+    /// A `uv` stand-in that records its pid and then blocks, like a long download.
+    static func slowUV(in dir: URL) throws -> (uv: URL, pidFile: URL) {
+        let pidFile = dir.appending(path: "uv.pid")
+        let uv = dir.appending(path: "uv")
+        try "#!/bin/sh\necho $$ > '\(pidFile.path)'\nexec sleep 60\n".write(to: uv, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
+        return (uv, pidFile)
+    }
+
+    static func alive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 }
+
+    @Test func shutdownStopsAnInFlightInstall() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-quit-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let paths = AppPaths(supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"))
+        try paths.prepare()
+        let (uv, pidFile) = try Self.slowUV(in: root)
+        let tools = Tools(
+            uv: uv, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil, helper: nil,
+            source: .override)
+        let manager = EnvironmentManager(paths: paths, tools: tools)
+
+        let install = Task { () -> Error? in
+            do {
+                for try await _ in manager.install(.tone) {}
+                return nil
+            } catch { return error }
+        }
+        var pid: Int32?
+        for _ in 0..<200 where pid == nil {  // up to ~10 s for the stand-in to start
+            pid = (try? String(contentsOf: pidFile, encoding: .utf8)).flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if pid == nil { try await Task.sleep(for: .milliseconds(50)) }
+        }
+        let installer = try #require(pid, "the installer subprocess never started")
+        #expect(Self.alive(installer))
+
+        await manager.shutdown(grace: .seconds(2))
+
+        // Gone before shutdown returned, and the install unwound as a cancellation, not a hang.
+        #expect(!Self.alive(installer))
+        #expect(await install.value is CancellationError)
+        // Nothing can start after shutdown.
+        var late: Error?
+        do { for try await _ in manager.install(.tone) {} } catch { late = error }
+        #expect(late is CancellationError)
+    }
+
+    @Test func removingAnOutdatedEnvironmentDeletesItsModel() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        let hub = paths.supportDir.appending(path: "hub")
+        let repo = hub.appending(path: "models--mlx-community--pocket-tts")
+        let snapshot = repo.appending(path: "snapshots/abc")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: snapshot.appending(path: "w.safetensors").path, contents: Data(count: 8))
+
+        // The environment's python answers `prefetch --check --json` like the real one.
+        let python = paths.python(.pocketTTS)
+        try FileManager.default.createDirectory(at: python.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let json = """
+            {"event":"check","path":"\(snapshot.path)","cached":true}
+            {"event":"summary","cached":true,"size_bytes":8,"path":"\(snapshot.path)"}
+            """
+        try "#!/bin/sh\ncat <<'EOF'\n\(json)\nEOF\n".write(to: python, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
+        // Installed by an older app build: the fingerprint no longer matches.
+        try EnvironmentMarker(service: Service.pocketTTS.rawValue, fingerprint: "old.whl", python: "3.12.0", createdAt: Date())
+            .write(paths.marker(.pocketTTS))
+        guard case .outdated = manager.environmentStatus(.pocketTTS) else {
+            Issue.record("expected an outdated environment")
+            return
+        }
+
+        try await manager.remove(.pocketTTS, deleteModel: true)
+
+        #expect(manager.environmentStatus(.pocketTTS) == .missing)
+        #expect(!FileManager.default.fileExists(atPath: repo.path), "model weights survived removal")
+    }
+
+    @Test func modelFilesThatCannotBeDeletedAreReported() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        let repo = paths.supportDir.appending(path: "hub/models--org--stuck")
+        try FileManager.default.createDirectory(at: repo.appending(path: "snapshots/abc"), withIntermediateDirectories: true)
+        // A read-only parent makes the delete fail.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: repo.deletingLastPathComponent().path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: repo.deletingLastPathComponent().path) }
+        await #expect(throws: RemovalError.self) {
+            try await manager.remove(.pocketTTS, deleteModel: true, knownFolders: [repo])
+        }
+    }
+
+    @Test func hubCacheFollowsHuggingFaceVariables() {
+        let home = URL(filePath: "/Users/x")
+        #expect(AppPaths.huggingFaceHub(environment: [:], home: home).path == "/Users/x/.cache/huggingface/hub")
+        #expect(AppPaths.huggingFaceHub(environment: ["XDG_CACHE_HOME": "/c"], home: home).path == "/c/huggingface/hub")
+        #expect(AppPaths.huggingFaceHub(environment: ["HF_HOME": "/hf", "XDG_CACHE_HOME": "/c"], home: home).path == "/hf/hub")
+        #expect(AppPaths.huggingFaceHub(environment: ["HF_HUB_CACHE": "/hub", "HF_HOME": "/hf"], home: home).path == "/hub")
+    }
+}

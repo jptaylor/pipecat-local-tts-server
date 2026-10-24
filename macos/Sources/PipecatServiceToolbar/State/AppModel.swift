@@ -160,11 +160,26 @@ final class AppModel {
         }
     }
 
-    /// Stops every running server (SIGTERM, 10 s grace, then SIGKILL).
+    /// Whether quitting has to wait: a server to stop, or an install/removal whose
+    /// subprocess must not outlive the app.
+    var hasLiveWork: Bool {
+        services.contains {
+            switch $0.phase {
+            case .starting, .running, .stopping, .installing, .removing: true
+            default: false
+            }
+        }
+    }
+
+    /// Stops every running server (SIGTERM, 10 s grace, then SIGKILL) and aborts
+    /// every install, waiting for their subprocesses to exit.
     func shutdownAll() async {
         await withTaskGroup(of: Void.self) { group in
             for model in services {
                 group.addTask { await model.shutdown() }
+            }
+            if let manager {
+                group.addTask { await manager.shutdown() }
             }
         }
     }
@@ -202,15 +217,7 @@ final class AppModel {
     }
 
     func openModelsFolder() {
-        let env = ProcessInfo.processInfo.environment
-        let hub: URL
-        if let cache = env["HF_HUB_CACHE"] {
-            hub = URL(filePath: cache)
-        } else if let home = env["HF_HOME"] {
-            hub = URL(filePath: home).appending(path: "hub")
-        } else {
-            hub = FileManager.default.homeDirectoryForCurrentUser.appending(path: ".cache/huggingface/hub")
-        }
+        let hub = AppPaths.huggingFaceHub()
         NSWorkspace.shared.open(FileManager.default.fileExists(atPath: hub.path) ? hub : hub.deletingLastPathComponent())
     }
 

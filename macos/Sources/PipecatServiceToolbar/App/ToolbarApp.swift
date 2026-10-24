@@ -83,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !quitting, !model.running.isEmpty || model.services.contains(where: { $0.phase == .starting }) else {
+        guard !quitting, model.hasLiveWork || !model.running.isEmpty else {
             return .terminateNow
         }
         quitting = true

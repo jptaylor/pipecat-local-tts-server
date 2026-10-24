@@ -80,6 +80,8 @@ public actor EnvironmentManager {
     private var running: [Service: Subprocess] = [:]
     private var busyFamilies: Set<Service> = []
     private var familyWaiters: [Service: [CheckedContinuation<Void, Never>]] = [:]
+    /// Set by `shutdown()` on app quit: no new subprocess starts after it.
+    private var shuttingDown = false
 
     public init(paths: AppPaths, tools: Tools) {
         self.paths = paths
@@ -158,13 +160,18 @@ public actor EnvironmentManager {
     }
 
     /// Offline probe (`prefetch --check --json`); never touches the network.
-    public func modelCacheStatus(_ backend: Service) async -> ModelCacheStatus? {
+    /// `includeOutdated` also probes an environment from an older wheel, which
+    /// still locates the weights (removal needs that; a start does not).
+    public func modelCacheStatus(_ backend: Service, includeOutdated: Bool = false) async -> ModelCacheStatus? {
         guard backend.info.needsModelDownload else {
             return ModelCacheStatus(cached: true, sizeBytes: 0, repoFolders: [])
         }
-        guard case .ready = environmentStatus(backend),
-            let args = prefetchArguments(for: backend.info, check: true)
-        else { return nil }
+        switch environmentStatus(backend) {
+        case .ready: break
+        case .outdated where includeOutdated: break
+        default: return nil
+        }
+        guard let args = prefetchArguments(for: backend.info, check: true) else { return nil }
         let sub = Subprocess(
             .init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.base()))
         guard let result = try? await sub.collect() else { return nil }
@@ -277,6 +284,7 @@ public actor EnvironmentManager {
         let info = backend.info
         await lockFamily(info.family) { emit(.stage(.queued)) }
         defer { unlockFamily(info.family) }
+        if shuttingDown { throw CancellationError() }
         let env = ProcessEnvironment.uv(paths: paths)
         let envDir = paths.envDir(backend)
         try paths.prepare()
@@ -355,6 +363,7 @@ public actor EnvironmentManager {
         make: () -> Subprocess
     ) async throws {
         try Task.checkCancellation()
+        if shuttingDown { throw CancellationError() }
         let sub = make()
         running[backend] = sub
         defer { running[backend] = nil }
@@ -373,6 +382,7 @@ public actor EnvironmentManager {
         }
         _ = await (out.value, err.value)
         try Task.checkCancellation()
+        if shuttingDown { throw CancellationError() }
         guard status == 0 else {
             let lines = tail.lines
             let reason = lines.last(where: { $0.lowercased().contains("error") }) ?? lines.last ?? "exit status \(status)"
@@ -382,6 +392,7 @@ public actor EnvironmentManager {
 
     private func prefetch(_ backend: Service, emit: @escaping @Sendable (InstallEvent) -> Void) async throws {
         try Task.checkCancellation()
+        if shuttingDown { throw CancellationError() }
         guard let args = prefetchArguments(for: backend.info, check: false) else {
             throw InstallError(stage: .model, message: "The STT helper script is missing from this build.", logTail: [])
         }
@@ -432,6 +443,7 @@ public actor EnvironmentManager {
         let failure = await outcome.value
         _ = await err.value
         try Task.checkCancellation()
+        if shuttingDown { throw CancellationError() }
         guard status == 0 else {
             let message = failure?.message ?? tail.lines.last ?? "exit status \(status)"
             throw InstallError(stage: .model, message: "Model download failed: \(message)", logTail: tail.lines)
@@ -440,6 +452,21 @@ public actor EnvironmentManager {
 
     public func cancel(_ backend: Service) {
         running[backend]?.terminate()
+    }
+
+    /// App quit: abort every install/prefetch, stop its subprocess (SIGTERM, then
+    /// SIGKILL after `grace`), and wait for family work (an unwinding install, a
+    /// removal) to drain, so no installer outlives the app or races a relaunch.
+    public func shutdown(grace: Duration = .seconds(5), drain: Duration = .seconds(20)) async {
+        shuttingDown = true  // nothing new can register in `running` after this
+        let subs = Array(running.values)
+        await withTaskGroup(of: Void.self) { group in
+            for sub in subs { group.addTask { _ = await sub.stop(grace: grace) } }
+        }
+        let deadline = ContinuousClock.now + drain
+        while !busyFamilies.isEmpty, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
     }
 
     // MARK: - Remove
@@ -455,10 +482,15 @@ public actor EnvironmentManager {
         let siblings = backend.variants.filter { $0 != backend && isRequested($0) }
         var doomed: [URL] = []
         if deleteModel {
-            let own = await modelCacheStatus(backend).map { $0.repoFolders + $0.derivedFolders } ?? knownFolders
+            // An outdated environment (after an app update) still reports where its
+            // weights are; only fall back to the cached/derived folders if it can't.
+            var own = await modelCacheStatus(backend, includeOutdated: true).map { $0.repoFolders + $0.derivedFolders } ?? knownFolders
+            if own.isEmpty, let repo = backend.info.modelRepo {
+                own = [AppPaths.huggingFaceHub().appending(path: Self.cacheFolderName(repo: repo))]
+            }
             var shared: [URL] = []
             for sibling in siblings {
-                shared += await modelCacheStatus(sibling)?.repoFolders ?? []
+                shared += await modelCacheStatus(sibling, includeOutdated: true)?.repoFolders ?? []
             }
             doomed = Self.unshared(own, siblingRepos: siblings.compactMap(\.info.modelRepo), siblingFolders: shared)
         }
@@ -469,10 +501,21 @@ public actor EnvironmentManager {
         } else {
             try recordVariant(backend, installed: false)
         }
-        for folder in doomed where Self.isDeletableModelPath(folder) {
-            try? fm.removeItem(at: folder)
+        // Try every folder, then report the ones that stayed: a silent leftover
+        // is multiple gigabytes the user thinks are gone.
+        var failures: [String] = []
+        for folder in doomed where Self.isDeletableModelPath(folder) && fm.fileExists(atPath: folder.path) {
+            do { try fm.removeItem(at: folder) } catch { failures.append("\(folder.path): \(error.localizedDescription)") }
+        }
+        if !failures.isEmpty {
+            throw RemovalError(message: "The environment was removed, but model files remain: " + failures.joined(separator: "; "))
         }
     }
+}
+
+public struct RemovalError: LocalizedError, Sendable, Equatable {
+    public var message: String
+    public var errorDescription: String? { message }
 }
 
 /// A bounded, thread-safe ring of recent log lines.

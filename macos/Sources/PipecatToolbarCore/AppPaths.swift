@@ -32,6 +32,17 @@ public struct AppPaths: Sendable {
     }
 
     /// uv-managed CPython installs (`UV_PYTHON_INSTALL_DIR`).
+    /// The Hugging Face hub cache the servers use (`HF_HUB_CACHE`, `HF_HOME`, `XDG_CACHE_HOME`, else `~/.cache`).
+    public static func huggingFaceHub(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        if let cache = environment["HF_HUB_CACHE"] { return URL(filePath: cache) }
+        if let hf = environment["HF_HOME"] { return URL(filePath: hf).appending(path: "hub") }
+        if let xdg = environment["XDG_CACHE_HOME"] { return URL(filePath: xdg).appending(path: "huggingface/hub") }
+        return home.appending(path: ".cache/huggingface/hub")
+    }
+
     public var pythonDir: URL { supportDir.appending(path: "python") }
     /// uv's package cache (`UV_CACHE_DIR`).
     public var uvCacheDir: URL { cacheDir.appending(path: "uv") }
