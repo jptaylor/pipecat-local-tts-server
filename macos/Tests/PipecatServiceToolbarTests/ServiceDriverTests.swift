@@ -72,12 +72,46 @@ import Testing
         func serveArguments(for info: ServiceInfo, port: Int) -> [String]? { ["serve"] }
     }
 
+    /// An environment whose cache probe waits until the test opens the gate.
+    final class SlowEnvironment: ServiceEnvironment, @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var open = false
+        func environmentStatus(_ backend: Service) -> EnvironmentStatus { FakeEnvironment().environmentStatus(backend) }
+        func isRequested(_ service: Service) -> Bool { true }
+        func modelCacheStatus(_ backend: Service, includeOutdated: Bool) async -> ModelCacheStatus? {
+            await withCheckedContinuation { c in
+                let now: Bool = lock.withLock {
+                    if open { return true }
+                    waiters.append(c)
+                    return false
+                }
+                if now { c.resume() }
+            }
+            return ModelCacheStatus(cached: true, sizeBytes: 1, repoFolders: [])
+        }
+        func release() {
+            let all: [CheckedContinuation<Void, Never>] = lock.withLock {
+                open = true
+                defer { waiters = [] }
+                return waiters
+            }
+            for c in all { c.resume() }
+        }
+        func install(_ backend: Service, mode: InstallMode) -> AsyncThrowingStream<InstallEvent, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+        func remove(_ backend: Service, deleteModel: Bool, knownFolders: [URL]) async throws {}
+        func serveArguments(for info: ServiceInfo, port: Int) -> [String]? { ["serve"] }
+    }
+
     @MainActor final class FakeHost: ServiceHost {
-        let serviceEnvironment: (any ServiceEnvironment)? = FakeEnvironment()
+        let serviceEnvironment: (any ServiceEnvironment)?
         let servicePaths: AppPaths?
         var tryIt: [String] = []
 
-        init() {
+        init(environment: any ServiceEnvironment = FakeEnvironment()) {
+            serviceEnvironment = environment
             let root = FileManager.default.temporaryDirectory.appending(path: "driver-tests-\(UUID().uuidString)")
             servicePaths = AppPaths(supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"))
         }
@@ -199,6 +233,71 @@ import Testing
             return
         }
         #expect(failure.kind == .startup(code: "Timeout"))
+    }
+
+    // MARK: - Late async results (generation and liveness guards)
+
+    /// A slow cache probe that lands after Start + ready must not hide the server.
+    @Test func aSlowRefreshDoesNotHideAServerStartedMeanwhile() async {
+        let process = FakeProcess()
+        let slow = SlowEnvironment()
+        let host = FakeHost(environment: slow)
+        let driver = makeDriver(process, host: host)
+        let refresh = Task { await driver.refresh() }
+        await until { driver.state.environment != .missing }
+        driver.start()
+        process.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
+        await until { driver.state.phase == .running }
+        slow.release()
+        await refresh.value
+        #expect(driver.state.phase == .running, "the stale refresh hid the running server")
+        // A fresh refresh (Reset / Try Again) leaves the running server alone too.
+        await driver.refresh()
+        #expect(driver.state.phase == .running)
+    }
+
+    /// Cancel during the busy-port probe ends it; the late answer is dropped.
+    @Test func cancelDuringThePortProbe() async {
+        let process = FakeProcess()
+        let host = FakeHost()
+        let answered = Flag()
+        let driver = makeDriver(process, host: host) {
+            $0.isPortFree = { _ in false }
+            $0.portOwner = { _, _ in
+                try? await Task.sleep(for: .milliseconds(100))
+                await MainActor.run { answered.value = true }
+                return PortProbe.Owner(pid: 1)
+            }
+        }
+        await driver.refresh()
+        driver.start()
+        #expect(driver.state.phase == .starting)
+        driver.stop()
+        await until { answered.value }
+        await until { driver.state.phase == .installed }
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(driver.state.phase == .installed, "\(driver.state.phase)")
+    }
+
+    /// Apple Speech already downloading (no install of ours): the refresh attaches
+    /// an install task, so progress and Cancel act on it.
+    @Test func aSystemAppleSpeechDownloadIsAttached() async {
+        var deps = ServiceDependencies()
+        let installs = Flag()
+        deps.appleSpeechPhase = { installs.value ? .installed : .installing(.model) }
+        deps.appleSpeechInstall = { _ in
+            installs.value = true
+            try await Task.sleep(for: .seconds(30))
+        }
+        let driver = ServiceDriver(info: Service.appleSpeech.info, dependencies: deps)
+        await driver.refresh()
+        #expect(driver.state.installing && driver.state.phase == .installing(.model))
+        await until { installs.value }
+        #expect(installs.value, "no install task attached to the download")
+        driver.cancelInstall()
+        await until { !driver.state.installing }
+        await until { driver.state.phase == .installed }
+        #expect(driver.state.phase == .installed)
     }
 
     /// An `error` line is judged with the exit that follows it.

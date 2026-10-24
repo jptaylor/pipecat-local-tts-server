@@ -64,37 +64,12 @@ final class ServiceModel: Identifiable {
     // MARK: - Derived
 
     var isRunning: Bool { phase == .running }
-
-    /// Started by the user: shown in the main menu (running, on its way up or
-    /// down, or failed at runtime).
-    var isActive: Bool {
-        switch phase {
-        case .starting, .running, .stopping: true
-        case .failed(let failure): failure.isRuntime
-        default: false
-        }
-    }
-
-    var isInstalled: Bool {
-        switch phase {
-        case .installed, .needsModel, .starting, .running, .stopping: true
-        case .unavailable, .notInstalled, .checking: false
-        case .installing, .removing: requested
-        case .failed(let failure): failure.isRuntime || requested
-        }
-    }
-
-    var isInstalling: Bool {
-        if case .installing = phase { return true }
-        return false
-    }
-
-    var isBusy: Bool {
-        switch phase {
-        case .checking, .installing, .starting, .stopping, .removing: true
-        default: false
-        }
-    }
+    // The lifecycle's own reading of its state (Core, tested with the reducer).
+    /// Started by the user: shown in the main menu.
+    var isActive: Bool { driver.state.isActive }
+    var isInstalled: Bool { driver.state.isInstalled }
+    var isInstalling: Bool { driver.state.isInstalling }
+    var isBusy: Bool { driver.state.isBusy }
 
     /// The Python services own an environment and model files that can be deleted.
     var canDeleteModel: Bool { info.runtime.usesPython && isInstalled && phase != .removing }

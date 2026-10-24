@@ -139,9 +139,12 @@ public final class ServiceDriver {
 
     // MARK: - Intents
 
+    /// Re-reads the phase. Its result carries the generation it started under,
+    /// so the reducer drops it if a Start, Stop, Delete or install moved on meanwhile.
     public func refresh() async {
+        let generation = state.generation
         if info.runtime == .appleSpeech {
-            send(.refreshed(await dependencies.appleSpeechPhase()))
+            execute(send(.refreshed(await dependencies.appleSpeechPhase(), generation: generation)))
             return
         }
         guard let environment else { return }
@@ -152,13 +155,16 @@ public final class ServiceDriver {
             send(
                 .refreshed(
                     ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: nil),
-                    environment: status, requested: requested))
+                    environment: status, requested: requested, generation: generation))
             return
         }
         // The environment is current while the (slow) cache probe runs.
-        send(.refreshed(state.phase, environment: status, requested: requested))
+        send(.refreshed(state.phase, environment: status, requested: requested, generation: generation))
         cache = await environment.modelCacheStatus(service, includeOutdated: false)
-        send(.refreshed(ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: cache?.cached)))
+        send(
+            .refreshed(
+                ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: cache?.cached),
+                generation: generation))
     }
 
     public func environmentChanged() async {
@@ -203,10 +209,10 @@ public final class ServiceDriver {
         case .cancelInstall:
             cancelledInstall = installTask
             installTask?.cancel()
-        case .probePortOwner(let port):
+        case .probePortOwner(let port, let probe):
             Task {
                 let owner = await dependencies.portOwner(port, service)
-                self.send(.portOwnerFound(owner))
+                self.send(.portOwnerFound(owner, probe: probe))
             }
         case .launch(let port): launch(port: port)
         case .launchNative(let port): launchNative(port: port)

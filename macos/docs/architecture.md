@@ -129,6 +129,23 @@ phase over an install it cancelled; Start never runs during a removal or with a
 server up; quit cancels only an Apple Speech install and waits for it at most
 `installDrain`.
 
+Late async results follow one rule: every result is applied against the state
+it lands in, never the one it was started from. `LifecycleState.generation` is
+bumped by every event (other than a refresh) that changes the phase, the
+current server, the native server or the install flag. A refresh carries the
+generation it was started under and is dropped when that is stale; a current
+one re-reads the environment but moves the phase only when nothing owns it
+(`hasLiveWork`: an install, a server not yet asked to stop, the native server,
+a port probe, or the `starting`/`running`/`stopping`/`removing` phases). So a
+Reset, Try Again or a sibling's refresh never hides a running server or undoes a
+Delete. A port probe carries its own token, lives only while the phase is
+`starting`, and Cancel during it drops it and re-reads the phase. A supervised
+`error` line names its server like ready and exit. An Apple Speech refresh that
+finds the system already downloading the model attaches an install task to that
+download, so its progress and Cancel work. `ServiceLifecycleTests` checks the
+whole space ({phase} x {owner} x {stale, current} for refresh; {phase} x {probe
+token} for the port owner; every event's generation bump).
+
 ## Supervision contract
 
 Every Python server, and the native server, follows one contract.
