@@ -81,7 +81,8 @@ Every Python server, and the native server, follows one contract.
 
 1. **Ready line.** The server prints one JSON line to stdout once it is
    listening and warm:
-   `{"event":"ready","backend","model","host","port","rate","pid"}`.
+   `{"event":"ready","backend","model","host","port","socket_path","rate","pid"}`
+   (`socket_path` is `null`; the app always serves TCP).
    Everything else goes to stderr. That output is copied to the service's log
    file and the in-app log tail.
 2. **Startup errors.** A fatal startup error prints
@@ -96,7 +97,7 @@ Every Python server, and the native server, follows one contract.
    crashed, and the server shuts down as if sent SIGTERM. So servers never
    outlive the app.
 4. **Stop.** Stop sends SIGTERM and closes stdin, then sends SIGKILL after
-   10 s. Quitting the app stops all servers in parallel and aborts any in-flight installs or model downloads (`EnvironmentManager.shutdown()`), waiting for them and for removals before it exits. No new subprocess (an install step or an offline `prefetch --check` probe) starts after that. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first.
+   10 s. Quitting the app stops all servers in parallel and aborts any in-flight installs or model downloads (`EnvironmentManager.shutdown()`), waiting for them and for removals before it exits. No new subprocess (an install step or an offline `prefetch --check` probe) starts after that. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first. An install queued behind a sibling's leaves the queue when cancelled and records nothing; the variant marker (`.variants/<service>`) is written only once packages are in and no Cancel has landed, so a cancel during the model download leaves the variant installed with weights to resume (needs model). An install step waits at most 2 s after its process exits for the output pipes to close (a grandchild such as a build backend can hold them), so the family lock is always released.
 
 `tts_server` implements this natively (`serve --supervised`,
 `tts_server/supervise.py`). The STT engines get it from the helper, which wraps
@@ -107,7 +108,13 @@ Every Python server, and the native server, follows one contract.
 - **TTS.** This repo's `docs/protocol.md`. Clients send JSON text, then commit.
   Audio streams back as base64 pcm16 deltas at the model's rate. The app's
   `TTSClient` plays it through `AVAudioEngine`, coalescing 20 ms frames into
-  100 ms buffers.
+  100 ms buffers. Try it tags each request's append and commit with an
+  `event_id`; the server echoes it as `previous_event_id` on
+  `input_text.committed` (which names the `response_id`) and on any `error`
+  refusing the request (`{type: "error", error: {code, message}}`).
+  `ResponseTracker` routes every event by those ids, so a late cancel, audio or
+  refusal of a stopped request never touches the next one. An output-device
+  change mid-utterance ends the request with a message.
 - **STT.** The protocol of
   [pipecat-local-stt-server](https://github.com/vr000m/pipecat-local-stt-server).
   Clients send binary pcm16 at 16 kHz mono, then `input_audio_buffer.commit`.
@@ -119,7 +126,11 @@ Every Python server, and the native server, follows one contract.
   - `session.close` and `session.cancel`;
   - errors.
 
-  It rejects requests with an `Origin` header, as the Python servers do.
+  It rejects requests with an `Origin` header, as the Python servers do. It
+  serves at most 8 clients at once and runs their transcriptions one at a
+  time. A connection holds the server weakly, so its late callbacks after Stop
+  are safe. Microphone and sample audio go through one resampler per recording
+  (`PCMStreamConverter`), so buffer edges join without seams.
 
 ## Service state
 
@@ -180,10 +191,10 @@ the bare file name.
 
 | Suite | What it covers |
 |---|---|
-| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots, logo parsing, `Subprocess` stdin and kill handling and exit-after-drain ordering, install cancel (kill escalation, cancellation vs finish), no probes after quit, Try-it response matching (`ResponseTracker`), `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup. |
+| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots, logo parsing, `Subprocess` stdin and kill handling and exit-after-drain ordering, install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, Try-it routing of every event by request (`ResponseTracker`) and decoding of real server frames (`Fixtures/tts_wire_frames.json`), seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, which processes get `HF_TOKEN`. |
 | Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403). |
 | End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny and Kyutai against the built bundle, then serve and use each. |
-| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` and `PrefetchEvent.swift` and checks their backend names, ports, default model repos and supervised error codes against the Python sources and the `justfile`. |
+| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and `PrefetchEvent.swift` and checks their backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases and supervised error codes against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server. |
 | Visual (`--snapshot <dir>`) | Renders every page in light and dark from sample states. |
 
 ## Security notes
@@ -191,6 +202,9 @@ the bare file name.
 - **Loopback only.** Every listener binds `127.0.0.1`, and requests that carry
   a browser `Origin` are refused. No auth tokens are configured because the
   app serves loopback only.
+- **Credentials.** `HF_TOKEN`, when set, reaches only `prefetch` and `serve`
+  (`ProcessEnvironment.huggingFace()`), never `uv`, whose package builds run
+  third-party code.
 - **No sandbox.** The app has no App Sandbox, so it can start `uv` and the
   per-service interpreters. The hardened runtime is on.
 - **Pinned downloads.**

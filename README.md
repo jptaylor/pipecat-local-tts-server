@@ -730,6 +730,10 @@ re-measurement; the earlier "≈ tens of seconds" figure was a bridge-bug artifa
 - `tts_server/` — protocol, backend abstraction, server, async client, CLI.
 - `tts_server/backends/` — lazy-imported per-model backends (Kokoro first).
 - `examples/` — the stdlib oracle and the Pipecat service adapter.
-- `justfile` — macOS operator recipes (`tts-list`, `tts-status`).
+- `tts_server/supervise.py` / `tts_server/prefetch.py` — the `serve --supervised`
+  JSON channel and the `prefetch` subcommand.
+- `justfile` — macOS operator recipes (`tts-list`, `tts-status`, …) and the menu
+  bar app's `app-build` / `app-open` / `app-run` / `app-test`.
+- `macos/` — Pipecat Service Toolbar, the native menu bar app (see `macos/README.md`).
 - `docs/protocol.md` — the wire protocol specification.
 - `docs/dev_plans/` — development plans.

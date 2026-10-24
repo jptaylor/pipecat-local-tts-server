@@ -34,7 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one; deleting a service mid-install cancels the install first; model deletion only
   touches `models--*` folders in the Hugging Face hub cache and the server's own
   derived-weights folder; a startup error is never lost to the server's exit; "Try
-  it" ignores a stale cancel acknowledgement or audio from a stopped request.
+  it" ignores a stale cancel acknowledgement, audio or refusal from a stopped
+  request (requests are matched by `event_id`), shows server error messages, and
+  ends cleanly when the output device changes. A cancelled queued install records
+  nothing; an install step no longer waits on a grandchild holding its pipes.
+  `HF_TOKEN` reaches only `prefetch` and `serve`, never `uv`. The Apple Speech
+  server caps clients at 8 and decodes one at a time, and survives Stop with a
+  decode in flight; microphone audio is resampled without per-buffer seams.
   `just app-build` / `app-open` / `app-run` / `app-test`.
 
 ### Changed

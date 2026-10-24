@@ -76,8 +76,10 @@ local speech services of both kinds:
   - STT: `LocalWebSocketSTTService(host="127.0.0.1", port=N)`
     (`stt_server.examples.pipecat_stt_service`).
   - Environment: `TTS_WS_*` / `STT_WS_*`.
-- **Delete.** Delete removes the venv and the model's Hugging Face cache folders
-  after an `NSAlert` confirmation. Apple Speech has nothing to delete, since its
+- **Delete.** Right-click **Delete Model…** removes the venv and the model's
+  Hugging Face cache folders after an `NSAlert` confirmation (files an installed
+  sibling variant uses stay); the detail page offers **Keep Model Files** or
+  **Delete Everything**. Apple Speech has nothing to delete, since its
   assets are managed by the system.
 - **Rename.**
   - App: Pipecat Service Toolbar.

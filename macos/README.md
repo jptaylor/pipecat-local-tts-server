@@ -61,7 +61,12 @@ launchd agents, so run one or the other, not both.
 - **Add Models**: every model, by type, with Get, Start and download progress.
   Python and model weights are fetched on first Get; nothing is bundled.
 - **Right-click** any service: **Copy URL**, **Copy Pipecat Service**,
-  **Copy Environment Variables**, Start/Stop, **Delete Model…**.
+  **Copy Environment Variables**, Start/Stop, **Delete Model…**. Deleting
+  removes the model's Python environment and, unless another installed variant
+  still uses them, its weights. The detail page's **Delete…** offers **Keep
+  Model Files** or **Delete Everything**. Weights live in the shared Hugging
+  Face cache, so a command-line or launchd server using the same model
+  downloads them again after a delete.
 - **Try it**: type text and hear a TTS model. For STT, record from the
   microphone or transcribe a sample sentence spoken by the system voice.
 - **Problems** show inline: a busy port names the process (and the launchd
