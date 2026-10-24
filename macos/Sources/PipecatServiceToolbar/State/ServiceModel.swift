@@ -77,10 +77,16 @@ final class ServiceModel: Identifiable {
 
     @ObservationIgnored weak var app: AppModel?
     @ObservationIgnored private var installTask: Task<Void, Never>?
-    @ObservationIgnored private var server: Subprocess?
+    /// Internal (not private) for the state-machine tests.
+    @ObservationIgnored var server: Subprocess?
     @ObservationIgnored private var nativeServer: STTWebSocketServer?
     @ObservationIgnored private var logSink: LogSink?
-    @ObservationIgnored private var stopRequested = false
+    @ObservationIgnored var stopRequested = false
+    /// Downloads the Apple Speech model (replaced by the tests).
+    @ObservationIgnored var appleSpeechInstall: (@escaping @MainActor (Double) -> Void) async throws -> Void = AppleSpeech.install
+    /// How long app quit waits for a cancelled Apple Speech install to unwind.
+    @ObservationIgnored var installDrain: Duration = .seconds(5)
+    @ObservationIgnored private var shuttingDown = false
     @ObservationIgnored private var supervisedError: (code: String?, message: String?)?
 
     init(info: ServiceInfo) {
@@ -201,9 +207,10 @@ final class ServiceModel: Identifiable {
         assetProgress = 0
         phase = .installing(.model)
         Log.install.info("apple_speech: installing speech model")
+        let install = appleSpeechInstall
         installTask = Task { [weak self] in
             do {
-                try await AppleSpeech.install { fraction in self?.assetProgress = fraction }
+                try await install { fraction in self?.assetProgress = fraction }
                 self?.installTask = nil
                 self?.assetProgress = nil
                 await self?.refresh()
@@ -211,6 +218,8 @@ final class ServiceModel: Identifiable {
                 guard let self else { return }
                 self.installTask = nil
                 self.assetProgress = nil
+                // Quit cancelled it: the app is going away, nothing to show.
+                if self.shuttingDown { return }
                 if Task.isCancelled { return await self.refresh() }
                 self.phase = .failed(Failure(kind: .download, title: "Model download failed", message: error.localizedDescription))
             }
@@ -435,13 +444,17 @@ final class ServiceModel: Identifiable {
         }
     }
 
-    private func serverExited(_ sub: Subprocess, status: Int32) {
+    /// The server process `sub` exited. A requested exit only completes a Stop
+    /// (`.stopping` -> `.installed`): it is reported after the stdout drain, up
+    /// to 2 s after `shutdown()` returned, so a removal (or its failure) may own
+    /// the phase by then and must keep it.
+    func serverExited(_ sub: Subprocess, status: Int32) {
         guard server === sub else { return }
         Log.server.info("\(self.service.rawValue, privacy: .public): exited status \(status) (requested: \(self.stopRequested))")
         server = nil
         tearDownSession(note: "exited with status \(status)")
         if stopRequested {
-            if phase != .removing { phase = .installed }
+            if phase == .stopping { phase = .installed }
             return
         }
         let tail = Array(log.suffix(8))
@@ -489,8 +502,15 @@ final class ServiceModel: Identifiable {
         Task { _ = await sub.stop(grace: .seconds(10)) }
     }
 
-    /// For app quit (and before removal): stop and wait.
+    /// For app quit (and before removal): stop and wait. Quit also cancels an
+    /// Apple Speech model install and waits (at most `installDrain`) for it to
+    /// unwind; a Python install is the environment manager's to stop.
     func shutdown() async {
+        if info.runtime == .appleSpeech, let install = installTask {
+            shuttingDown = true
+            install.cancel()
+            await Self.wait(for: install, atMost: installDrain)
+        }
         if nativeServer != nil {
             stop()
             return
@@ -499,6 +519,27 @@ final class ServiceModel: Identifiable {
         stopRequested = true
         ttsTryIt?.detach()
         _ = await sub.stop(grace: .seconds(10))
+    }
+
+    /// Returns when `task` ends or `limit` passed, whichever is first (a task
+    /// that ignores cancellation can't hold app quit).
+    private static func wait(for task: Task<Void, Never>, atMost limit: Duration) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            var resumed = false
+            let resume: @MainActor () -> Void = {
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume()
+            }
+            Task { @MainActor in
+                await task.value
+                resume()
+            }
+            Task { @MainActor in
+                try? await Task.sleep(for: limit)
+                resume()
+            }
+        }
     }
 
     func dismissFailure() {

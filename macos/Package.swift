@@ -28,7 +28,8 @@ let package = Package(
         ),
         .testTarget(
             name: "PipecatServiceToolbarTests",
-            dependencies: ["PipecatToolbarCore"],
+            // The app target too, for its main-actor state machines (`@testable import`).
+            dependencies: ["PipecatToolbarCore", "PipecatServiceToolbar"],
             path: "Tests/PipecatServiceToolbarTests",
             // Read by path: real server frames, verified by tests/test_macos_catalog_drift.py.
             exclude: ["Fixtures"]
