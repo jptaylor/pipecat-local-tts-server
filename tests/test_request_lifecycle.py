@@ -1,4 +1,4 @@
-"""The request lifecycle on one persistent connection (docs/protocol.md §4).
+"""The request lifecycle on one persistent connection (docs/protocol.md §3).
 
 Server truth the app's Try it client (``macos/.../TTSRequestMachine.swift``)
 is built on, over the whole state space:

@@ -26,8 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server), Whisper and Kyutai (`moshi_mlx`), all on the `pipecat-local-stt-server` wire
   protocol. Running-only main menu, an Add Models catalog, copy URL / Pipecat service /
   env from a right-click menu, model deletion, and "Try it" for both directions.
-  Quitting also aborts in-flight installs and model downloads and waits for them to
-  stop; deleting a service with "Delete Everything" removes its model weights even
+  Quitting stops the install or download step in flight (and the bootstrap's wheel
+  build), lets no later step start, and waits up to 20 s for installs and removals to
+  unwind; deleting a service with "Delete Everything" removes its model weights even
   when its environment is outdated, and reports any it could not delete. An abandoned
   Kyutai transcription releases the backend (cancelled per 80 ms frame). Cancel
   always ends an install (SIGKILL 5 s after SIGTERM) and never counts as a finished

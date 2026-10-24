@@ -114,7 +114,9 @@ a connection:
 `input_text.clear` is valid in every state (it never touches a response in flight) and is
 always acknowledged with `input_text.cleared`. None of this changes v0.1: it states what the
 server already does and what a correct client already had to do (the reference Pipecat
-adapter clears only after a commit that was not admitted).
+adapter clears after any append or commit that was not admitted or never sent: a refused
+commit, a failed `input_text.append` / `input_text.commit` send, and a cancel that lands
+before its commit was admitted).
 `tests/test_request_lifecycle.py` pins this table against the server.
 
 **Per-connection isolation:** each connection has its own session state (text buffer,
