@@ -36,7 +36,7 @@ flowchart LR
 | Ports | `PortProbe.swift` | Whether a loopback port is free and, if not, who holds it (`lsof`, plus a loaded `pipecat.tts-server.<backend>` launchd agent): the "port busy" failure in the README's Problems section. |
 | Download sizes | `HubSizes.swift`, `ServiceCatalog.snapshots(for:)` | Approximate download size of a service from the public Hugging Face tree API (shown in Add Models before install): the sum over every snapshot its install fetches, each at its pinned revision and through its own file filter (mlx-audio's allow patterns, dia's codec patterns, pocket_tts's `embeddings/*.safetensors`, the STT helper's "all but docs"). STT repos are sized at the helper's `MODEL_REVISIONS` commit, which `ServiceCatalog.sttModelRevisions` repeats. The table sits in `Service.swift` next to the model repos; a lean drift test compares it with `prefetch_specs(model)` and the STT pins with the helper's. `prefetch --check --json` can't be the source: its events carry no allow patterns, and it needs the installed environment the size is shown before. |
 | Lifecycle | `ServiceLifecycle.swift`, `ServiceDriver.swift` | The per-service state machine, UI-free. `ServiceLifecycle.reduce(state, event) -> [effect]` is pure and makes every phase change and guard (a ready, exit or ready timeout from a replaced server, or one after Stop or Delete, changes nothing; a requested exit only completes a Stop; an install ending during a removal leaves the phase to it; quit cancels only an Apple Speech install). `ServiceDriver` (`@MainActor @Observable`) runs the effects through injectable seams (`ServiceEnvironment` for `EnvironmentManager`, `ServerProcess` for `Subprocess`, `NativeSpeechServer`, the port probe, Apple Speech, the clock and the timeouts in `ServiceDependencies`) and holds the progress the UI shows. |
-| Protocols | `TTSClient.swift`, `STTClient.swift`, `STTWebSocketServer.swift`, `PCMStreamConverter.swift` | WebSocket clients for both wire protocols, plus a native stt-protocol server; `STTWire` is the one definition of the stt audio format. |
+| Protocols | `TTSClient.swift`, `TTSRequestMachine.swift`, `TTSRequestDriver.swift`, `STTClient.swift`, `STTWebSocketServer.swift`, `PCMStreamConverter.swift` | WebSocket clients for both wire protocols, the TTS Try it request lifecycle (a pure state machine and the driver that runs it on a connection), plus a native stt-protocol server; `STTWire` is the one definition of the stt audio format. |
 | State | `AppModel`, `ServiceModel` (`@MainActor @Observable`) | Page navigation, delete confirmation. `ServiceModel` is a thin adapter over its `ServiceDriver`: it publishes the driver's state, forwards intents, and is the driver's `ServiceHost` (the environment manager, paths, Try it sessions, Apple Speech). |
 | Audio | `AudioPlayer`, `TryItSession`, `STTTryItSession`, `AppleSpeech` | TTS playback, microphone and sample capture, SpeechAnalyzer. |
 | Views | `PanelView`, `ServiceDetailView`, `Components`, `Brand` | Running list, catalog, detail page, right-click menu, catmark artwork. |
@@ -162,20 +162,45 @@ Every Python server, and the native server, follows one contract.
 - **TTS.** This repo's `docs/protocol.md`. Clients send JSON text, then commit.
   Audio streams back as base64 pcm16 deltas at the model's rate. The app's
   `TTSClient` plays it through `AVAudioEngine`, coalescing 20 ms frames into
-  100 ms buffers. Every Try it request is `input_text.clear`, `append`,
-  `commit` (`TTSRequestQueue`): the server keeps its buffer on any refusal for a
-  retry Try it never makes, so the clear stops that text prefixing the next
-  request. Stop's `response.cancel` is queued behind the frames already asked
-  for, so it never overtakes the commit it stops (a cancel before the commit is
-  a no-op and the commit would hold the connection's one in-flight slot), and a
-  stopped request sends no more frames (docs/protocol.md §3). Try it tags each
-  request's append and commit with an
-  `event_id`; the server echoes it as `previous_event_id` on
-  `input_text.committed` (which names the `response_id`) and on any `error`
-  refusing the request (`{type: "error", error: {code, message}}`).
-  `ResponseTracker` routes every event by those ids, so a late cancel, audio or
-  refusal of a stopped request never touches the next one. An output-device
-  change mid-utterance ends the request with a message.
+  100 ms buffers. A Try it request's whole lifecycle is one pure reducer,
+  `TTSRequestMachine` (`(phase, event) -> (phase, [effect])`), run on the
+  connection by `TTSRequestDriver`; `TryItSession` only turns clicks into its
+  events and its effects into playback and the card's phase.
+
+  ```
+  idle/done/refused/failed ──speak──▶ connecting ──connected──▶ clearing ──sent──▶ appending ──sent──▶ committing
+                                                                                                  │ committed
+       done ◀──audio.done / cancelled── inFlight(response_id) ◀──────────────────────────────────────┘
+  Stop or a refusal after the commit ──▶ cancelling (cancel sent) ──its response ends / commit refused──▶ ending, then the next request
+  ```
+
+  - Every request is `input_text.clear`, `append`, `commit`, each sent once the
+    one before it is on the wire: the server keeps its buffer on any refusal for
+    a retry Try it never makes, so the clear stops that text prefixing the next
+    request, and Stop before the commit sends no commit at all.
+  - Stop after the commit sends `response.cancel` behind it (a cancel before the
+    commit is a no-op, and the commit would hold the connection's one in-flight
+    slot), and the stopped request stays `cancelling` until the server answers;
+    a Speak meanwhile waits for that (docs/protocol.md §3). So requests are serial
+    on the wire and at most one commit is ever unanswered.
+  - Each frame carries an `event_id` (`tryit-N.clear`, `tryit-N.append`,
+    `tryit-N`); the server echoes it as `previous_event_id` on
+    `input_text.committed` (which names the `response_id`) and on any `error`
+    refusing it (`{type: "error", error: {code, message}}`). Audio, done,
+    cancelled and failed act only by that `response_id`, errors only by that id;
+    everything else is dropped, so a late cancel, audio or refusal of a stopped
+    request never touches the next one.
+  - Each request's outcome (finished, stopped, refused, failed) is reported once.
+    A lost connection fails the live request; 300 s with nothing from the server
+    while a request is live (`timeout`) drops the connection, which also frees
+    the server's slot. An output-device change mid-utterance ends the request with
+    a message.
+
+  `TTSRequestMachineTests` pins every (state, event) cell against
+  `Fixtures/tts_request_machine_table.txt`, replays random interleavings against
+  a model server asserting those invariants, and drives the real tone server
+  through busy, Stop mid-flight, Stop before the commit, a refused voice and a
+  dropped connection.
 - **STT.** The protocol of
   [pipecat-local-stt-server](https://github.com/vr000m/pipecat-local-stt-server).
   Clients send binary pcm16 at 16 kHz mono, then `input_audio_buffer.commit`.
@@ -280,8 +305,8 @@ codes (`SupervisedErrorCode`) and the stt wire rate (`STTWire.rate`) against it.
 
 | Suite | What it covers |
 |---|---|
-| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion and the one stt wire format, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots (on disk, with symlinked leaves, backend directories and roots), logo parsing, `Subprocess` stdin and kill handling, exit-after-drain ordering and its lifecycle table (launch failure, stop before launch, descendants that obey or ignore SIGTERM), install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, Try-it routing of every event by request (`ResponseTracker`), request frame order against Stop at every point (`TTSRequestQueue`) and decoding of real server frames (`Fixtures/tts_wire_frames.json`, which also holds the request frames the server was sent), the lifecycle reducer's whole state space (every event against every phase, with the server current or replaced, Stop or removal under way, and quit under way) and its exits against every phase, the driver's start/ready/stop, late ready, ready timeout and supervised error, and quit during an Apple Speech install, download-size filters and pins, seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, the unread-reply cap, which processes get `HF_TOKEN`. |
-| Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403). |
+| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion and the one stt wire format, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots (on disk, with symlinked leaves, backend directories and roots), logo parsing, `Subprocess` stdin and kill handling, exit-after-drain ordering and its lifecycle table (launch failure, stop before launch, descendants that obey or ignore SIGTERM), install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, the Try it request machine over every (state, event) cell (`Fixtures/tts_request_machine_table.txt`) and over random interleavings against a model server with its invariants asserted, real server frames driving it (`Fixtures/tts_wire_frames.json`, which also holds the request frames the server was sent), the driver's silence timeout, the lifecycle reducer's whole state space (every event against every phase, with the server current or replaced, Stop or removal under way, and quit under way) and its exits against every phase, the driver's start/ready/stop, late ready, ready timeout and supervised error, and quit during an Apple Speech install, download-size filters and pins, seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, the unread-reply cap, which processes get `HF_TOKEN`. |
+| Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403); `TTSRequestDriver` on one connection through a normal request, a busy refusal then retry, Stop mid-flight, Stop between append and commit, a refused voice and a dropped connection (reconnecting), and Stop while connecting. |
 | End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny and Kyutai against the built bundle, then serve and use each. |
 | Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and `PrefetchEvent.swift` and checks their backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases, the download-size snapshot table (against `prefetch_specs(model)`, the STT helper's filter and its `MODEL_REVISIONS` pins) and supervised error codes against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server; `test_supervised_contract.py`, which runs the TTS server and the STT helper on stub inputs and checks every JSON line, error code, the Swift decoder's keys and `STTWire.rate` against `docs/supervised-contract.json`, the helper's default models and model pins against `Service.swift`, and the STT constraints against each engine's requirements. |
 | Visual (`--snapshot <dir>`) | Renders every page in light and dark from sample states. |

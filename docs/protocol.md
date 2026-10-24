@@ -109,8 +109,10 @@ a connection:
   commit is refused `busy` until that synthesis ends.
 
 `input_text.clear` is valid in every state (it never touches a response in flight) and is
-always acknowledged with `input_text.cleared`. The app's Try it client sends
-`clear` → `append` → `commit` for every request and orders Stop's cancel behind them;
+always acknowledged with `input_text.cleared`. The app's Try it client
+(`TTSRequestMachine`) sends `clear` → `append` → `commit` for every request, one request
+at a time, and sends Stop's cancel only after the commit (no commit at all if Stop came
+first);
 `tests/test_request_lifecycle.py` pins this table against the server.
 
 **Per-connection isolation:** each connection has its own session state (text buffer,

@@ -33,10 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always ends an install (SIGKILL 5 s after SIGTERM) and never counts as a finished
   one; deleting a service mid-install cancels the install first; model deletion only
   touches `models--*` folders in the Hugging Face hub cache and the server's own
-  derived-weights folder; a startup error is never lost to the server's exit; "Try
-  it" ignores a stale cancel acknowledgement, audio or refusal from a stopped
-  request (requests are matched by `event_id`), shows server error messages, and
-  ends cleanly when the output device changes. A cancelled queued install records
+  derived-weights folder; a startup error is never lost to the server's exit; the
+  TTS "Try it" request lifecycle is one pure state machine (`TTSRequestMachine`,
+  tested over every state x event cell, random interleavings against a model server
+  and a live tone server): requests go out one at a time on a reused connection,
+  each starting with `input_text.clear`; Stop before the commit sends no commit and
+  Stop after it sends `response.cancel` behind it; a frame acts only on the request
+  its `response_id` / `previous_event_id` names; each request reports its outcome
+  once; a request the server goes silent on times out and reconnects. It shows
+  server error messages and ends cleanly when the output device changes. A cancelled queued install records
   nothing; an install step no longer waits on a grandchild holding its pipes.
   STT environments install against checked-in, hash-pinned constraints
   (`macos/constraints/stt-<engine>.txt`, `--require-hashes`) and load model weights
