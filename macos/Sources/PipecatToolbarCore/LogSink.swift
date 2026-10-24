@@ -4,12 +4,12 @@ import Foundation
 /// (`AppPaths.appLog`),
 /// rotating once to `.1` past 20 MB.
 @MainActor
-final class LogSink {
-    static let maxBytes: UInt64 = 20 * 1024 * 1024
-    let url: URL
+public final class LogSink {
+    public static let maxBytes: UInt64 = 20 * 1024 * 1024
+    public let url: URL
     private var handle: FileHandle?
 
-    init(url: URL) {
+    public init(url: URL) {
         self.url = url
         let fm = FileManager.default
         try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -23,12 +23,12 @@ final class LogSink {
         _ = try? handle?.seekToEnd()
     }
 
-    func write(_ line: String) {
+    public func write(_ line: String) {
         guard let handle, let data = (line + "\n").data(using: .utf8) else { return }
         try? handle.write(contentsOf: data)
     }
 
-    func close() {
+    public func close() {
         try? handle?.close()
         handle = nil
     }
