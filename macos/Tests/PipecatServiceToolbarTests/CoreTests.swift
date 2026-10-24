@@ -395,6 +395,115 @@ import Testing
     }
 }
 
+/// The Subprocess lifecycle contract over {launch fails, stopped before launch,
+/// exits by itself, stopped: child obeys / ignores SIGTERM} x {no descendant,
+/// a descendant that obeys / ignores SIGTERM}: the exit signal always
+/// resolves (so `waitForExit()` and `stop()` return), and once `stop()`
+/// returns no process of the child's group is left.
+@Suite struct SubprocessLifecycleTests {
+    /// `op`'s result, or nil if it is still running after `limit` (a hang fails
+    /// the test instead of hanging it).
+    static func within<T: Sendable>(_ limit: Duration, _ op: @escaping @Sendable () async -> T) async -> T? {
+        let box = RaceBox<T>()
+        return await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+            box.set(continuation)
+            Task { box.resume(await op()) }
+            Task {
+                try? await Task.sleep(for: limit)
+                box.resume(nil)
+            }
+        }
+    }
+
+    static func alive(_ pid: Int32, polls: Int = 40) async -> Bool {
+        // A killed descendant is reparented and reaped shortly after.
+        for _ in 0..<polls {
+            if Darwin.kill(pid, 0) != 0 { return false }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return true
+    }
+
+    static func sh(_ script: String) -> Subprocess {
+        Subprocess(.init(executable: URL(filePath: "/bin/sh"), arguments: ["-c", script], environment: ProcessEnvironment.base()))
+    }
+
+    @Test func aLaunchFailureResolvesTheExit() async throws {
+        let sub = Subprocess(.init(executable: URL(filePath: "/nonexistent/tool"), arguments: [], environment: [:]))
+        #expect(throws: (any Error).self) { try sub.run() }
+        #expect(await Self.within(.seconds(2)) { await sub.waitForExit() } == Subprocess.notLaunched)
+        #expect(await Self.within(.seconds(2)) { await sub.stop(grace: .seconds(30)) } == Subprocess.notLaunched)
+    }
+
+    /// The probe case: registered for shutdown before `collect()` launches it.
+    @Test func stopBeforeLaunchRefusesTheLaunch() async throws {
+        let sub = Self.sh("sleep 30")
+        #expect(await Self.within(.seconds(2)) { await sub.stop(grace: .seconds(30)) } == Subprocess.notLaunched)
+        await #expect(throws: CancellationError.self) { _ = try await sub.collect() }
+        #expect(sub.pid == 0)
+        #expect(await Self.within(.seconds(2)) { await sub.waitForExit() } == Subprocess.notLaunched)
+    }
+
+    @Test func stopAfterAnExitReturnsItsStatus() async throws {
+        let sub = Self.sh("exit 4")
+        try sub.run()
+        #expect(await sub.waitForExit() == 4)
+        #expect(await Self.within(.seconds(2)) { await sub.stop(grace: .seconds(30)) } == 4)
+    }
+
+    enum Descendant: CaseIterable { case none, obeysTerm, ignoresTerm }
+
+    @Test(arguments: [false, true], Descendant.allCases)
+    func stopLeavesNoDescendant(childIgnoresTerm: Bool, descendant: Descendant) async throws {
+        let trap = childIgnoresTerm ? "trap '' TERM; " : ""
+        let spawn: String
+        switch descendant {
+        case .none: spawn = "echo 0; "
+        case .obeysTerm: spawn = "(trap - TERM; exec sleep 30) & echo $!; "
+        // A shell loop, not `exec sleep`: sleep(1) does not keep an ignored SIGTERM.
+        case .ignoresTerm: spawn = "(trap '' TERM; while :; do sleep 0.1; done) & echo $!; "
+        }
+        // `wait` returns on a signal; the loop keeps an ignoring child alive.
+        let sub = Self.sh(trap + spawn + "while :; do wait; sleep 0.05; done")
+        try sub.run()
+        var lines = sub.stdout.makeAsyncIterator()
+        let line = try #require(await lines.next())
+        let pid = try #require(Int32(line))
+        defer { if pid > 0 { Darwin.kill(pid, SIGKILL) } }
+        let clock = ContinuousClock()
+        let start = clock.now
+        let status = await Self.within(.seconds(5)) { await sub.stop(grace: .milliseconds(600)) }
+        #expect(status != nil, "stop() hung")
+        #expect(clock.now - start < .seconds(3))
+        #expect(!sub.isRunning)
+        if pid > 0 { #expect(!(await Self.alive(pid)), "descendant \(descendant) outlived stop()") }
+    }
+}
+
+private final class RaceBox<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T?, Never>?
+    private var early: T??
+
+    func set(_ continuation: CheckedContinuation<T?, Never>) {
+        let ready: T?? = lock.withLock {
+            if let early { return early }
+            self.continuation = continuation
+            return nil
+        }
+        if let ready { continuation.resume(returning: ready) }
+    }
+
+    func resume(_ value: T?) {
+        let pending: CheckedContinuation<T?, Never>? = lock.withLock {
+            defer { continuation = nil }
+            if continuation == nil, early == nil { early = .some(value) }
+            return continuation
+        }
+        pending?.resume(returning: value)
+    }
+}
+
 /// End to end against a real `serve --supervised` tone server, when the repo's
 /// dev environment exists (`uv sync --extra client` at the repo root).
 @Suite struct ToneServerIntegrationTests {
@@ -1037,6 +1146,45 @@ final class Lines: @unchecked Sendable {
         }
         #expect(await reached.wait(.seconds(5)), "the family lock was still held")
         again.cancel()
+    }
+
+    /// Cancel ends the installer's descendants before the install ends, so the
+    /// family lock is never free while one (here ignoring SIGTERM) still runs.
+    @Test func cancelEndsTheInstallersDescendantsFirst() async throws {
+        let paths = try Self.paths()
+        let pidFile = paths.supportDir.appending(path: "grandchild.pid")
+        let uv = paths.supportDir.appending(path: "uv")
+        // The descendant lets go of the pipes, so their EOF does not wait for it.
+        try "#!/bin/sh\n(trap '' TERM; exec >/dev/null 2>&1; while :; do sleep 0.1; done) &\necho $! > '\(pidFile.path)'\nwait\n"
+            .write(to: uv, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
+        let manager = EnvironmentManager(
+            paths: paths,
+            tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override),
+            cancelGrace: .milliseconds(500))
+        let ended = Flag()
+        let install = Task {
+            defer { ended.raise() }
+            try await manager.install(.tone).consume { _ in }
+        }
+        var pid: Int32?
+        for _ in 0..<200 where pid == nil {
+            pid = (try? String(contentsOf: pidFile, encoding: .utf8)).flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if pid == nil { try await Task.sleep(for: .milliseconds(50)) }
+        }
+        let grandchild = try #require(pid, "the installer never started its child")
+        defer { Darwin.kill(grandchild, SIGKILL) }
+        install.cancel()
+        #expect(await ended.wait(.seconds(5)), "the cancelled install never ended")
+        // The next install gets the family lock only once the descendant is gone.
+        let locked = Flag()
+        let again = Task {
+            try? await manager.install(.tone).consume { if $0 == .stage(.python) { locked.raise() } }
+        }
+        #expect(await locked.wait(.seconds(5)), "the family lock was never freed")
+        again.cancel()
+        // Killed before the lock was freed; allow only for the reaping.
+        #expect(!(await SubprocessLifecycleTests.alive(grandchild, polls: 6)), "a descendant outlived the cancelled install")
     }
 
     /// After app quit begins, the offline cache probe spawns nothing (an install

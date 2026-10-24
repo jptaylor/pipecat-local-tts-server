@@ -538,6 +538,9 @@ public actor EnvironmentManager {
             Task { _ = await sub.stop(grace: grace) }
         }
         for reader in readers { reader.cancel() }
+        // Stopped (cancel, removal, quit): the step, and so the family lock, ends
+        // only once the child's descendants are gone too (at most `grace`).
+        if Task.isCancelled || sub.stopRequested { _ = await sub.stop(grace: grace) }
         return status
     }
 
