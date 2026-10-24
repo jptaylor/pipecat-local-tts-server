@@ -27,20 +27,12 @@ import os
 import sys
 from pathlib import Path
 
-from .backends import make_backend
+from .backends import BACKEND_NAMES, BACKENDS, make_backend
 from .server import serve
 
 # Every backend name ``make_backend`` accepts; shared by ``serve`` and ``prefetch``.
-BACKEND_CHOICES = (
-    "tone",
-    "kokoro",
-    "voxtral_tts",
-    "pocket_tts",
-    "dia",
-    "qwen3_tts",
-    "fish_tts",
-    "phonon",
-)
+# Derived from the registry (``tts_server.backends.BACKENDS``), never listed here.
+BACKEND_CHOICES = BACKEND_NAMES
 
 # ``TTSClient`` and ``protocol`` are imported lazily inside the status-subcommand
 # helpers so the serve path (run at every launchd startup) doesn't pay for
@@ -53,40 +45,13 @@ def _resolve_model(backend: str, model: str | None) -> str | None:
 
     An explicit ``--model`` always wins (passed through verbatim — the
     server-side ``--backend`` is the trust anchor). When unset, ``kokoro`` uses
-    its repo default (read lazily from the backend module so the constant is not
-    duplicated); ``tone`` has no model.
+    its repo default (read lazily from the backend module through the registry
+    so the constant is not duplicated); ``tone`` has no model.
     """
     if model is not None:
         return model
-    if backend == "kokoro":
-        from .backends.kokoro import DEFAULT_KOKORO_MODEL
-
-        return DEFAULT_KOKORO_MODEL
-    if backend == "voxtral_tts":
-        from .backends.voxtral_tts import DEFAULT_VOXTRAL_MODEL
-
-        return DEFAULT_VOXTRAL_MODEL
-    if backend == "pocket_tts":
-        from .backends.pocket_tts import DEFAULT_POCKET_MODEL
-
-        return DEFAULT_POCKET_MODEL
-    if backend == "dia":
-        from .backends.dia import DEFAULT_DIA_MODEL
-
-        return DEFAULT_DIA_MODEL
-    if backend == "qwen3_tts":
-        from .backends.qwen3_tts import DEFAULT_QWEN3_MODEL
-
-        return DEFAULT_QWEN3_MODEL
-    if backend == "fish_tts":
-        from .backends.fish_tts import DEFAULT_FISH_MODEL
-
-        return DEFAULT_FISH_MODEL
-    if backend == "phonon":
-        from .backends.phonon import DEFAULT_PHONON_MODEL
-
-        return DEFAULT_PHONON_MODEL
-    return None
+    entry = BACKENDS.get(backend)
+    return entry.default_model() if entry is not None else None
 
 
 def _resolve_keepalive(env_name: str, default: float | None) -> float | None:

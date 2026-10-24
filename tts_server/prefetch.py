@@ -11,7 +11,10 @@ Each backend module declares what it needs through a module-level
 constant, so a pin bump stays a one-file change. Two optional hooks:
 ``prefetch_finalize(model, emit)`` runs after the downloads (phonon converts its
 quantized aliases there) and ``prefetch_check_extra(model) -> dict`` adds fields
-to the ``--check`` summary.
+to the ``--check`` summary. The hook protocols live in ``tts_server.backend``
+(``BackendPrefetch`` / ``SupportsPrefetch*``); the module is found through the
+backend registry (``tts_server.backends.BACKENDS``), so there is no separate
+prefetch dispatch table.
 
 Lean at import: ``huggingface_hub`` and ``tqdm`` (which arrive with any model
 extra) are imported only inside the download seam and the progress class.
@@ -36,7 +39,6 @@ reports ready), and any revision drift for backends that load a repo's ``main``
 from __future__ import annotations
 
 import contextlib
-import importlib
 import logging
 import os
 import sys
@@ -45,6 +47,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .backend import BackendPrefetch, SupportsPrefetchCheckExtra, SupportsPrefetchFinalize
 
 logger = logging.getLogger("tts_server.prefetch")
 
@@ -95,23 +99,20 @@ def model_specs(model: str | None, default: str) -> list[SnapshotSpec]:
     return [SnapshotSpec(repo)]
 
 
-def _backend_module(backend: str):
-    if backend == "tone":
-        return None
-    try:
-        return importlib.import_module(f"tts_server.backends.{backend}")
-    except ModuleNotFoundError as exc:
-        if exc.name == f"tts_server.backends.{backend}":
-            raise ValueError(f"unknown backend: {backend!r}") from exc
-        raise
+def _prefetch_hooks(backend: str) -> BackendPrefetch | None:
+    """The backend's prefetch hooks, resolved through the backend registry (the
+    same one ``serve`` and the CLI choices use). ``ValueError`` if unknown."""
+    from .backends import get_backend
+
+    return get_backend(backend).prefetch_hooks()
 
 
 def specs_for(backend: str, model: str | None) -> list[SnapshotSpec]:
     """Every snapshot ``backend`` needs to start ``model`` without the network."""
-    mod = _backend_module(backend)
-    if mod is None:
+    hooks = _prefetch_hooks(backend)
+    if hooks is None:
         return []
-    return list(mod.prefetch_specs(model))
+    return list(hooks.prefetch_specs(model))
 
 
 # --- patchable seams (tests stub these; heavy imports stay inside) -------------
@@ -294,10 +295,9 @@ def _run_check(backend: str, model: str | None, emit) -> int:
         "cached": all(r["cached"] for r in rows if r["required"]),
         "size_bytes": sum(r["size_bytes"] for r in rows),
     }
-    mod = _backend_module(backend)
-    extra = getattr(mod, "prefetch_check_extra", None) if mod is not None else None
-    if extra is not None:
-        summary.update(extra(model))
+    hooks = _prefetch_hooks(backend)
+    if isinstance(hooks, SupportsPrefetchCheckExtra):
+        summary.update(hooks.prefetch_check_extra(model))
     if emit is not None:
         for r in rows:
             emit(r)
@@ -333,10 +333,9 @@ def _run_fetch(backend: str, model: str | None, emit) -> int:
                 emit({"event": "warning", "repo": spec.repo_id, "message": message})
             continue
         total += done["size_bytes"]
-    mod = _backend_module(backend)
-    finalize = getattr(mod, "prefetch_finalize", None) if mod is not None else None
-    if finalize is not None:
-        finalize(model, emit)
+    hooks = _prefetch_hooks(backend)
+    if isinstance(hooks, SupportsPrefetchFinalize):
+        hooks.prefetch_finalize(model, emit)
     complete = {
         "event": "complete",
         "backend": backend,
