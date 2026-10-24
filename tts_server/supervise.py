@@ -12,6 +12,11 @@ bar app under ``macos/``) can drive the CLI without scraping log text:
   callback when the parent closes its end of the pipe or dies, so a server never
   outlives the app that started it.
 - :func:`classify_startup_error` maps a fatal exception to a stable ``code``.
+- :func:`run_supervised` owns the ``serve --supervised`` process policy: the
+  ``ready`` line (:func:`emit_ready`), ``error`` lines and exit codes, and the
+  stdin-EOF stop including the hard exit when the supervisor leaves mid-startup
+  (:class:`StdinEofLifecycle`). ``tts_server.server`` exposes only the abstract
+  ``ServeLifecycle`` hook and never imports this module.
 
 Stdlib-only and lean at import (no ``huggingface_hub`` / ``mlx``): download
 errors are recognised by their exception's module name instead of by type.
@@ -108,6 +113,85 @@ def watch_stdin_eof(loop: Any, on_eof: Callable[[], None]) -> None:
     threading.Thread(target=_run, name="tts-stdin-watch", daemon=True).start()
 
 
+class StdinEofLifecycle:
+    """``serve()`` lifecycle for ``--supervised`` (``tts_server.server.ServeLifecycle``).
+
+    stdin EOF stops the server exactly like SIGTERM once it is listening. If EOF
+    arrives while the backend is still loading (the supervisor quit
+    mid-download), the process exits 0 immediately: the load runs in an executor
+    thread that cannot be cancelled, and Hugging Face downloads resume from their
+    ``.incomplete`` blobs next time.
+    """
+
+    def attach(self, loop: Any, request_stop: Callable[[], None]) -> None:
+        watch_stdin_eof(loop, request_stop)
+
+    def startup_abandoned(self) -> None:
+        logger.warning("tts_server: supervisor went away during startup; exiting")
+        logging.shutdown()
+        os._exit(0)
+
+
+async def emit_ready(server: Any) -> None:
+    """``serve(ready=...)`` callback: one ``ready`` JSON line, with the real port."""
+    cfg = server.config
+    backend = server.backend
+    port = None if cfg.socket_path else (server.listening_port() or cfg.port)
+    emit(
+        {
+            "event": "ready",
+            "backend": backend.backend_name,
+            "model": backend.model,
+            "host": None if cfg.socket_path else cfg.host,
+            "port": port,
+            "socket_path": cfg.socket_path,
+            "rate": backend.sample_rate,
+            "pid": os.getpid(),
+        }
+    )
+
+
+def run_supervised(run: Callable[..., None]) -> None:
+    """Run a server under the supervised-mode contract.
+
+    ``run(ready=..., lifecycle=...)`` must start the server (forwarding both to
+    ``serve()``) and return once it has stopped. Inside :func:`json_channel`: a
+    clean stop returns (exit 0); a config ``SystemExit("...")`` becomes an
+    ``error{code: ConfigError}`` line and is re-raised; any other exception is
+    logged, becomes ``error{code}`` (:func:`classify_startup_error`) and exits 1.
+    """
+    with json_channel():
+        try:
+            run(ready=emit_ready, lifecycle=StdinEofLifecycle())
+        except KeyboardInterrupt:
+            raise
+        except SystemExit as exc:
+            # Config errors raise ``SystemExit("tts_server: ...")``; surface them
+            # as an event too so the app can show the message.
+            if isinstance(exc.code, str):
+                emit(
+                    {
+                        "event": "error",
+                        "code": CODE_CONFIG,
+                        "message": exc.code,
+                        "exc_type": "SystemExit",
+                    }
+                )
+            raise
+        except Exception as exc:
+            logger.error("tts_server: fatal error", exc_info=exc)
+            code, message = classify_startup_error(exc)
+            emit(
+                {
+                    "event": "error",
+                    "code": code,
+                    "message": message,
+                    "exc_type": type(exc).__name__,
+                }
+            )
+            raise SystemExit(1) from None
+
+
 def _walk(exc: BaseException) -> Iterator[BaseException]:
     """``exc`` then its ``__cause__``/``__context__`` chain (cycle-safe)."""
     seen: set[int] = set()
@@ -124,7 +208,8 @@ def classify_startup_error(exc: BaseException) -> tuple[str, str]:
     Checked in priority order across the exception's cause chain, so a wrapped
     ``OSError(EADDRINUSE)`` still classifies as a busy port.
     """
-    # Imported lazily: server imports this module's siblings, not vice versa.
+    # Imported lazily so ``prefetch --json`` (which uses this module) does not load
+    # the websocket server. The dependency is one-way: server never imports supervise.
     from .server import SocketInUseError, SocketPathConflictError
 
     chain = list(_walk(exc))

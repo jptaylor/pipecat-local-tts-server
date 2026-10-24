@@ -213,27 +213,6 @@ def _preflight_listener(args: argparse.Namespace) -> None:
             probe.bind(addr)
 
 
-async def _emit_ready(server) -> None:
-    """``ready`` callback for ``serve --supervised``: one JSON line on stdout."""
-    from .supervise import emit
-
-    cfg = server.config
-    backend = server.backend
-    port = None if cfg.socket_path else (server.listening_port() or cfg.port)
-    emit(
-        {
-            "event": "ready",
-            "backend": backend.backend_name,
-            "model": backend.model,
-            "host": None if cfg.socket_path else cfg.host,
-            "port": port,
-            "socket_path": cfg.socket_path,
-            "rate": backend.sample_rate,
-            "pid": os.getpid(),
-        }
-    )
-
-
 def _cmd_serve(args: argparse.Namespace) -> None:
     logging.basicConfig(
         level=args.log_level,
@@ -244,40 +223,15 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         return
 
     # Supervised mode (driven by the macOS app): stdout carries only JSON
-    # lifecycle events; logs stay on stderr; stdin EOF stops the server.
+    # lifecycle events; logs stay on stderr; stdin EOF stops the server. The
+    # policy lives in ``supervise``; this just supplies the serve run.
     from . import supervise
 
-    with supervise.json_channel():
-        try:
-            _preflight_listener(args)
-            _run_serve(args, ready=_emit_ready, stop_on_stdin_eof=True)
-        except KeyboardInterrupt:
-            raise
-        except SystemExit as exc:
-            # Config errors raise ``SystemExit("tts_server: ...")``; surface them
-            # as an event too so the app can show the message.
-            if isinstance(exc.code, str):
-                supervise.emit(
-                    {
-                        "event": "error",
-                        "code": supervise.CODE_CONFIG,
-                        "message": exc.code,
-                        "exc_type": "SystemExit",
-                    }
-                )
-            raise
-        except Exception as exc:
-            logging.getLogger("tts_server").error("tts_server: fatal error", exc_info=exc)
-            code, message = supervise.classify_startup_error(exc)
-            supervise.emit(
-                {
-                    "event": "error",
-                    "code": code,
-                    "message": message,
-                    "exc_type": type(exc).__name__,
-                }
-            )
-            raise SystemExit(1) from None
+    def _run(**hooks) -> None:
+        _preflight_listener(args)
+        _run_serve(args, **hooks)
+
+    supervise.run_supervised(_run)
 
 
 def _run_serve(args: argparse.Namespace, **serve_kwargs) -> None:

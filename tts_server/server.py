@@ -43,7 +43,7 @@ from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import websockets
 from websockets.asyncio.server import (
@@ -1643,6 +1643,25 @@ def _pending_write_bytes(ws: ServerConnection) -> int | None:
         return None
 
 
+class ServeLifecycle(Protocol):
+    """Hooks a supervising caller plugs into :func:`serve`.
+
+    ``serve()`` only provides the mechanism (a stop request, a race between the
+    backend start and that request); the policy (what stops it, whether an
+    abandoned startup ends the process) belongs to the caller, e.g.
+    ``tts_server.supervise.StdinEofLifecycle`` for ``serve --supervised``.
+    """
+
+    def attach(self, loop: asyncio.AbstractEventLoop, request_stop: Callable[[], None]) -> None:
+        """Called before the backend starts. Wire extra stop triggers here;
+        ``request_stop`` must be called on ``loop`` (e.g. via
+        ``loop.call_soon_threadsafe``) and is idempotent."""
+
+    def startup_abandoned(self) -> None:
+        """A stop was requested while the backend was still starting. Return to
+        let the start finish and the server drain normally; or end the process."""
+
+
 async def serve(
     backend: TTSBackend | None = None,
     *,
@@ -1654,15 +1673,14 @@ async def serve(
     ping_timeout_seconds: float | None = P.KEEPALIVE_PING_TIMEOUT_SECONDS,
     install_signal_handlers: bool = True,
     ready: Callable[[TTSServer], Awaitable[None]] | None = None,
-    stop_on_stdin_eof: bool = False,
+    lifecycle: ServeLifecycle | None = None,
 ) -> None:
     """Start the server, wait for a shutdown signal, then drain and exit.
 
-    ``stop_on_stdin_eof`` (``serve --supervised``) treats stdin EOF exactly like
-    SIGTERM once listening. If EOF arrives while the backend is still loading
-    (the supervisor quit mid-download), the process exits immediately: the load
-    runs in an executor thread that cannot be cancelled, and Hugging Face
-    downloads resume from their ``.incomplete`` blobs next time.
+    ``ready`` runs once the listener is bound. ``lifecycle`` lets a caller add
+    stop triggers and decide what happens when a stop is requested before the
+    backend finished starting (see :class:`ServeLifecycle`); the supervised-mode
+    policy (``serve --supervised``) lives in ``tts_server.supervise``, not here.
     """
     cfg = ServerConfig(
         socket_path=socket_path,
@@ -1683,16 +1701,17 @@ async def serve(
         if not stop.done():
             stop.set_result(None)
 
-    if stop_on_stdin_eof:
-        from .supervise import watch_stdin_eof
-
-        watch_stdin_eof(loop, _request_stop)
+    if lifecycle is not None:
+        lifecycle.attach(loop, _request_stop)
         start_task = asyncio.ensure_future(server.start())
         await asyncio.wait({start_task, stop}, return_when=asyncio.FIRST_COMPLETED)
         if not start_task.done():
-            logger.warning("tts_server: supervisor went away during startup; exiting")
-            logging.shutdown()
-            os._exit(0)
+            lifecycle.startup_abandoned()
+            # The hook returned instead of ending the process: let the start
+            # finish, then drain and return as for any other stop.
+            await start_task
+            await server.shutdown()
+            return
         await start_task
     else:
         await server.start()
