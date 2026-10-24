@@ -52,12 +52,28 @@ Each service has one of three `ServiceRuntime` values:
 | `appleSpeech` | `AssetInventory` model download | `STTWebSocketServer` in-process | Apple Speech |
 
 On first use, all Python services share one uv-managed CPython 3.12, stored under
-`~/Library/Application Support/Pipecat Service Toolbar/python`. Each service
-gets its own venv. Kyutai's pins (`mlx<0.27`, `huggingface-hub<0.29`) clash with
+`~/Library/Application Support/Pipecat Service Toolbar/python`. Each model
+family gets its own venv. Kyutai's pins (`mlx<0.27`, `huggingface-hub<0.29`) clash with
 the other engines' stacks, which separate venvs make harmless. An environment
 marker records what the venv was built from: the wheel name for TTS, the
 requirement list for STT. A mismatch triggers a package-only refresh before the
 next start.
+
+### Variants
+
+A family can list several weights variants (Phonon full precision, 8-bit and
+4-bit; Whisper Turbo to Tiny; Kyutai 1B and 2.6B). Each is a `Service` case with
+its own port (the family's port + 1, 2, ...), log and state, so siblings run side
+by side. They share the family's venv (`envs/<family>`) and server backend; a
+variant only adds `--model` (`phonon-q8`, a Whisper repo) to `prefetch` and
+`serve`. `envs/<family>/.variants/` holds one empty file per installed variant;
+a venv from before variants counts the service its marker names. Installing a
+second variant downloads only its weights. Installs and removals on one family
+are serialized. Deleting a variant keeps the files an installed sibling still
+uses (Phonon's variants share one Hugging Face repo; the 8-bit and 4-bit
+conversions are their own), and the venv goes with the last variant. In Add
+Models, a family's uninstalled variants share one row that expands to list them;
+once installed, each is an ordinary row.
 
 ## Supervision contract
 
@@ -160,9 +176,9 @@ the bare file name.
 
 | Suite | What it covers |
 |---|---|
-| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion, catalog ports and copy strings, logo parsing, `Subprocess` stdin and kill handling, `STTWebSocketServer` round trip, busy port, Origin rejection. |
+| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion, catalog ports and copy strings, variant commands, shared environments and deletion sets, logo parsing, `Subprocess` stdin and kill handling, `STTWebSocketServer` round trip, busy port, Origin rejection. |
 | Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403). |
-| End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon and Kyutai against the built bundle, then serve and use each. |
+| End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny and Kyutai against the built bundle, then serve and use each. |
 | Python (`uv run pytest`) | `serve --supervised`, `prefetch`, and a drift test that ties the app's TTS ports to the README and `justfile`. |
 | Visual (`--snapshot <dir>`) | Renders every page in light and dark from sample states. |
 

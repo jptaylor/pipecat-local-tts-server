@@ -65,6 +65,15 @@
             ("empty", { app in
                 for model in app.services { model.setPreviewState(phase: .notInstalled) }
             }),
+            ("ready", { app in
+                for model in app.services { model.setPreviewState(phase: .notInstalled) }
+                app.model(.phonon).setPreviewState(phase: .installed, environment: .ready(marker), diskBytes: 103_425_919)
+                app.model(.pocketTTS).setPreviewState(phase: .installed, environment: .ready(marker), diskBytes: 244_700_000)
+                app.model(.appleSpeech).setPreviewState(phase: .installed)
+                app.model(.kyutai).setPreviewState(
+                    phase: .installing(.model),
+                    download: .init(repo: "kyutai/stt-1b-en_fr-mlx", downloadedBytes: 820_000_000, totalBytes: 2_363_000_000))
+            }),
             ("catalog-tts", { app in
                 busyState(app)
                 app.catalogKind = .tts
@@ -74,6 +83,44 @@
                 busyState(app)
                 app.catalogKind = .stt
                 app.page = .catalog
+            }),
+            ("catalog-tts-variants", { app in
+                busyState(app)
+                app.model(.phonon).setPreviewState(
+                    phase: .running, running: .init(pid: 4243, port: 9365, rate: 24000, model: nil, since: .now),
+                    environment: .ready(marker), diskBytes: 103_425_919)
+                // A sibling's environment is there, but 8-bit isn't installed until its weights are.
+                app.model(.phononQ8).setPreviewState(phase: .installing(.converting), environment: .ready(marker), requested: false)
+                for variant in [Service.phononQ8, .phononQ4] { app.model(variant).approxDownloadBytes = 103_425_919 }
+                app.catalogKind = .tts
+                app.page = .catalog
+            }),
+            ("catalog-stt-variants", { app in
+                busyState(app)
+                let sizes: [Service: Int64] = [
+                    .whisperLargeV3: 3_080_000_000, .whisperMedium: 1_530_000_000, .whisperSmall: 484_000_000,
+                    .whisperBase: 145_000_000, .whisperTiny: 75_500_000, .kyutai2B: 5_600_000_000,
+                ]
+                for (service, bytes) in sizes { app.model(service).approxDownloadBytes = bytes }
+                app.expandedFamilies = [.whisper]
+                app.catalogKind = .stt
+                app.page = .catalog
+            }),
+            ("running-variants", { app in
+                busyState(app)
+                app.model(.phonon).setPreviewState(
+                    phase: .running, running: .init(pid: 4243, port: 9365, rate: 24000, model: nil, since: .now),
+                    environment: .ready(marker))
+                app.model(.phononQ8).setPreviewState(
+                    phase: .running, running: .init(pid: 4244, port: 9366, rate: 24000, model: "phonon-q8", since: .now),
+                    environment: .ready(marker))
+            }),
+            ("detail-variant", { app in
+                busyState(app)
+                app.model(.phononQ8).setPreviewState(
+                    phase: .running, running: .init(pid: 4244, port: 9366, rate: 24000, model: "phonon-q8", since: .now),
+                    environment: .ready(marker), diskBytes: 52_000_000)
+                app.page = .detail(.phononQ8, from: .running)
             }),
             ("detail-tts-running", { app in
                 busyState(app)

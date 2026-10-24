@@ -64,6 +64,8 @@ final class ServiceModel: Identifiable {
     private(set) var assetProgress: Double?
     private(set) var installDetail: String = ""
     private(set) var environment: EnvironmentStatus = .missing
+    /// Installed by the user (a variant's family environment can exist without it).
+    private(set) var requested = false
     private(set) var cache: ModelCacheStatus?
     private(set) var running: RunningInfo?
     private(set) var startDetail: String = ""
@@ -102,9 +104,15 @@ final class ServiceModel: Identifiable {
     var isInstalled: Bool {
         switch phase {
         case .installed, .needsModel, .starting, .running, .stopping: true
-        case .unavailable, .notInstalled, .installing, .checking, .removing: environment != .missing
-        case .failed(let failure): failure.isRuntime || environment != .missing
+        case .unavailable, .notInstalled, .checking: false
+        case .installing, .removing: requested
+        case .failed(let failure): failure.isRuntime || requested
         }
+    }
+
+    var isInstalling: Bool {
+        if case .installing = phase { return true }
+        return false
     }
 
     var isBusy: Bool {
@@ -136,6 +144,12 @@ final class ServiceModel: Identifiable {
         }
         guard let manager = app?.manager else { return }
         environment = manager.environmentStatus(service)
+        requested = environment != .missing && manager.isRequested(service)
+        guard requested else {
+            phase = .notInstalled
+            cache = nil
+            return
+        }
         switch environment {
         case .missing:
             phase = .notInstalled
@@ -150,6 +164,15 @@ final class ServiceModel: Identifiable {
         }
     }
 
+    /// After a sibling variant changed the shared environment: re-read it, but
+    /// leave a phase that work in progress (or a failure on screen) owns.
+    func environmentChanged() async {
+        switch phase {
+        case .checking, .notInstalled, .needsModel, .installed: await refresh()
+        default: environment = app?.manager?.environmentStatus(service) ?? environment
+        }
+    }
+
     // MARK: - Install
 
     func install() {
@@ -161,6 +184,7 @@ final class ServiceModel: Identifiable {
         case (.missing, _): mode = .full
         case (_, .needsModel): mode = .model
         case (_, .failed(let f)) where f.kind == .download: mode = .model
+        // The manager skips the steps a sibling's environment already covers.
         default: mode = .full
         }
         runInstall(manager: manager, mode: mode) { [weak self] in
@@ -197,7 +221,11 @@ final class ServiceModel: Identifiable {
         warning = nil
         download = nil
         installDetail = ""
-        phase = .installing(mode == .model ? .model : (mode == .packages ? .packages : .python))
+        switch (mode, environment) {
+        case (.model, _), (.full, .ready): phase = .installing(.model)
+        case (.packages, _), (.full, .outdated): phase = .installing(.packages)
+        case (.full, .missing): phase = .installing(.python)
+        }
         let service = self.service
         Log.install.info("\(service.rawValue, privacy: .public): install (\(String(describing: mode), privacy: .public))")
         installTask = Task { [weak self] in
@@ -224,12 +252,14 @@ final class ServiceModel: Identifiable {
                 self.download = nil
                 Log.install.info("\(service.rawValue, privacy: .public): install finished")
                 await then()
+                await self.app?.familyChanged(by: self)
             } catch {
                 guard let self else { return }
                 self.installTask = nil
                 self.download = nil
                 if error is CancellationError || Task.isCancelled {
                     await self.refresh()
+                    await self.app?.familyChanged(by: self)
                     return
                 }
                 Log.install.error("\(service.rawValue, privacy: .public): install failed: \(error.localizedDescription, privacy: .public)")
@@ -468,19 +498,17 @@ final class ServiceModel: Identifiable {
 
     // MARK: - Remove
 
-    /// Deletes the environment and, with `deleteModel`, the model's Hugging Face cache folders.
+    /// Uninstalls the service and, with `deleteModel`, the model files no installed
+    /// sibling shares. The family environment goes with its last installed variant.
     func remove(deleteModel: Bool) {
         guard info.runtime.usesPython, let manager = app?.manager else { return }
         phase = .removing
         Task {
             // Stop the server first so its exit can't race the removal.
             await shutdown()
-            var folders: [URL] = []
-            if deleteModel {
-                folders = (await manager.modelCacheStatus(service))?.repoFolders ?? cache?.repoFolders ?? []
-            }
+            let known = (cache?.repoFolders ?? []) + (cache?.derivedFolders ?? [])
             do {
-                try await manager.remove(service, modelFolders: folders)
+                try await manager.remove(service, deleteModel: deleteModel, knownFolders: known)
             } catch {
                 self.phase = .failed(Failure(kind: .install, title: "Couldn't remove", message: error.localizedDescription))
                 return
@@ -488,6 +516,7 @@ final class ServiceModel: Identifiable {
             Log.install.info("\(self.service.rawValue, privacy: .public): removed (model files: \(deleteModel))")
             self.log = []
             await self.refresh()
+            await self.app?.familyChanged(by: self)
         }
     }
 
@@ -520,13 +549,14 @@ final class ServiceModel: Identifiable {
         /// Puts the model into a given state for `--snapshot` rendering (debug builds only).
         func setPreviewState(
             phase: Phase, download: DownloadProgress? = nil, running: RunningInfo? = nil,
-            environment: EnvironmentStatus = .missing, diskBytes: Int64? = nil, log: [String] = [],
-            startDetail: String = "", installDetail: String = ""
+            environment: EnvironmentStatus = .missing, requested: Bool? = nil, diskBytes: Int64? = nil,
+            log: [String] = [], startDetail: String = "", installDetail: String = ""
         ) {
             self.phase = phase
             self.download = download
             self.running = running
             self.environment = environment
+            self.requested = requested ?? (environment != .missing)
             self.cache = diskBytes.map { ModelCacheStatus(cached: true, sizeBytes: $0, repoFolders: []) }
             self.log = log
             self.startDetail = startDetail

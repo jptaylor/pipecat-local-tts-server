@@ -248,17 +248,15 @@ def _resample_16k_to_24k(audio):
     return np.convolve(up, taps.astype(np.float32), mode="same")[::2]
 
 
-# The LM's context is 3000 frames (240 s at 80 ms); keep the last 230 s.
-_MAX_SAMPLES_24K = 230 * 24000
-
-
 class KyutaiBackend:
     """``stt_server`` backend for Kyutai's streaming STT models on MLX.
 
     Commit-oriented like the other stt backends: on commit the buffered 16 kHz
-    audio is resampled to 24 kHz, run through Mimi + the LM frame by frame
-    (80 ms each) with 2 s of trailing silence to flush the model's delay, and
-    returned as one delta + completed.
+    audio is resampled to 24 kHz, padded as the model's ``stt_config`` asks
+    (leading silence; trailing silence to flush the text the model emits
+    ``audio_delay_seconds`` behind the audio), run through Mimi + the LM frame by
+    frame (80 ms each), and returned as one delta + completed. The LM's KV cache
+    is a rotating window, so an utterance can be any length.
     """
 
     backend_name = "kyutai"
@@ -266,6 +264,8 @@ class KyutaiBackend:
     def __init__(self, model: str) -> None:
         self.model = model
         self._lock = threading.Lock()
+        self._prefix_samples = 0
+        self._flush_samples = 2 * 24000
 
     async def start(self) -> None:
         await asyncio.get_running_loop().run_in_executor(None, self._load)
@@ -283,6 +283,10 @@ class KyutaiBackend:
         moshi_weights = hf_hub_download(self.model, raw.get("moshi_name", "model.safetensors"))
         tokenizer = hf_hub_download(self.model, raw["tokenizer_name"])
 
+        stt = raw.get("stt_config") or {}
+        self._prefix_samples = int(float(stt.get("audio_silence_prefix_seconds", 0.0)) * 24000)
+        delay = float(stt.get("audio_delay_seconds", 0.5))
+        self._flush_samples = int(max(2.0, delay + 1.0) * 24000)
         lm_config = models.LmConfig.from_config_dict(raw)
         model = models.Lm(lm_config)
         model.set_dtype(mx.bfloat16)
@@ -306,8 +310,13 @@ class KyutaiBackend:
 
         mx, models, utils = self._mx, self._models, self._utils
         audio = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
-        audio = _resample_16k_to_24k(audio)[-_MAX_SAMPLES_24K:]
-        audio = np.concatenate([audio, np.zeros(48000, dtype=np.float32)])
+        audio = np.concatenate(
+            [
+                np.zeros(self._prefix_samples, dtype=np.float32),
+                _resample_16k_to_24k(audio),
+                np.zeros(self._flush_samples, dtype=np.float32),
+            ]
+        )
         frames = audio.size // 1920
         x = mx.array(audio[None, : frames * 1920])
         with self._lock:

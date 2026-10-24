@@ -45,7 +45,7 @@ struct ServiceDetailView: View {
             .scrollIndicators(.never)
             .frame(maxHeight: .infinity)
             Divider().opacity(0.5)
-            FooterBar(showsAddModels: false)
+            FooterBar()
         }
     }
 
@@ -440,6 +440,9 @@ struct DetailsCard: View {
                     .font(.system(size: 12))
                     .help(repo)
                 }
+            }
+            if let variant = model.info.variantLabel {
+                InfoRow(label: "Variant") { Text(variant) }
             }
             InfoRow(label: "Licence") {
                 Text(model.info.licence.label).legibleTint(model.info.licence.isRestrictive ? .orange : .primary)

@@ -11,13 +11,20 @@ public enum ServiceKind: String, CaseIterable, Identifiable, Sendable, Codable {
 
 /// One local speech service the toolbar can install and serve.
 ///
-/// TTS raw values are `tts_server serve --backend` names; STT raw values are
-/// the toolbar's own engine names.
+/// Some services are weights variants of another (Phonon 8-bit, Whisper Small):
+/// each is its own entry with its own port, so siblings can run side by side,
+/// but they share their family's environment. A family's first case is its
+/// default and keeps the family's name.
+///
+/// Raw values of family defaults are `tts_server serve --backend` names (TTS) or
+/// the toolbar's own engine names (STT); variants add a suffix.
 public enum Service: String, CaseIterable, Identifiable, Sendable, Codable {
     // Text to speech (pipecat-local-tts-server)
     case tone
     case kokoro
     case phonon
+    case phononQ8 = "phonon_q8"
+    case phononQ4 = "phonon_q4"
     case pocketTTS = "pocket_tts"
     case qwen3TTS = "qwen3_tts"
     case voxtralTTS = "voxtral_tts"
@@ -26,11 +33,30 @@ public enum Service: String, CaseIterable, Identifiable, Sendable, Codable {
     // Speech to text
     case appleSpeech = "apple_speech"
     case whisper
+    case whisperLargeV3 = "whisper_large_v3"
+    case whisperMedium = "whisper_medium"
+    case whisperSmall = "whisper_small"
+    case whisperBase = "whisper_base"
+    case whisperTiny = "whisper_tiny"
     case kyutai
+    case kyutai2B = "kyutai_2_6b"
 
     public var id: String { rawValue }
     public var info: ServiceInfo { ServiceCatalog.info(for: self) }
     public var kind: ServiceKind { info.kind }
+
+    /// The family default whose environment and server backend this service uses.
+    public var family: Service {
+        switch self {
+        case .phononQ8, .phononQ4: .phonon
+        case .whisperLargeV3, .whisperMedium, .whisperSmall, .whisperBase, .whisperTiny: .whisper
+        case .kyutai2B: .kyutai
+        default: self
+        }
+    }
+
+    /// Every variant in this service's family, default first.
+    public var variants: [Service] { Service.allCases.filter { $0.family == family } }
 }
 
 /// How a service is installed and run.
@@ -95,9 +121,19 @@ public struct ServiceInfo: Sendable, Equatable {
     public let symbol: String
     /// Shown in the list as a recommended default.
     public var isDefault: Bool = false
+    /// The variant's name within its family ("8-bit", "Small"); nil for a family of one.
+    public var variantLabel: String? = nil
+    /// How the variant differs from its siblings ("Best quality").
+    public var variantDetail: String? = nil
+    /// `--model` for `serve` and `prefetch`, when not the backend's default.
+    public var modelArgument: String? = nil
 
+    public var family: Service { service.family }
     public var needsModelDownload: Bool { modelRepo != nil }
-    public var launchdLabel: String? { kind == .tts ? "pipecat.tts-server.\(service.rawValue)" : nil }
+    /// The launchd agent `just tts-install` creates; it serves the backend's default model.
+    public var launchdLabel: String? {
+        kind == .tts && family == service ? "pipecat.tts-server.\(service.rawValue)" : nil
+    }
     public var endpoint: String { "ws://\(ServiceCatalog.host):\(port)/" }
 
     /// Client environment for a Pipecat bot (`TTS_WS_*` / `STT_WS_*`).
@@ -113,6 +149,18 @@ public struct ServiceInfo: Sendable, Equatable {
     public func pipecatService(port: Int? = nil) -> String {
         let cls = kind == .tts ? "LocalTTSService" : "LocalWebSocketSTTService"
         return "\(cls)(host=\"\(ServiceCatalog.host)\", port=\(port ?? self.port))"
+    }
+
+    /// A weights variant of this (family default) service: same runtime and
+    /// environment, its own port and model.
+    func variant(
+        _ service: Service, name: String, label: String, detail: String, port: Int,
+        modelArgument: String? = nil, modelRepo: String? = nil, tagline: String? = nil
+    ) -> ServiceInfo {
+        ServiceInfo(
+            service: service, kind: kind, displayName: name, tagline: tagline ?? self.tagline, runtime: runtime,
+            port: port, modelRepo: modelRepo ?? self.modelRepo, licence: licence, streaming: streaming,
+            symbol: symbol, variantLabel: label, variantDetail: detail, modelArgument: modelArgument)
     }
 }
 
@@ -144,7 +192,16 @@ public enum ServiceCatalog {
             ServiceInfo(
                 service: .phonon, kind: .tts, displayName: "Phonon", tagline: "Tiny streaming English voice",
                 runtime: .ttsServer(extra: "phonon"), port: 9365, modelRepo: "gradium/phonon-31m-en",
-                licence: .apache2, streaming: true, symbol: "dot.radiowaves.left.and.right")
+                licence: .apache2, streaming: true, symbol: "dot.radiowaves.left.and.right",
+                variantLabel: "Full precision", variantDetail: "Best quality")
+        case .phononQ8:
+            info(for: .phonon).variant(
+                .phononQ8, name: "Phonon 8-bit", label: "8-bit", detail: "Quantized, lighter and faster",
+                port: 9366, modelArgument: "phonon-q8")
+        case .phononQ4:
+            info(for: .phonon).variant(
+                .phononQ4, name: "Phonon 4-bit", label: "4-bit", detail: "Smallest, some quality loss",
+                port: 9367, modelArgument: "phonon-q4")
         case .pocketTTS:
             ServiceInfo(
                 service: .pocketTTS, kind: .tts, displayName: "Pocket TTS", tagline: "Kyutai's small streaming model",
@@ -180,17 +237,43 @@ public enum ServiceCatalog {
                 streaming: false, symbol: "apple.logo", isDefault: true)
         case .whisper:
             ServiceInfo(
-                service: .whisper, kind: .stt, displayName: "Whisper", tagline: "OpenAI large-v3-turbo on MLX",
+                service: .whisper, kind: .stt, displayName: "Whisper", tagline: "OpenAI's speech recognition on MLX",
                 runtime: .sttHelper(
                     engine: "whisper", requirements: ["pipecat-local-stt-server[mlx]==0.3.3", "mlx-whisper==0.4.3"]),
                 port: 9565, modelRepo: "mlx-community/whisper-large-v3-turbo", licence: .mit,
-                streaming: false, symbol: "waveform.and.mic")
+                streaming: false, symbol: "waveform.and.mic",
+                variantLabel: "Large v3 Turbo", variantDetail: "Fast and accurate")
+        case .whisperLargeV3:
+            info(for: .whisper).variant(
+                .whisperLargeV3, name: "Whisper Large v3", label: "Large v3", detail: "Most accurate, slowest",
+                port: 9566, modelRepo: "mlx-community/whisper-large-v3-mlx")
+        case .whisperMedium:
+            info(for: .whisper).variant(
+                .whisperMedium, name: "Whisper Medium", label: "Medium", detail: "Balanced",
+                port: 9567, modelRepo: "mlx-community/whisper-medium-mlx")
+        case .whisperSmall:
+            info(for: .whisper).variant(
+                .whisperSmall, name: "Whisper Small", label: "Small", detail: "Quick, light on memory",
+                port: 9568, modelRepo: "mlx-community/whisper-small-mlx")
+        case .whisperBase:
+            info(for: .whisper).variant(
+                .whisperBase, name: "Whisper Base", label: "Base", detail: "Very fast, less accurate",
+                port: 9569, modelRepo: "mlx-community/whisper-base-mlx")
+        case .whisperTiny:
+            info(for: .whisper).variant(
+                .whisperTiny, name: "Whisper Tiny", label: "Tiny", detail: "Fastest, least accurate",
+                port: 9570, modelRepo: "mlx-community/whisper-tiny-mlx")
         case .kyutai:
             ServiceInfo(
                 service: .kyutai, kind: .stt, displayName: "Kyutai STT", tagline: "Streaming, English and French",
                 runtime: .sttHelper(engine: "kyutai", requirements: [sttServerRequirement, "moshi_mlx==0.3.0"]),
                 port: 9665, modelRepo: "kyutai/stt-1b-en_fr-mlx", licence: .ccBy4,
-                streaming: true, symbol: "text.bubble")
+                streaming: true, symbol: "text.bubble",
+                variantLabel: "1B", variantDetail: "English and French, low latency")
+        case .kyutai2B:
+            info(for: .kyutai).variant(
+                .kyutai2B, name: "Kyutai STT 2.6B", label: "2.6B", detail: "English only, more accurate",
+                port: 9666, modelRepo: "kyutai/stt-2.6b-en-mlx", tagline: "Streaming, English, larger model")
         }
     }
 }

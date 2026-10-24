@@ -26,6 +26,8 @@ final class AppModel {
     private(set) var setupError: String?
     private(set) var staleLayout = false
     var page: Page = .running
+    /// Families of variants opened in the catalog's Available group.
+    var expandedFamilies: Set<Service> = []
     /// The catalog's TTS / STT tab (remembered between launches).
     var catalogKind: ServiceKind = ServiceKind(rawValue: UserDefaults.standard.string(forKey: "catalogKind") ?? "") ?? .tts {
         didSet { UserDefaults.standard.set(catalogKind.rawValue, forKey: "catalogKind") }
@@ -39,6 +41,16 @@ final class AppModel {
 
     func model(_ service: Service) -> ServiceModel {
         services.first { $0.service == service }!
+    }
+
+    /// The other variants that share `model`'s environment.
+    func siblings(of model: ServiceModel) -> [ServiceModel] {
+        services.filter { $0.info.family == model.info.family && $0 !== model }
+    }
+
+    /// Lets a model's siblings re-read the environment it just built, updated or removed.
+    func familyChanged(by model: ServiceModel) async {
+        for sibling in siblings(of: model) { await sibling.environmentChanged() }
     }
 
     func show(_ service: Service) {
@@ -56,6 +68,13 @@ final class AppModel {
     /// Services the user started (running, starting, stopping or failed at runtime).
     func active(_ kind: ServiceKind) -> [ServiceModel] { services.filter { $0.kind == kind && $0.isActive } }
     var anyActive: Bool { services.contains(where: \.isActive) }
+
+    /// Installed (or downloading) services that aren't running: what the main
+    /// menu offers to start when nothing is running.
+    func startable(_ kind: ServiceKind) -> [ServiceModel] {
+        services.filter { $0.kind == kind && !$0.isActive && ($0.isInstalled || $0.isInstalling) }
+    }
+    var anyStartable: Bool { ServiceKind.allCases.contains { !startable($0).isEmpty } }
     var running: [ServiceModel] { services.filter(\.isRunning) }
 
     func installed(_ kind: ServiceKind) -> [ServiceModel] {
@@ -203,12 +222,20 @@ final class AppModel {
     func confirmDelete(_ model: ServiceModel) {
         let alert = NSAlert()
         alert.messageText = "Delete \(model.info.displayName)?"
-        var detail = "This removes its Python environment"
-        if model.info.needsModelDownload {
-            detail += " and downloaded model files"
-            if let bytes = model.diskBytes { detail += " (\(Format.bytes(bytes)))" }
+        let keeping = siblings(of: model).filter(\.isInstalled).map(\.info.displayName)
+        var detail: String
+        if keeping.isEmpty {
+            detail = "This removes its Python environment"
+            if model.info.needsModelDownload {
+                detail += " and downloaded model files"
+                if let bytes = model.diskBytes { detail += " (\(Format.bytes(bytes)))" }
+            }
+            detail += "."
+        } else {
+            detail = "This removes its model files. Files and the Python environment shared with "
+                + "\(keeping.formatted(.list(type: .and))) stay."
         }
-        alert.informativeText = detail + ". You can download it again later."
+        alert.informativeText = detail + " You can download it again later."
         alert.alertStyle = .warning
         let delete = alert.addButton(withTitle: "Delete")
         delete.hasDestructiveAction = true

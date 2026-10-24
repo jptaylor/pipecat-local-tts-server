@@ -38,9 +38,13 @@ public struct AppPaths: Sendable {
     public var envsDir: URL { supportDir.appending(path: "envs") }
     public var layoutFile: URL { supportDir.appending(path: ".layout-version") }
 
-    public func envDir(_ service: Service) -> URL { envsDir.appending(path: service.rawValue) }
+    /// The environment a service runs in: its family's, shared by every variant.
+    public func envDir(_ service: Service) -> URL { envsDir.appending(path: service.family.rawValue) }
     public func python(_ service: Service) -> URL { envDir(service).appending(path: "bin/python") }
     public func marker(_ service: Service) -> URL { envDir(service).appending(path: ".pipecat-toolbar.json") }
+    /// `envs/<family>/.variants/`: one empty file per variant the user installed.
+    public func variantsDir(_ service: Service) -> URL { envDir(service).appending(path: ".variants") }
+    public func variantMarker(_ service: Service) -> URL { variantsDir(service).appending(path: service.rawValue) }
     public func appLog(_ service: Service) -> URL { logsDir.appending(path: "\(service.rawValue).app.log") }
 
     /// Creates the top-level directories and records the layout version.

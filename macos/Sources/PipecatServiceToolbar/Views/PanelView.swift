@@ -50,30 +50,52 @@ struct RunningView: View {
                 StaleLayoutBanner()
             }
             Divider().opacity(0.5)
-            if app.anyActive {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(ServiceKind.allCases) { kind in
-                            let models = app.active(kind)
-                            if !models.isEmpty {
-                                SectionHeader(kind: kind)
-                                ForEach(models) { RunningRow(model: $0) }
-                            }
-                        }
+            Group {
+                if app.anyActive {
+                    // Something started: running services only.
+                    serviceList { app.active($0) } row: { RunningRow(model: $0) }
+                } else if app.anyStartable {
+                    // Nothing running yet: the installed models, ready to start.
+                    VStack(spacing: 0) {
+                        Text("Start a model to serve it on its local port.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 10)
+                        serviceList { app.startable($0) } row: { CatalogRow(model: $0) }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.top, 4)
-                    .padding(.bottom, 8)
+                } else if app.bootstrapping {
+                    ProgressView().controlSize(.small)
+                } else {
+                    EmptyRunningState()
                 }
-                .scrollIndicators(.never)
-                .frame(maxHeight: .infinity)
-            } else {
-                EmptyRunningState()
-                    .frame(maxHeight: .infinity)
             }
+            .frame(maxHeight: .infinity)
             Divider().opacity(0.5)
-            FooterBar(showsAddModels: app.anyActive)
+            FooterBar()
         }
+    }
+
+    /// Services grouped under Text to Speech / Speech to Text headers.
+    private func serviceList<Row: View>(
+        _ models: @escaping (ServiceKind) -> [ServiceModel], @ViewBuilder row: @escaping (ServiceModel) -> Row
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(ServiceKind.allCases) { kind in
+                    let group = models(kind)
+                    if !group.isEmpty {
+                        SectionHeader(kind: kind)
+                        ForEach(group) { row($0) }
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
+        }
+        .scrollIndicators(.never)
     }
 
     private var header: some View {
@@ -129,9 +151,9 @@ struct EmptyRunningState: View {
             PipecatMark()
                 .fill(.quaternary)
                 .frame(width: 72, height: 42)
-            Text("No services running")
+            Text("No models installed")
                 .font(.system(size: 13, weight: .semibold))
-            Text("Start a speech model to serve it on a local port for your Pipecat apps.")
+            Text("Download a speech model to serve it on a local port for your Pipecat apps.")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -240,7 +262,7 @@ struct CatalogView: View {
                     let active = app.active(app.catalogKind)
                     if !active.isEmpty { group("Running", active) }
                     group("Installed", app.installed(app.catalogKind))
-                    group("Available", app.available(app.catalogKind))
+                    availableGroup(app.available(app.catalogKind))
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
@@ -255,14 +277,166 @@ struct CatalogView: View {
     @ViewBuilder
     private func group(_ title: String, _ models: [ServiceModel]) -> some View {
         if !models.isEmpty {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
-                .padding(.bottom, 2)
+            groupTitle(title)
             ForEach(models) { CatalogRow(model: $0) }
         }
+    }
+
+    /// Not yet installed: a family of variants shares one row that expands to list them.
+    @ViewBuilder
+    private func availableGroup(_ models: [ServiceModel]) -> some View {
+        if !models.isEmpty {
+            groupTitle("Available")
+            ForEach(CatalogEntry.grouping(models)) { entry in
+                switch entry {
+                case .single(let model): CatalogRow(model: model)
+                case .family(let variants): FamilyRow(variants: variants)
+                }
+            }
+        }
+    }
+
+    private func groupTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+    }
+}
+
+/// One row of the catalog's Available group.
+enum CatalogEntry: Identifiable {
+    case single(ServiceModel)
+    /// Two or more variants of one family (Phonon full precision, 8-bit, 4-bit).
+    case family([ServiceModel])
+
+    var id: Service {
+        switch self {
+        case .single(let model): model.id
+        case .family(let variants): variants[0].id.family
+        }
+    }
+
+    /// Groups variants by family, in catalog order.
+    static func grouping(_ models: [ServiceModel]) -> [CatalogEntry] {
+        var seen = Set<Service>()
+        return models.compactMap { model in
+            guard seen.insert(model.info.family).inserted else { return nil }
+            let variants = models.filter { $0.info.family == model.info.family }
+            return variants.count > 1 ? .family(variants) : .single(model)
+        }
+    }
+}
+
+/// A family of weights variants. It expands to list each variant as its own
+/// entry: each installs separately and serves on its own port, so siblings
+/// can run side by side.
+struct FamilyRow: View {
+    @Environment(AppModel.self) private var app
+    let variants: [ServiceModel]
+
+    private var family: ServiceInfo { variants[0].info.family.info }
+    /// A variant that's downloading or failed keeps the family open.
+    private var pinnedOpen: Bool {
+        variants.contains { model in
+            if case .failed = model.phase { return true }
+            return model.isBusy
+        }
+    }
+    private var expanded: Bool { pinnedOpen || app.expandedFamilies.contains(family.service) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                ProviderTile(info: family)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(family.displayName).font(.system(size: 13, weight: .medium))
+                        if family.licence.isRestrictive {
+                            LicenceBadge(licence: family.licence)
+                        }
+                    }
+                    Text("\(variants.count) options · \(family.tagline)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                if !pinnedOpen {
+                    if expanded {
+                        IconButton(systemImage: "chevron.up", help: "Hide options") { toggle() }
+                            .frame(width: 54)
+                    } else {
+                        Button(action: toggle) {
+                            HStack(spacing: 3) {
+                                Text("Get")
+                                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                            }
+                        }
+                        .buttonStyle(PillButtonStyle())
+                        .help("Choose which \(family.displayName) weights to download")
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+            .hoverHighlight()
+            .onTapGesture { toggle() }
+
+            if expanded {
+                VStack(spacing: 0) {
+                    ForEach(variants) { VariantRow(model: $0) }
+                }
+                // Under the family's name, with a rule down from its tile.
+                .padding(.leading, 44)
+                .overlay(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.primary.opacity(0.12))
+                        .frame(width: 2)
+                        .padding(.vertical, 6)
+                        .padding(.leading, 24)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(.snappy(duration: 0.22), value: expanded)
+    }
+
+    private func toggle() {
+        guard !pinnedOpen else { return }
+        if app.expandedFamilies.contains(family.service) {
+            app.expandedFamilies.remove(family.service)
+        } else {
+            app.expandedFamilies.insert(family.service)
+        }
+    }
+}
+
+/// One variant in an expanded `FamilyRow`: it installs, and later runs, on its own.
+struct VariantRow: View {
+    @Environment(AppModel.self) private var app
+    let model: ServiceModel
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.info.variantLabel ?? model.info.displayName)
+                    .font(.system(size: 12.5, weight: .medium))
+                CatalogSubtitle(model: model, note: model.info.variantDetail)
+            }
+            Spacer(minLength: 6)
+            CatalogAction(model: model)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+        .hoverHighlight()
+        .onTapGesture { app.show(model.service) }
+        .contextMenu { ServiceMenuItems(model: model) }
+        .help("\(model.info.displayName), served on port \(model.info.port)")
     }
 }
 
@@ -283,7 +457,8 @@ struct CatalogRow: View {
                         LicenceBadge(licence: model.info.licence)
                     }
                 }
-                CatalogSubtitle(model: model)
+                // A variant's name already says which family it's from.
+                CatalogSubtitle(model: model, note: model.info.family != model.service ? model.info.variantDetail : nil)
             }
             Spacer(minLength: 6)
             CatalogAction(model: model)
@@ -299,6 +474,8 @@ struct CatalogRow: View {
 
 struct CatalogSubtitle: View {
     let model: ServiceModel
+    /// Replaces the tagline beside the download size.
+    var note: String? = nil
 
     var body: some View {
         HStack(spacing: 4) {
@@ -334,8 +511,9 @@ struct CatalogSubtitle: View {
     }
 
     private var availableText: String {
-        if let bytes = model.approxDownloadBytes { return "\(Format.bytes(bytes)) · \(model.info.tagline)" }
-        return model.info.tagline
+        let text = note ?? model.info.tagline
+        if let bytes = model.approxDownloadBytes { return "\(Format.bytes(bytes)) · \(text)" }
+        return text
     }
 
     private var readyText: String {
@@ -470,6 +648,9 @@ struct FooterBar: View {
                     Divider()
                     Toggle("Open at Login", isOn: Binding(get: { app.opensAtLogin }, set: { app.opensAtLogin = $0 }))
                 }
+                Divider()
+                Button(quitTitle) { NSApp.terminate(nil) }
+                    .keyboardShortcut("q")
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 13))
@@ -478,19 +659,19 @@ struct FooterBar: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("Settings")
-
-            Button {
-                NSApp.terminate(nil)
-            } label: {
-                Text(app.running.isEmpty ? "Quit" : "Stop All & Quit").font(.system(size: 12))
-            }
-            .buttonStyle(.borderless)
-            .keyboardShortcut("q")
+            .help("Settings and Quit")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+        // ⌘Q while the panel is open, without the menu having to be open.
+        .background {
+            Button(quitTitle) { NSApp.terminate(nil) }
+                .keyboardShortcut("q")
+                .hidden()
+        }
     }
+
+    private var quitTitle: String { app.running.isEmpty ? "Quit" : "Stop All & Quit" }
 }
 
 struct SetupBanner: View {

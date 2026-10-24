@@ -6,7 +6,7 @@ import Testing
 /// The app's real install -> serve -> use -> remove path, through `uv`, the TTS
 /// server wheel and the STT helper, into a throwaway support directory. Opt-in
 /// because it downloads Python, packages and model weights (phonon ~100 MB,
-/// Kyutai ~2.4 GB; weights are shared with the Hugging Face cache):
+/// Whisper Tiny ~75 MB, Kyutai ~2.4 GB; weights are shared with the Hugging Face cache):
 ///
 ///     PIPECAT_TOOLBAR_E2E=1 swift test --package-path macos --filter EndToEnd
 ///
@@ -57,23 +57,12 @@ struct EndToEndTests {
         throw TTSClientError.closed
     }
 
-    func serveAndSpeak(_ backend: Service, paths: AppPaths) async throws -> Int {
-        let server = Subprocess(
-            .init(
-                executable: paths.python(backend),
-                arguments: ["-m", "tts_server", "serve", "--backend", backend.rawValue, "--host", "127.0.0.1", "--port", "0", "--supervised"],
-                environment: ProcessEnvironment.base(), holdStdin: true))
-        try server.run()
+    func serveAndSpeak(_ backend: Service, _ manager: EnvironmentManager, paths: AppPaths) async throws -> Int {
+        let (server, port) = try await startServer(backend, manager, paths: paths)
         defer { server.kill() }
-        var port: Int?
-        for await line in server.stdout {
-            guard let event = ServerCLIEvent.parse(line) else { continue }
-            if event.event == "ready" { port = event.port; break }
-            if event.event == "error" { Issue.record("server error: \(event.message ?? "")"); break }
-        }
-        let client = TTSClient(port: try #require(port))
+        let client = TTSClient(port: port)
         let hello = try await client.connect()
-        #expect(hello.backend == backend.rawValue)
+        #expect(hello.backend == backend.family.rawValue)
         try await client.speak("Testing the menu bar app.", voice: nil)
         var bytes = 0
         while let event = try await client.next() {
@@ -97,8 +86,8 @@ struct EndToEndTests {
             return
         }
         #expect(marker.python.hasPrefix("3.12"))
-        #expect(try await serveAndSpeak(.tone, paths: paths) > 0)
-        try await manager.remove(.tone)
+        #expect(try await serveAndSpeak(.tone, manager, paths: paths) > 0)
+        try await manager.remove(.tone, deleteModel: false)
         #expect(manager.environmentStatus(.tone) == .missing)
     }
 
@@ -110,8 +99,33 @@ struct EndToEndTests {
         #expect(cache.cached && cache.sizeBytes > 50_000_000)
         #expect(cache.repoFolders.first?.lastPathComponent == "models--gradium--phonon-31m-en")
         // 24 kHz pcm16: a short sentence is well over 1 s of audio.
-        #expect(try await serveAndSpeak(.phonon, paths: paths) > 48_000)
-        try await manager.remove(.phonon)  // keeps the shared HF weights
+        #expect(try await serveAndSpeak(.phonon, manager, paths: paths) > 48_000)
+        try await manager.remove(.phonon, deleteModel: false)  // keeps the shared HF weights
+    }
+
+    /// Phonon 8-bit installs into Phonon's environment (weights + conversion only)
+    /// and both serve at once, each on its own port.
+    @Test func phononVariantsRunSideBySide() async throws {
+        let (manager, paths) = try await Self.makeManager()
+        _ = try await install(.phonon, manager)
+        let events = try await install(.phononQ8, manager)
+        #expect(events.contains(.stage(.model)))
+        #expect(!events.contains(.stage(.python)) && !events.contains(.stage(.packages)))
+        let cache = try #require(await manager.modelCacheStatus(.phononQ8))
+        #expect(cache.cached && cache.derivedFolders.count == 1)
+
+        let (full, fullPort) = try await startServer(.phonon, manager, paths: paths)
+        defer { full.kill() }
+        #expect(try await serveAndSpeak(.phononQ8, manager, paths: paths) > 48_000)
+        #expect(fullPort > 0)
+        full.closeStdin()
+        #expect(await full.waitForExit() == 0)
+
+        try await manager.remove(.phononQ8, deleteModel: false)
+        #expect(manager.isRequested(.phonon) && !manager.isRequested(.phononQ8))
+        #expect(manager.environmentStatus(.phonon) != .missing)
+        try await manager.remove(.phonon, deleteModel: false)
+        #expect(manager.environmentStatus(.phonon) == .missing)
     }
 
     /// A spoken clip from the system voice, as pcm16 16 kHz mono.
@@ -130,6 +144,27 @@ struct EndToEndTests {
         return data.subdata(in: 44..<data.count)  // canonical 44-byte WAV header
     }
 
+    /// Whisper Tiny is its own entry: Whisper's environment, its own model and port.
+    @Test func whisperTinyVariant() async throws {
+        let (manager, paths) = try await Self.makeManager()
+        _ = try await install(.whisperTiny, manager)
+        #expect(manager.isRequested(.whisperTiny) && !manager.isRequested(.whisper))
+        let cache = try #require(await manager.modelCacheStatus(.whisperTiny))
+        #expect(cache.cached)
+        #expect(cache.repoFolders.first?.lastPathComponent == "models--mlx-community--whisper-tiny-mlx")
+        let (server, port) = try await startServer(.whisperTiny, manager, paths: paths)
+        defer { server.kill() }
+        let client = STTClient(port: port)
+        #expect(try await client.connect().model == "mlx-community/whisper-tiny-mlx")
+        let text = try await client.transcribe(try Self.spokenClip("The weather today is sunny and warm."))
+        #expect(text.lowercased().contains("weather"))
+        await client.close()
+        server.closeStdin()
+        #expect(await server.waitForExit() == 0)
+        try await manager.remove(.whisperTiny, deleteModel: false)
+        #expect(manager.environmentStatus(.whisper) == .missing)
+    }
+
     @Test func kyutaiInstallServeTranscribe() async throws {
         let (manager, paths) = try await Self.makeManager()
         let events = try await install(.kyutai, manager)
@@ -146,6 +181,6 @@ struct EndToEndTests {
         await client.close()
         server.closeStdin()
         #expect(await server.waitForExit() == 0)
-        try await manager.remove(.kyutai)
+        try await manager.remove(.kyutai, deleteModel: false)
     }
 }

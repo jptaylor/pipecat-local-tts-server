@@ -21,6 +21,7 @@ public struct ServerCLIEvent: Decodable, Sendable, Equatable {
     public var code: String?
     public var message: String?
     public var quantized: Bool?
+    public var quantizedPath: String?
     // serve --supervised "ready"
     public var backend: String?
     public var model: String?
@@ -37,6 +38,7 @@ public struct ServerCLIEvent: Decodable, Sendable, Equatable {
         case totalBytes = "total_bytes"
         case filesDone = "files_done"
         case filesTotal = "files_total"
+        case quantizedPath = "quantized_path"
     }
 
     /// Parses one stdout line; non-JSON lines (stray native output) return nil.

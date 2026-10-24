@@ -39,6 +39,16 @@ then **Start**.
 | Fish S2 Pro | TTS | 9265 | `mlx-community/fish-audio-s2-pro` | research only |
 | Tone | TTS | 8665 | test signal | — |
 
+Some models come in several sizes or precisions. In **Add Models** a family
+expands to list them, and each is its own entry with its own port, so siblings
+can run side by side. Variants share their family's Python environment.
+
+| Variant | Port | Model |
+|---|---|---|
+| Phonon 8-bit, 4-bit | 9366, 9367 | `phonon-q8`, `phonon-q4` (converted from Phonon's weights) |
+| Whisper Large v3, Medium, Small, Base, Tiny | 9566–9570 | `mlx-community/whisper-{large-v3,medium,small,base,tiny}-mlx` |
+| Kyutai STT 2.6B (English) | 9666 | `kyutai/stt-2.6b-en-mlx` |
+
 TTS services speak this repo's protocol (`tts_server`). STT services speak the
 protocol of [pipecat-local-stt-server](https://github.com/vr000m/pipecat-local-stt-server).
 Any client of either works unchanged. TTS ports match the `just tts-install`
@@ -74,7 +84,7 @@ Or set `TTS_WS_HOST`/`TTS_WS_PORT` and `STT_WS_HOST`/`STT_WS_PORT`.
 
 | Path | Contents |
 |---|---|
-| `~/Library/Application Support/Pipecat Service Toolbar/` | managed Python, one venv per service |
+| `~/Library/Application Support/Pipecat Service Toolbar/` | managed Python, one venv per model family |
 | `~/Library/Caches/Pipecat Service Toolbar/uv/` | package cache |
 | `~/.cache/huggingface/hub/` | model weights, shared with CLI use (`HF_HOME` honoured) |
 | `~/Library/Logs/Pipecat Service Toolbar/` | one log per service |

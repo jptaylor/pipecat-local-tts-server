@@ -7,15 +7,15 @@ extension Service {
         switch self {
         case .tone: .gray
         case .kokoro: .green
-        case .phonon: .indigo
+        case .phonon, .phononQ8, .phononQ4: .indigo
         case .pocketTTS: .orange
         case .qwen3TTS: .purple
         case .voxtralTTS: .pink
         case .dia: .teal
         case .fishTTS: .blue
         case .appleSpeech: Color(white: 0.35)
-        case .whisper: .cyan
-        case .kyutai: .mint
+        case .whisper, .whisperLargeV3, .whisperMedium, .whisperSmall, .whisperBase, .whisperTiny: .cyan
+        case .kyutai, .kyutai2B: .mint
         }
     }
 }
