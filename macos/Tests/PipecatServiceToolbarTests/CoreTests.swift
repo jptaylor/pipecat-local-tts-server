@@ -587,11 +587,22 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         defer { server.stop() }
         let client = STTClient(port: port)
         let hello = try await client.connect()
-        #expect(hello.backend == "fake" && hello.rate == 16000)
+        #expect(hello.backend == "fake" && hello.rate == STTWire.rate)
         #expect(try await client.transcribe(Data(count: 32000)) == "heard 32000 bytes")
         // A second utterance on the same connection.
         #expect(try await client.transcribe(Data(count: 1000), chunkBytes: 300) == "heard 1000 bytes")
         await client.close()
+    }
+
+    /// One stt wire format: what the server advertises is what the converter makes.
+    @Test func advertisesTheConvertersWireFormat() {
+        let audio = STTServerConnection.audioObject()
+        #expect(audio["format"] as? String == "pcm16" && STTWire.encoding == "pcm16")
+        #expect(audio["rate"] as? Int == STTWire.rate && audio["channels"] as? Int == STTWire.channels)
+        let made = PCMStreamConverter.wireFormat
+        #expect(made.commonFormat == .pcmFormatInt16 && made.isInterleaved)
+        #expect(made.sampleRate == Double(STTWire.rate) && Int(made.channelCount) == STTWire.channels)
+        #expect(STTWebSocketServer.maxBufferBytes == 300 * Int(made.sampleRate) * 2 * Int(made.channelCount))
     }
 
     @Test func busyPortFails() async throws {

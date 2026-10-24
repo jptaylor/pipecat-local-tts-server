@@ -42,7 +42,7 @@ public actor STTClient {
                 let audio = obj["audio"] as? [String: Any] ?? [:]
                 return Hello(
                     backend: backend["name"] as? String ?? "", model: backend["model"] as? String,
-                    rate: audio["rate"] as? Int ?? 16000)
+                    rate: audio["rate"] as? Int ?? STTWire.rate)
             }
         }
     }

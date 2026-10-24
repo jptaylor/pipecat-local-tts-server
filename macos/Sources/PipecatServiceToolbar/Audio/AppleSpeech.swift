@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import PipecatToolbarCore
 import Speech
 
 /// Apple's on-device speech-to-text (SpeechAnalyzer + SpeechTranscriber, macOS 26+),
@@ -77,7 +78,7 @@ enum AppleSpeech {
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
             throw AppleSpeechError.noAudioFormat
         }
-        let buffer = try PCMConverter.buffer(fromPCM16: pcm16, rate: 16000, to: format)
+        let buffer = try PCMConverter.buffer(fromPCM16: pcm16, to: format)
         let collector = Task { () throws -> String in
             var parts: [String] = []
             for try await result in transcriber.results where result.isFinal {
@@ -106,23 +107,21 @@ enum AppleSpeechError: LocalizedError {
     }
 }
 
-/// Audio format conversion to and from the stt wire format (pcm16 LE, 16 kHz mono).
+/// One-shot audio conversion to and from the stt wire format (`STTWire`).
 enum PCMConverter {
-    static let wireFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
-
-    /// One whole PCM buffer -> pcm16 16 kHz mono bytes (a stream of buffers
-    /// goes through one `PCMStreamConverter` instead).
+    /// One whole PCM buffer -> stt wire bytes (a stream of buffers goes through
+    /// one `PCMStreamConverter` instead).
     static func pcm16(from buffer: AVAudioPCMBuffer) throws -> Data {
-        let out = try convert(buffer, to: wireFormat)
-        guard let channel = out.int16ChannelData else { return Data() }
-        return Data(bytes: channel[0], count: Int(out.frameLength) * 2)
+        let converter = PCMStreamConverter()
+        return try converter.pcm16(from: buffer) + converter.finish()
     }
 
-    /// pcm16 bytes -> a buffer in `format`.
-    static func buffer(fromPCM16 data: Data, rate: Double, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
-        let source = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: rate, channels: 1, interleaved: true)!
+    /// stt wire bytes -> a buffer in `format`.
+    static func buffer(fromPCM16 data: Data, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
         let frames = AVAudioFrameCount(data.count / 2)
-        guard let input = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: frames) else { throw ConversionError() }
+        guard let input = AVAudioPCMBuffer(pcmFormat: STTWire.format, frameCapacity: frames) else {
+            throw PCMStreamConverter.ConversionError()
+        }
         input.frameLength = frames
         data.withUnsafeBytes { raw in
             input.int16ChannelData![0].update(from: raw.bindMemory(to: Int16.self).baseAddress!, count: Int(frames))
@@ -132,10 +131,12 @@ enum PCMConverter {
 
     static func convert(_ input: AVAudioPCMBuffer, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
         if input.format == format { return input }
-        guard let converter = AVAudioConverter(from: input.format, to: format) else { throw ConversionError() }
+        guard let converter = AVAudioConverter(from: input.format, to: format) else { throw PCMStreamConverter.ConversionError() }
         let ratio = format.sampleRate / input.format.sampleRate
         let capacity = AVAudioFrameCount(Double(input.frameLength) * ratio) + 1024
-        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { throw ConversionError() }
+        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+            throw PCMStreamConverter.ConversionError()
+        }
         var consumed = false
         var error: NSError?
         converter.convert(to: output, error: &error) { _, status in
@@ -149,9 +150,5 @@ enum PCMConverter {
         }
         if let error { throw error }
         return output
-    }
-
-    struct ConversionError: LocalizedError {
-        var errorDescription: String? { "Audio conversion failed." }
     }
 }

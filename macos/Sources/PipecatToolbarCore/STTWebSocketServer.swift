@@ -34,7 +34,7 @@ public final class STTWebSocketServer: @unchecked Sendable {
         }
     }
 
-    static let maxBufferBytes = 300 * 16000 * 2  // 300 s, as in the reference server
+    static let maxBufferBytes = 300 * STTWire.bytesPerSecond  // 300 s, as in the reference server
     /// Bounds memory (each client may buffer `maxBufferBytes`) for this in-app server.
     static let maxConnections = 8
     /// Replies a client has not read yet, per connection, beyond which it is
@@ -293,7 +293,7 @@ final class STTServerConnection: @unchecked Sendable {
         case "server.status":
             send([
                 "type": "server.status", "event_id": event(), "session_id": sessionID,
-                "backend": backendObject(), "audio": audioObject(),
+                "backend": backendObject(), "audio": Self.audioObject(),
                 "queue_depth": decode == nil ? 0 : 1, "uncommitted_bytes": buffer.count,
                 "uptime_seconds": Date().timeIntervalSince(started),
                 "pid": Int(ProcessInfo.processInfo.processIdentifier),
@@ -339,7 +339,7 @@ final class STTServerConnection: @unchecked Sendable {
                 guard !cancelled, !self.closed else { return }
                 switch result {
                 case .success(let text):
-                    log?(String(format: "transcribed %.1f s of audio in %.2f s", Double(audio.count) / 32000, Date().timeIntervalSince(started)))
+                    log?(String(format: "transcribed %.1f s of audio in %.2f s", Double(audio.count) / Double(STTWire.bytesPerSecond), Date().timeIntervalSince(started)))
                     self.send(["type": "conversation.item.input_audio_transcription.delta", "event_id": self.event(), "item_id": item, "content_index": 0, "delta": text])
                     self.send(["type": "conversation.item.input_audio_transcription.completed", "event_id": self.event(), "item_id": item, "content_index": 0, "transcript": text])
                 case .failure(let error):
@@ -376,7 +376,7 @@ final class STTServerConnection: @unchecked Sendable {
         send([
             "type": "server.hello", "event_id": event(), "protocol_version": "0.1",
             "capabilities": ["binary_audio": true, "base64_audio_append": true, "server_vad": false],
-            "audio": audioObject(), "backend": backendObject(),
+            "audio": Self.audioObject(), "backend": backendObject(),
         ])
         for type in ["session.created", "transcription_session.created"] {
             send(["type": type, "event_id": event(), "session": snapshot()])
@@ -412,7 +412,10 @@ final class STTServerConnection: @unchecked Sendable {
         ["name": identity.name, "model": Self.json(identity.model)]
     }
 
-    private func audioObject() -> [String: Any] { ["format": "pcm16", "rate": 16000, "channels": 1] }
+    /// The audio format `server.hello` / `server.status` advertise.
+    static func audioObject() -> [String: Any] {
+        ["format": STTWire.encoding, "rate": STTWire.rate, "channels": STTWire.channels]
+    }
 
     private func snapshot() -> [String: Any] {
         [

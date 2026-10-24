@@ -1,5 +1,17 @@
 import AVFoundation
 
+/// The stt wire audio format (`pipecat-local-stt-server` docs/protocol.md):
+/// pcm16 LE, 16 kHz mono. The one definition: the Apple Speech server
+/// advertises it, the converters produce it, and the STT clients send it.
+public enum STTWire {
+    public static let encoding = "pcm16"
+    public static let rate = 16000
+    public static let channels = 1
+    public static let bytesPerSecond = rate * channels * 2
+    public static let format = AVAudioFormat(
+        commonFormat: .pcmFormatInt16, sampleRate: Double(rate), channels: AVAudioChannelCount(channels), interleaved: true)!
+}
+
 /// Converts a stream of audio buffers (microphone taps, synthesizer output) to
 /// the stt wire format (pcm16 LE, 16 kHz mono) through one `AVAudioConverter`.
 ///
@@ -8,7 +20,7 @@ import AVFoundation
 /// buffer as a stream of its own, leaving an artifact at every buffer edge.
 /// Call `finish()` after the last buffer for the samples the filter still holds.
 public final class PCMStreamConverter: @unchecked Sendable {
-    public static let wireFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
+    public static var wireFormat: AVAudioFormat { STTWire.format }
 
     private let lock = NSLock()
     private var converter: AVAudioConverter?
@@ -58,6 +70,7 @@ public final class PCMStreamConverter: @unchecked Sendable {
     }
 
     public struct ConversionError: LocalizedError {
+        public init() {}
         public var errorDescription: String? { "Audio conversion failed." }
     }
 }

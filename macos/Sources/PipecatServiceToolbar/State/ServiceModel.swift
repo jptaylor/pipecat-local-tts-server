@@ -377,7 +377,7 @@ final class ServiceModel: Identifiable {
                 // stop() (or remove) while binding: that server is gone, don't report it.
                 guard self.nativeServer === server, self.phase == .starting else { return server.stop() }
                 self.appendLog("listening on \(ServiceCatalog.host):\(bound)")
-                self.becameReady(port: bound, pid: ProcessInfo.processInfo.processIdentifier, rate: 16000, model: "SpeechTranscriber")
+                self.becameReady(port: bound, pid: ProcessInfo.processInfo.processIdentifier, rate: STTWire.rate, model: "SpeechTranscriber")
             } catch {
                 guard self.nativeServer === server else { return }
                 self.nativeServer = nil
@@ -425,7 +425,7 @@ final class ServiceModel: Identifiable {
                 if event.event == "ready", self.server === sub, self.phase == .starting {
                     self.becameReady(
                         port: event.port ?? port, pid: event.pid ?? sub.pid,
-                        rate: event.rate ?? (self.kind == .tts ? 24000 : 16000), model: event.model)
+                        rate: event.rate ?? (self.kind == .tts ? 24000 : STTWire.rate), model: event.model)
                 } else if event.event == "error" {
                     self.supervisedError = (event.code, event.message)
                 }
