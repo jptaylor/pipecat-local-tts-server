@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-23
+
 ### Changed
 
 - Reference Pipecat adapter retries a commit rejected with `busy`, honouring the
@@ -437,7 +439,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.3.0...v0.4.0
