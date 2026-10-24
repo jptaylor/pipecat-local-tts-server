@@ -128,7 +128,33 @@ def test_resolving_every_backend_stays_lean():
         "for n in BACKEND_NAMES:\n"
         "    make_backend(n)\n"
         "    get_backend(n).default_model()\n"
-        "    prefetch.specs_for(n, None)\n",
+        f"    if n != {_READS_INSTALLED_RUNTIME!r}:\n"
+        "        prefetch.specs_for(n, None)\n",
+        forbidden=_HEAVY,
+    )
+    assert offenders == []
+
+
+# pocket_tts's prefetch_specs reads the voice-embedding pin from mlx_audio's
+# PREDEFINED_VOICES when mlx_audio is installed (and falls back to its own copy
+# when not), so in a full env listing its specs imports mlx_audio by design.
+_READS_INSTALLED_RUNTIME = "pocket_tts"
+
+
+def test_pocket_specs_need_no_heavy_dependency():
+    """With every heavy root unimportable, pocket's specs still resolve (to the
+    fallback pin) and pull nothing heavy in."""
+    offenders = lean_import_offenders(
+        "import sys\n"
+        f"for m in {_HEAVY!r}:\n"
+        "    sys.modules[m] = None\n"
+        "from tts_server import prefetch\n"
+        "from tts_server.backends import pocket_tts as P\n"
+        f"specs = prefetch.specs_for({_READS_INSTALLED_RUNTIME!r}, None)\n"
+        "assert (specs[-1].repo_id, specs[-1].revision) == "
+        "(P._POCKET_VOICES_REPO, P._POCKET_VOICES_SHA)\n"
+        f"for m in {_HEAVY!r}:\n"
+        "    del sys.modules[m]\n",
         forbidden=_HEAVY,
     )
     assert offenders == []
