@@ -305,7 +305,12 @@ class KyutaiBackend:
         self.transcribe(b"\x00\x00" * 16000)  # JIT the Mimi + LM path once
         logger.info("kyutai: loaded %s", self.model)
 
-    def transcribe(self, pcm16: bytes) -> str:
+    def transcribe(self, pcm16: bytes, cancel: threading.Event | None = None) -> str:
+        """Decode one utterance. `cancel` is polled once per 80 ms frame so a
+        cancelled/disconnected request releases the backend lock promptly
+        (run_in_executor threads cannot be interrupted otherwise); returns ""
+        when cancelled. State is reset at the start of every call, so an
+        aborted pass leaves nothing behind for the next request."""
         import numpy as np
 
         mx, models, utils = self._mx, self._models, self._utils
@@ -335,6 +340,8 @@ class KyutaiBackend:
             )
             pieces: list[str] = []
             for start in range(0, frames * 1920, 1920):
+                if cancel is not None and cancel.is_set():
+                    return ""
                 block = x[:, None, start : start + 1920]
                 tokens = mimi.encode_step(block).transpose(0, 2, 1)
                 token = gen.step(tokens[0])[0].item()
@@ -353,7 +360,7 @@ class _KyutaiStream:
     def __init__(self, backend: KyutaiBackend) -> None:
         self._backend = backend
         self._buf = bytearray()
-        self._cancelled = False
+        self._cancel = threading.Event()
 
     async def feed(self, chunk: bytes) -> None:
         self._buf.extend(chunk)
@@ -362,17 +369,22 @@ class _KyutaiStream:
         return None
 
     async def cancel(self) -> None:
-        self._cancelled = True
+        self._cancel.set()
 
     async def events(self):
         from stt_server.backend import TranscriptEvent  # type: ignore
 
-        if self._cancelled or not self._buf:
+        if self._cancel.is_set() or not self._buf:
             return
-        text = await asyncio.get_running_loop().run_in_executor(
-            None, self._backend.transcribe, bytes(self._buf)
-        )
-        if self._cancelled:
+        try:
+            text = await asyncio.get_running_loop().run_in_executor(
+                None, self._backend.transcribe, bytes(self._buf), self._cancel
+            )
+        except asyncio.CancelledError:
+            # The executor thread can't be killed; tell it to stop at the next frame.
+            self._cancel.set()
+            raise
+        if self._cancel.is_set():
             return
         yield TranscriptEvent(kind="delta", text=text)
         yield TranscriptEvent(kind="completed", text=text)

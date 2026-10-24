@@ -183,4 +183,48 @@ struct EndToEndTests {
         #expect(await server.waitForExit() == 0)
         try await manager.remove(.kyutai, deleteModel: false)
     }
+
+    /// A dropped long request must free the model: the next client is served at
+    /// about its own speed, not after the abandoned decode finishes.
+    @Test func kyutaiAbandonedRequestReleasesTheBackend() async throws {
+        let (manager, paths) = try await Self.makeManager()
+        _ = try await install(.kyutai, manager)
+        let (server, port) = try await startServer(.kyutai, manager, paths: paths)
+        defer { server.kill() }
+        let short = try Self.spokenClip("The weather today is sunny and warm.")
+        let long = try Self.spokenClip(String(repeating: "The weather today is sunny and warm. ", count: 60))
+
+        func timedShortRequest() async throws -> (String, Double) {
+            let client = STTClient(port: port)
+            _ = try await client.connect()
+            let began = ContinuousClock.now
+            let text = try await client.transcribe(short)
+            let elapsed = (ContinuousClock.now - began).seconds
+            await client.close()
+            return (text, elapsed)
+        }
+        let (warmText, baseline) = try await timedShortRequest()
+        #expect(warmText.lowercased().contains("weather"))
+
+        // Start a minutes-long decode, then drop the connection mid-way.
+        let abandoned = STTClient(port: port)
+        _ = try await abandoned.connect()
+        let drop = Task { _ = try? await abandoned.transcribe(long) }
+        try await Task.sleep(for: .seconds(3))
+        drop.cancel()
+        await abandoned.close()
+
+        let (text, latency) = try await timedShortRequest()
+        print("kyutai: baseline \(baseline) s; after an abandoned \(long.count / 32000) s clip \(latency) s")
+        #expect(text.lowercased().contains("weather"))
+        #expect(latency < baseline + 8, "the abandoned request kept the backend busy for \(latency) s")
+
+        server.closeStdin()
+        #expect(await server.waitForExit() == 0)
+        try await manager.remove(.kyutai, deleteModel: false)
+    }
+}
+
+private extension Duration {
+    var seconds: Double { Double(components.seconds) + Double(components.attoseconds) / 1e18 }
 }
