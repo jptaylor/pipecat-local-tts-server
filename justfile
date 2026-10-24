@@ -442,12 +442,15 @@ smoke-reconnect *args:
 app-build:
     macos/scripts/build_app.sh
 
-# Build the app bundle, then launch it (quits a running copy first).
+# Build the app bundle, then launch it (quits a running copy first). The running
+# copy is found by the identifier the build wrote (BUNDLE_ID overrides it).
 app-open: app-build
     #!/usr/bin/env bash
     set -euo pipefail
-    osascript -e 'quit app id "ai.pipecat.ServiceToolbar"' 2>/dev/null || true
-    open "macos/build/Pipecat Service Toolbar.app"
+    app="macos/build/Pipecat Service Toolbar.app"
+    id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")"
+    osascript -e "quit app id \"$id\"" 2>/dev/null || true
+    open "$app"
 
 # Run the app unbundled from the checkout (builds the wheel from this repo; uses your uv).
 app-run *args:

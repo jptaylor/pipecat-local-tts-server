@@ -335,3 +335,24 @@ def test_macos_app_stt_ports_do_not_collide_with_tts():
     stt = _macos_catalog_ports("stt", variants=True)
     assert stt, "expected STT services in the macOS catalog"
     assert not set(stt.values()) & set(_macos_catalog_ports("tts", variants=True).values())
+
+
+def _recipe_body(name: str) -> str:
+    """The indented body of justfile recipe ``name`` (up to the next blank line)."""
+    lines = JUSTFILE.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if re.match(rf"^{re.escape(name)}\b.*:", line))
+    body = []
+    for line in lines[start + 1 :]:
+        if not line.startswith((" ", "\t")):
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def test_app_open_quits_the_bundle_id_the_build_used():
+    """``BUNDLE_ID`` overrides the built app's identifier, so ``app-open`` must quit
+    whatever id the build wrote, not a hardcoded default (else it misses the running
+    copy and ``open`` just re-activates it)."""
+    body = _recipe_body("app-open")
+    assert "CFBundleIdentifier" in body, body
+    assert 'quit app id "ai.pipecat.ServiceToolbar"' not in body, body
