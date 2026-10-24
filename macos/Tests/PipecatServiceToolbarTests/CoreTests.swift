@@ -1343,10 +1343,25 @@ final class Lines: @unchecked Sendable {
     /// A child that exits while a grandchild still holds its pipes.
     static let leaky = "(sleep 20) &\necho out\necho failed >&2\nexit 3\n"
 
+    /// Waits until a test script has started (it touches `marker` first). The
+    /// first exec of a newly written executable waits for macOS to assess it,
+    /// and with the whole suite writing scripts at once that queue reaches
+    /// seconds (measured: median 2.3 s, max 4.2 s for 40 new scripts at once;
+    /// 26 ms re-exec'd). A bound on how promptly an install ends is timed from
+    /// here, so it measures the install, not that OS queue.
+    static func waitUntilStarted(_ marker: URL) async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !FileManager.default.fileExists(atPath: marker.path), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(FileManager.default.fileExists(atPath: marker.path), "the child never started")
+    }
+
     @Test func anInstallStepEndsWhenAGrandchildHoldsItsPipes() async throws {
         let paths = try InstallCancellationTests.paths()
+        let started = paths.supportDir.appending(path: "started")
         let uv = paths.supportDir.appending(path: "uv")
-        try "#!/bin/sh\n\(Self.leaky)".write(to: uv, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\ntouch '\(started.path)'\n\(Self.leaky)".write(to: uv, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
             paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
@@ -1355,6 +1370,7 @@ final class Lines: @unchecked Sendable {
             defer { ended.raise() }
             try await manager.install(.tone).consume { _ in }
         }
+        try await Self.waitUntilStarted(started)
         #expect(await ended.wait(.seconds(8)), "the install waited for the grandchild")
         if case .failure(let error) = await install.result {
             #expect((error as? InstallError)?.stage == .python)
@@ -1392,8 +1408,10 @@ final class Lines: @unchecked Sendable {
         case .ignoresTermThenCancelled: body = "trap '' TERM\ntouch '\(started.path)'\nsleep 20"
         case .leaksThenCancelled: body = "(sleep 20) &\ntouch '\(started.path)'\nexec sleep 20"
         }
+        let cancelled = child == .ignoresTermThenCancelled || child == .leaksThenCancelled
+        // A child that is cancelled marks its start once it is set up; any other marks it first.
         let script = paths.supportDir.appending(path: "child")
-        try "#!/bin/sh\n\(body)\n".write(to: script, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\n\(cancelled ? "" : "touch '\(started.path)'\n")\(body)\n".write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         let manager = EnvironmentManager(
             paths: paths,
@@ -1414,13 +1432,8 @@ final class Lines: @unchecked Sendable {
             defer { ended.raise() }
             try await manager.install(service).consume { _ in }
         }
-        if child == .ignoresTermThenCancelled || child == .leaksThenCancelled {
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !FileManager.default.fileExists(atPath: started.path), ContinuousClock.now < deadline {
-                try await Task.sleep(for: .milliseconds(20))
-            }
-            install.cancel()
-        }
+        try await Self.waitUntilStarted(started)
+        if cancelled { install.cancel() }
         #expect(await ended.wait(.seconds(5)), "\(child): the install did not end")
         let result = await install.result
         switch child {
