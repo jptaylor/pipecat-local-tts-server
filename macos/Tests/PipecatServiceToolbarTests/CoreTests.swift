@@ -382,7 +382,7 @@ import Testing
         let hello = try await client.connect()
         #expect(hello.backend == "tone" && hello.rate == 24000)
 
-        try await client.speak("Hello there.", voice: nil, eventID: "tryit-1")
+        for frame in TTSRequestQueue.frames("Hello there.", voice: nil, eventID: "tryit-1") { try await client.send(frame) }
         var frames = 0
         var finished = false
         while let event = try await client.next() {
@@ -773,6 +773,151 @@ final class Lines: @unchecked Sendable {
             sequences = sequences.flatMap { seq in Op.allCases.map { seq + [$0] } }
             sequences.forEach(check)
         }
+    }
+}
+
+/// A fake connection for `TTSRequestQueue`: records each frame as it goes on
+/// the wire. The send of frame number `holdAt` is held before it reaches the
+/// wire (like a send still hopping to the client actor) until released.
+@MainActor final class FakeWire {
+    var sent: [String] = []
+    /// Sends started, including one being held.
+    var issued = 0
+    var holdAt: Int?
+    var failAt: Int?
+    private var held: CheckedContinuation<Void, Never>?
+
+    struct Broken: Error {}
+
+    func send(_ frame: [String: String]) async throws {
+        let index = issued
+        issued += 1
+        if index == holdAt { await withCheckedContinuation { held = $0 } }
+        sent.append(Self.name(frame))
+        if index == failAt { throw Broken() }
+    }
+
+    func release() {
+        held?.resume()
+        held = nil
+    }
+
+    /// Waits until `count` sends have started.
+    func waitFor(_ count: Int) async {
+        while issued < count { await Task.yield() }
+    }
+
+    /// `clear`, `append:<id>`, `commit:<id>`, `cancel`.
+    static func name(_ frame: [String: String]) -> String {
+        switch frame["type"] {
+        case "input_text.clear": "clear"
+        case "input_text.append": "append:" + (frame["event_id"] ?? "").replacingOccurrences(of: ".append", with: "")
+        case "input_text.commit": "commit:" + (frame["event_id"] ?? "")
+        case "response.cancel": "cancel"
+        default: frame["type"] ?? "?"
+        }
+    }
+}
+
+/// The Try it request lifecycle on the client side (docs/protocol.md §4): every
+/// request is clear, append, commit, and Stop's cancel never overtakes a commit.
+@MainActor @Suite struct TTSRequestQueueTests {
+    static func queue(_ wire: FakeWire) -> TTSRequestQueue {
+        TTSRequestQueue { frame in try await wire.send(frame) }
+    }
+
+    @Test func aRequestClearsTheBufferFirst() async throws {
+        let wire = FakeWire()
+        try await Self.queue(wire).speak("Hi", voice: "v", eventID: "tryit-1")
+        #expect(wire.sent == ["clear", "append:tryit-1", "commit:tryit-1"])
+        let commit = TTSRequestQueue.frames("Hi", voice: "v", eventID: "tryit-1")[2]
+        #expect(commit == ["type": "input_text.commit", "event_id": "tryit-1", "voice": "v"])
+    }
+
+    /// The frames match the real exchange `tests/test_macos_catalog_drift.py` ran.
+    @Test func framesAreTheOnesTheServerWasShown() throws {
+        let fixture = try #require(try WireFixtureTests.frames()["request"])
+        let sent = try JSONSerialization.jsonObject(with: Data(fixture.utf8)) as? [[String: String]]
+        #expect(sent == TTSRequestQueue.frames("Hello", voice: nil, eventID: "tryit-1"))
+    }
+
+    /// Stop at every point of a request: before its first frame is sent (the
+    /// queue is busy with an earlier one), while each frame is in flight, and
+    /// after the request is out. The cancel always comes after every frame that
+    /// was sent, and a frame not yet sent never is.
+    @Test(arguments: [nil, 0, 1, 2, 3] as [Int?])
+    func stopNeverOvertakesTheCommit(stopWhileSending: Int?) async throws {
+        let wire = FakeWire()
+        let queue = Self.queue(wire)
+        let expected: [String]
+        if let k = stopWhileSending, k < 3 {
+            // Frame k of request 1 is in flight when Stop comes.
+            wire.holdAt = k
+            let speak = Task { try await queue.speak("Hi", voice: nil, eventID: "tryit-1") }
+            await wire.waitFor(k + 1)
+            queue.cancel()
+            wire.release()
+            try await speak.value
+            expected = Array(["clear", "append:tryit-1", "commit:tryit-1"].prefix(k + 1)) + ["cancel"]
+        } else if stopWhileSending == 3 {
+            // Request 1 is out.
+            try await queue.speak("Hi", voice: nil, eventID: "tryit-1")
+            queue.cancel()
+            expected = ["clear", "append:tryit-1", "commit:tryit-1", "cancel"]
+        } else {
+            // Request 1 waits behind request 0, whose clear is in flight.
+            wire.holdAt = 0
+            let first = Task { try await queue.speak("A", voice: nil, eventID: "tryit-0") }
+            await wire.waitFor(1)
+            let second = Task { try await queue.speak("Hi", voice: nil, eventID: "tryit-1") }
+            await Task.yield()
+            queue.cancel()
+            wire.release()
+            try await first.value
+            try await second.value
+            expected = ["clear", "cancel"]
+        }
+        await queue.drained()
+        #expect(wire.sent == expected)
+        // The invariant, whatever the timing: a cancel follows any commit sent.
+        if let commit = wire.sent.firstIndex(where: { $0.hasPrefix("commit:") }) {
+            #expect(wire.sent.lastIndex(of: "cancel").map { $0 > commit } == true)
+        }
+    }
+
+    /// Stop then Speak again while request 1 is still going out: request 1 sends
+    /// nothing more, the cancel follows what it sent, and request 2 goes out
+    /// whole after the cancel, starting with its clear.
+    @Test func speakAgainAfterStopStartsAFreshRequest() async throws {
+        let wire = FakeWire()
+        let queue = Self.queue(wire)
+        wire.holdAt = 1
+        let first = Task { try await queue.speak("A", voice: nil, eventID: "tryit-1") }
+        await wire.waitFor(2)
+        queue.cancel()
+        let second = Task { try await queue.speak("B", voice: nil, eventID: "tryit-2") }
+        await Task.yield()
+        wire.release()
+        try await first.value
+        try await second.value
+        #expect(wire.sent == ["clear", "append:tryit-1", "cancel", "clear", "append:tryit-2", "commit:tryit-2"])
+    }
+
+    @Test func aBrokenSendFailsItsRequestOnly() async throws {
+        let wire = FakeWire()
+        let queue = Self.queue(wire)
+        wire.failAt = 1
+        await #expect(throws: FakeWire.Broken.self) { try await queue.speak("A", voice: nil, eventID: "tryit-1") }
+        try await queue.speak("B", voice: nil, eventID: "tryit-2")
+        #expect(wire.sent == ["clear", "append:tryit-1", "clear", "append:tryit-2", "commit:tryit-2"])
+    }
+
+    /// The server's `input_text.cleared` acknowledgement never acts on a request.
+    @Test func clearedAcknowledgementIsIgnored() throws {
+        let frame = try #require(try WireFixtureTests.frames()["cleared"])
+        let event = try #require(TTSEvent.decode(frame))
+        var (t, _, _) = ResponseTrackerTests.twoRequests()
+        for speaking in [true, false] { #expect(t.route(event, speaking: speaking) == .ignore) }
     }
 }
 

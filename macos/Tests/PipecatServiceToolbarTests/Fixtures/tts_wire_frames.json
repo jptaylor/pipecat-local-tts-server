@@ -1,25 +1,29 @@
 {
   "audio": {
     "audio": "AID/fw==",
-    "event_id": "evt_c2629260d8a14fc3",
-    "response_id": "resp_6bc858c09e5146ef",
+    "event_id": "evt_2a83f22dd5bf4bc7",
+    "response_id": "resp_e780c6f4d7764de6",
     "seq": 0,
     "type": "response.audio.delta"
   },
   "cancelled": {
-    "event_id": "evt_1d5578653dbd4829",
-    "response_id": "resp_6bc858c09e5146ef",
+    "event_id": "evt_b82eb81b529c4f71",
+    "response_id": "resp_e780c6f4d7764de6",
     "type": "response.cancelled"
   },
+  "cleared": {
+    "event_id": "evt_83b9bbf9c50b48ed",
+    "type": "input_text.cleared"
+  },
   "committed": {
-    "event_id": "evt_bcb71c3c42aa4857",
+    "event_id": "evt_821691a2b233499b",
     "previous_event_id": "tryit-1",
-    "response_id": "resp_6bc858c09e5146ef",
+    "response_id": "resp_e780c6f4d7764de6",
     "type": "input_text.committed"
   },
   "created": {
-    "event_id": "evt_84a7ac141f834b92",
-    "response_id": "resp_6bc858c09e5146ef",
+    "event_id": "evt_cbdba27475ad4ac5",
+    "response_id": "resp_e780c6f4d7764de6",
     "type": "response.created"
   },
   "error_append": {
@@ -29,7 +33,7 @@
       "message": "input_text.append missing text",
       "type": "invalid_request_error"
     },
-    "event_id": "evt_ec64d5cbb6154ce6",
+    "event_id": "evt_555df0b53d244edf",
     "previous_event_id": "tryit-3.append",
     "type": "error"
   },
@@ -41,9 +45,23 @@
       "retry_after_ms": 250,
       "type": "rate_limit_error"
     },
-    "event_id": "evt_756520a8f40a40ef",
+    "event_id": "evt_6e3070a7545c4a22",
     "previous_event_id": "tryit-2",
     "retry_after_ms": 250,
     "type": "error"
-  }
+  },
+  "request": [
+    {
+      "type": "input_text.clear"
+    },
+    {
+      "event_id": "tryit-1.append",
+      "text": "Hello",
+      "type": "input_text.append"
+    },
+    {
+      "event_id": "tryit-1",
+      "type": "input_text.commit"
+    }
+  ]
 }

@@ -136,28 +136,97 @@ public actor TTSClient {
         try await send(["type": "server.status"])
     }
 
-    /// Appends `text` and commits it as one response. The commit carries
-    /// `eventID` and the append `ResponseTracker.appendID(eventID)`, so the
-    /// server's replies (and refusals) name the request they answer.
-    public func speak(_ text: String, voice: String?, eventID: String) async throws {
-        try await send(["type": "input_text.append", "text": text, "event_id": ResponseTracker.appendID(eventID)])
-        var commit: [String: String] = ["type": "input_text.commit", "event_id": eventID]
-        if let voice { commit["voice"] = voice }
-        try await send(commit)
-    }
-
-    public func cancel() async throws {
-        try await send(["type": "response.cancel"])
-    }
-
     public func close() {
         task.cancel(with: .normalClosure, reason: nil)
         session.invalidateAndCancel()
     }
 
-    private func send(_ object: [String: String]) async throws {
+    /// Sends one client frame. Try it's requests go through `TTSRequestQueue`,
+    /// which owns their order.
+    public func send(_ object: [String: String]) async throws {
         let data = try JSONSerialization.data(withJSONObject: object)
         try await task.send(.string(String(decoding: data, as: UTF8.self)))
+    }
+}
+
+/// Puts one connection's Try it frames on the wire in the order they were
+/// asked for, so the request lifecycle (docs/protocol.md §4) holds:
+///
+/// - Every request is `input_text.clear`, `input_text.append`,
+///   `input_text.commit`. The server keeps the buffer on any refusal (busy,
+///   invalid voice, a too-long append, ...) so a client can retry; Try it never
+///   retries, so the clear drops that text before it can prefix the next request.
+/// - `cancel()` (Stop) goes on the wire after every frame of a request asked
+///   for before it, so its `response.cancel` follows the commit it stops: a
+///   cancel that overtook its commit would be a no-op and the commit would
+///   still be admitted, holding the connection's single in-flight slot (K=1).
+/// - A request stopped (or superseded) before all its frames were sent sends no
+///   more of them, so a stopped request's commit is never sent late.
+///
+/// The order is the order of the calls on the main actor: each call queues its
+/// frames before it first suspends.
+@MainActor
+public final class TTSRequestQueue {
+    public typealias Send = @Sendable ([String: String]) async throws -> Void
+
+    private let send: Send
+    /// The last queued job; each waits for the one before it.
+    private var tail: Task<Void, Never>?
+    /// The request whose remaining frames are still wanted.
+    private var wanted: String?
+
+    public init(send: @escaping Send) { self.send = send }
+
+    /// The frames of request `eventID`. The commit carries `eventID` and the
+    /// append `ResponseTracker.appendID(eventID)`, so the server's replies (and
+    /// refusals) name the request they answer.
+    public nonisolated static func frames(_ text: String, voice: String?, eventID: String) -> [[String: String]] {
+        var commit: [String: String] = ["type": "input_text.commit", "event_id": eventID]
+        if let voice { commit["voice"] = voice }
+        return [
+            ["type": "input_text.clear"],
+            ["type": "input_text.append", "text": text, "event_id": ResponseTracker.appendID(eventID)],
+            commit,
+        ]
+    }
+
+    /// Sends request `eventID` once the frames queued before it are out. Throws
+    /// if a frame could not be sent; returns early, sending nothing more, once
+    /// the request is stopped or another one is asked for.
+    public func speak(_ text: String, voice: String?, eventID: String) async throws {
+        wanted = eventID
+        let frames = Self.frames(text, voice: voice, eventID: eventID)
+        try await schedule { [send] queue in
+            for frame in frames {
+                guard queue.wanted == eventID else { return }
+                try await send(frame)
+            }
+        }.value
+    }
+
+    /// Stop: no frame of an earlier request is sent from now on, and a
+    /// `response.cancel` follows the ones already sent.
+    public func cancel() {
+        wanted = nil
+        schedule { [send] _ in try await send(["type": "response.cancel"]) }
+    }
+
+    /// Returns once every job queued so far has run.
+    public func drained() async {
+        await tail?.value
+    }
+
+    /// Queues `job` behind every job queued before it (synchronously: the
+    /// queue order is the call order).
+    @discardableResult
+    private func schedule(_ job: @escaping @MainActor @Sendable (TTSRequestQueue) async throws -> Void) -> Task<Void, Error> {
+        let previous = tail
+        let run = Task { @MainActor in
+            await previous?.value
+            try await job(self)
+        }
+        tail = Task { _ = await run.result }
+        return run
     }
 }
 

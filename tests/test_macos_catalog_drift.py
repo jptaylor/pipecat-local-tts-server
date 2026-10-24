@@ -120,10 +120,20 @@ TRY_IT_FIXTURE = (
 _VOLATILE = {"event_id", "response_id"}
 
 
-async def _try_it_exchange() -> dict[str, dict]:
+# The frames ``TTSRequestQueue.frames("Hello", voice: nil, eventID: "tryit-1")``
+# sends (the Swift tests compare against the fixture's copy).
+_TRY_IT_REQUEST = [
+    {"type": "input_text.clear"},
+    {"type": "input_text.append", "text": "Hello", "event_id": "tryit-1.append"},
+    {"type": "input_text.commit", "event_id": "tryit-1"},
+]
+
+
+async def _try_it_exchange() -> dict:
     """The frames the real server sends for the exchange the app's Try it runs:
-    each request is an ``input_text.append`` (event id ``<id>.append``) and an
-    ``input_text.commit`` (event id ``<id>``), then Stop sends ``response.cancel``."""
+    each request is an ``input_text.clear``, an ``input_text.append`` (event id
+    ``<id>.append``) and an ``input_text.commit`` (event id ``<id>``), then Stop
+    sends ``response.cancel``."""
     from tts_server.backend import ToneBackend
 
     from ._helpers import connected_client, next_event, running_server
@@ -131,15 +141,16 @@ async def _try_it_exchange() -> dict[str, dict]:
     async def send(client, frame: dict) -> None:
         await client._ws.send(json.dumps(frame))
 
-    frames: dict[str, dict] = {}
+    frames: dict = {"request": _TRY_IT_REQUEST}
     async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
-        await send(
-            client, {"type": "input_text.append", "text": "Hello", "event_id": "tryit-1.append"}
-        )
-        await send(client, {"type": "input_text.commit", "event_id": "tryit-1"})
+        for frame in _TRY_IT_REQUEST:
+            await send(client, frame)
+        frames["cleared"] = await next_event(client, "input_text.cleared")
         frames["committed"] = await next_event(client, "input_text.committed")
         frames["created"] = await next_event(client, "response.created")
         # A second request while the first is in flight is refused (K=1).
+        await send(client, {"type": "input_text.clear"})
+        await next_event(client, "input_text.cleared")
         await send(
             client, {"type": "input_text.append", "text": "Again", "event_id": "tryit-2.append"}
         )
@@ -178,6 +189,7 @@ async def test_swift_try_it_fixture_is_what_the_server_sends():
     assert fixture["committed"]["response_id"] == fixture["created"]["response_id"]
     assert fixture["error_busy"]["previous_event_id"] == "tryit-2"
     assert fixture["error_append"]["previous_event_id"] == "tryit-3.append"
+    assert fixture["request"] == _TRY_IT_REQUEST
 
 
 def test_swift_supervised_error_codes_match_supervise():

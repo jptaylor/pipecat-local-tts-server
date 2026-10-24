@@ -23,6 +23,8 @@ final class TryItSession {
     let backend: Service
     private let port: Int
     private var client: TTSClient?
+    /// Orders `client`'s request frames (clear, append, commit) and Stop's cancel.
+    private var requests: TTSRequestQueue?
     /// The connect in flight, shared so `prepare()` and `speak()` open one client.
     private var connecting: Task<TTSClient, Error>?
     private var receiveTask: Task<Void, Never>?
@@ -42,8 +44,7 @@ final class TryItSession {
             guard let self, self.phase == .speaking else { return }
             // Like Stop: the rest of this response is not wanted.
             self.responses.abandon()
-            let client = self.client
-            Task { try? await client?.cancel() }
+            self.requests?.cancel()
             self.phase = .failed("Playback stopped: the audio output changed. Press Speak to try again.")
         }
     }
@@ -73,21 +74,24 @@ final class TryItSession {
         if let voice { UserDefaults.standard.set(voice, forKey: voiceKey) }
         do {
             phase = .connecting
-            let client = try await connectedClient()
-            guard let hello else { return }
+            _ = try await connectedClient()
+            // Stop (or detach) while connecting: this request is not wanted.
+            guard phase == .connecting, let hello, let requests else { return }
             try player.begin(rate: hello.rate)
             phase = .speaking
             let request = responses.committed()
-            try await client.speak(trimmed, voice: voice, eventID: request)
+            try await requests.speak(trimmed, voice: voice, eventID: request)
         } catch {
-            fail(error.localizedDescription)
+            // A request superseded by Stop does not report its failure.
+            if phase == .speaking || phase == .connecting { fail(error.localizedDescription) }
         }
     }
 
     func stop() async {
         player.stop()
         responses.abandon()
-        if phase == .speaking { try? await client?.cancel() }
+        // Queued behind the request's frames: the cancel follows its commit.
+        if phase == .speaking { requests?.cancel() }
         phase = .idle
     }
 
@@ -106,6 +110,7 @@ final class TryItSession {
         responses = ResponseTracker()
         if let client { Task { await client.close() } }
         client = nil
+        requests = nil
         player.stop()
         if phase != .idle { phase = .idle }
     }
@@ -124,6 +129,7 @@ final class TryItSession {
                 throw error
             }
             self.client = client
+            self.requests = TTSRequestQueue { frame in try await client.send(frame) }
             self.hello = hello
             receiveTask = Task { [weak self] in await self?.receive(from: client) }
             if hello.voiceCount > 0 { try await client.requestStatus() }
@@ -142,6 +148,7 @@ final class TryItSession {
         } catch {
             if !Task.isCancelled, self.client === client {
                 self.client = nil
+                self.requests = nil
                 if phase == .speaking { fail("The server closed the connection.") }
             }
         }
