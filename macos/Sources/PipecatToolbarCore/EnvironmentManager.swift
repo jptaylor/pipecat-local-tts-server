@@ -97,16 +97,19 @@ public actor EnvironmentManager {
     /// Short offline probes in flight (`prefetch --check`, the Python version).
     private var probes: [ObjectIdentifier: Subprocess] = [:]
     private var busyFamilies: Set<Service> = []
-    private var familyWaiters: [Service: [CheckedContinuation<Void, Never>]] = [:]
+    private var familyWaiters: [Service: [(id: UUID, resume: CheckedContinuation<Bool, Never>)]] = [:]
     /// Set by `shutdown()` on app quit: no new subprocess starts after it.
     private var shuttingDown = false
     /// How long a cancelled install step gets to exit after SIGTERM before SIGKILL.
     public let cancelGrace: Duration
+    /// How long a step's output may stay open after the step exited.
+    public let drainLimit: Duration
 
-    public init(paths: AppPaths, tools: Tools, cancelGrace: Duration = .seconds(5)) {
+    public init(paths: AppPaths, tools: Tools, cancelGrace: Duration = .seconds(5), drainLimit: Duration = .seconds(2)) {
         self.paths = paths
         self.tools = tools
         self.cancelGrace = cancelGrace
+        self.drainLimit = drainLimit
     }
 
     // MARK: - Status
@@ -268,19 +271,35 @@ public actor EnvironmentManager {
     // MARK: - Family lock
 
     /// Waits for exclusive use of a family's environment (sibling installs, removal).
-    private func lockFamily(_ family: Service, onWait: () -> Void = {}) async {
+    /// Cancelling the waiting task leaves the queue at once and throws
+    /// `CancellationError`, without the lock: only a caller that got it unlocks.
+    private func lockFamily(_ family: Service, onWait: () -> Void = {}) async throws {
+        try Task.checkCancellation()
         guard busyFamilies.contains(family) else {
             busyFamilies.insert(family)
             return
         }
         onWait()
-        await withCheckedContinuation { familyWaiters[family, default: []].append($0) }
+        let id = UUID()
+        let granted = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                familyWaiters[family, default: []].append((id, continuation))
+            }
+        } onCancel: {
+            Task { await self.leaveQueue(family, id) }
+        }
+        guard granted else { throw CancellationError() }
+    }
+
+    private func leaveQueue(_ family: Service, _ id: UUID) {
+        guard let index = familyWaiters[family]?.firstIndex(where: { $0.id == id }) else { return }  // already granted
+        familyWaiters[family]?.remove(at: index).resume.resume(returning: false)
     }
 
     private func unlockFamily(_ family: Service) {
         if let next = familyWaiters[family]?.first {
             familyWaiters[family]?.removeFirst()
-            next.resume()  // the lock passes straight to the next waiter
+            next.resume.resume(returning: true)  // the lock passes straight to the next waiter
         } else {
             busyFamilies.remove(family)
         }
@@ -327,8 +346,10 @@ public actor EnvironmentManager {
         _ backend: Service, mode: InstallMode, emit: @escaping @Sendable (InstallEvent) -> Void
     ) async throws {
         let info = backend.info
-        await lockFamily(info.family) { emit(.stage(.queued)) }
+        try await lockFamily(info.family) { emit(.stage(.queued)) }
         defer { unlockFamily(info.family) }
+        // Cancelled once the lock came (it may have been granted as Cancel landed): nothing ran, nothing is recorded.
+        try Task.checkCancellation()
         if shuttingDown { throw CancellationError() }
         let env = ProcessEnvironment.uv(paths: paths)
         let envDir = paths.envDir(backend)
@@ -365,6 +386,10 @@ public actor EnvironmentManager {
         if installsPackages {
             try await installPackages(backend, env: env, emit: emit)
         }
+        // The variant marker is the install's commit point: a Cancel that landed
+        // during the steps above (the version probe ignores it) records nothing.
+        try Task.checkCancellation()
+        if shuttingDown { throw CancellationError() }
         try recordVariant(backend, installed: true)
 
         guard info.needsModelDownload, mode != .packages else { return }
@@ -420,14 +445,7 @@ public actor EnvironmentManager {
         let err = Task {
             for await line in sub.stderr { tail.append(line); emit(.log(line)) }
         }
-        let grace = cancelGrace
-        let status = await withTaskCancellationHandler {
-            await sub.waitForExit()
-        } onCancel: {
-            // SIGTERM, then SIGKILL: a child that ignores SIGTERM can't hold the family lock.
-            Task { _ = await sub.stop(grace: grace) }
-        }
-        _ = await (out.value, err.value)
+        let status = await waitForExit(sub, readers: [out, err])
         try Task.checkCancellation()
         if shuttingDown { throw CancellationError() }
         guard status == 0 else {
@@ -482,21 +500,34 @@ public actor EnvironmentManager {
             }
             return failure
         }
-        let grace = cancelGrace
-        let status = await withTaskCancellationHandler {
-            await sub.waitForExit()
-        } onCancel: {
-            // SIGTERM, then SIGKILL: a child that ignores SIGTERM can't hold the family lock.
-            Task { _ = await sub.stop(grace: grace) }
-        }
+        let status = await waitForExit(sub, readers: [Task { _ = await outcome.value }, err])
+        // The pipes closed, or the drain limit passed: a cancelled reader ends at once.
+        outcome.cancel()
         let failure = await outcome.value
-        _ = await err.value
         try Task.checkCancellation()
         if shuttingDown { throw CancellationError() }
         guard status == 0 else {
             let message = failure?.message ?? tail.lines.last ?? "exit status \(status)"
             throw InstallError(stage: .model, message: "Model download failed: \(message)", logTail: tail.lines)
         }
+    }
+
+    /// The step's exit status, once its output `readers` finished or `drainLimit`
+    /// after the exit, whichever comes first: a grandchild that inherited the
+    /// pipes (a build backend surviving uv's SIGKILL) can't keep the install, and
+    /// so the family lock, waiting. Readers still going then are cancelled.
+    /// Cancelling the caller stops the child: SIGTERM, then SIGKILL.
+    private func waitForExit(_ sub: Subprocess, readers: [Task<Void, Never>]) async -> Int32 {
+        let grace = cancelGrace
+        let drained = Task { for reader in readers { await reader.value } }
+        let status = await withTaskCancellationHandler {
+            await sub.waitForExit(after: drained, drainLimit: drainLimit)
+        } onCancel: {
+            // SIGTERM, then SIGKILL: a child that ignores SIGTERM can't hold the family lock.
+            Task { _ = await sub.stop(grace: grace) }
+        }
+        for reader in readers { reader.cancel() }
+        return status
     }
 
     /// Stops `backend`'s running install step: SIGTERM, then SIGKILL after `cancelGrace`.
@@ -528,7 +559,7 @@ public actor EnvironmentManager {
     /// report them). The family environment goes with its last variant.
     public func remove(_ backend: Service, deleteModel: Bool, knownFolders: [URL] = []) async throws {
         cancel(backend)
-        await lockFamily(backend.family)
+        try await lockFamily(backend.family)
         defer { unlockFamily(backend.family) }
         let fm = FileManager.default
         let siblings = backend.variants.filter { $0 != backend && isRequested($0) }

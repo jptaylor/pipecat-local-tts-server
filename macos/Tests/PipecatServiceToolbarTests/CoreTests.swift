@@ -917,3 +917,206 @@ final class Lines: @unchecked Sendable {
         #expect(t.route(try event("error_append"), speaking: true) == .ignore)
     }
 }
+
+@Suite struct QueuedInstallCancelTests {
+    /// Cancel while queued behind a sibling's install: it records nothing,
+    /// though the environment it would share exists.
+    @Test func aCancelledQueuedInstallRecordsNothing() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        try await VariantTests.fakeEnvironment(.phonon, manager, paths)
+        // `prefetch` blocks, so the first install holds the family lock.
+        try "#!/bin/sh\nsleep 30\n".write(to: paths.python(.phonon), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: paths.python(.phonon).path)
+
+        let first = Task { try await manager.install(.phononQ8).consume { _ in } }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !manager.isRequested(.phononQ8), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(manager.isRequested(.phononQ8), "the first install never reached its download")
+
+        let queued = Flag()
+        let second = Task {
+            try await manager.install(.phononQ4).consume { if $0 == .stage(.queued) { queued.raise() } }
+        }
+        #expect(await queued.wait(.seconds(5)), "the second install was not queued")
+        second.cancel()
+        first.cancel()
+        _ = await first.result
+        // The cancelled install unwinds in the background once the lock frees.
+        let settle = ContinuousClock.now + .seconds(2)
+        while !manager.isRequested(.phononQ4), ContinuousClock.now < settle { try await Task.sleep(for: .milliseconds(20)) }
+        if case .failure(let error) = await second.result {
+            #expect(error is CancellationError)
+        } else {
+            Issue.record("the cancelled install finished")
+        }
+        #expect(!manager.isRequested(.phononQ4), "a cancelled queued install recorded its variant")
+    }
+    enum Script { case ok, fail, block }
+    enum Outcome: Equatable { case finished, failed(InstallStage), cancelled }
+
+    /// Every way a variant install can end, and whether it records the variant:
+    /// the marker is written after packages and before the model download, so
+    /// only an install that got that far (and was not cancelled first) has one.
+    @Test(arguments: [
+        // (environment outdated?, uv, prefetch, cancel while running?) -> outcome, recorded
+        (false, Script.ok, Script.ok, false, Outcome.finished, true),
+        (false, .ok, .fail, false, .failed(.model), true),
+        (false, .ok, .block, true, .cancelled, true),  // resumable: needsModel
+        (true, .fail, .ok, false, .failed(.packages), false),
+        (true, .block, .ok, true, .cancelled, false),
+        (true, .ok, .ok, false, .finished, true),
+    ])
+    func everyEndingRecordsTheVariantOnlyPastPackages(
+        outdated: Bool, uv: Script, prefetch: Script, cancel: Bool, outcome: Outcome, recorded: Bool
+    ) async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-ending-\(UUID().uuidString.prefix(8))")
+        let paths = AppPaths(
+            supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"),
+            hubDir: root.appending(path: "hub"), derivedModelsDir: root.appending(path: "derived"))
+        try paths.prepare()
+        let started = root.appending(path: "started")
+        func script(_ kind: Script) -> String {
+            switch kind {
+            case .ok: "#!/bin/sh\nexit 0\n"
+            case .fail: "#!/bin/sh\necho 'error: boom' >&2\nexit 1\n"
+            case .block: "#!/bin/sh\ntouch '\(started.path)'\nexec sleep 30\n"
+            }
+        }
+        let uvPath = root.appending(path: "uv")
+        try script(uv).write(to: uvPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uvPath.path)
+        let manager = EnvironmentManager(
+            paths: paths,
+            tools: Tools(uv: uvPath, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil,
+                         helper: nil, source: .override),
+            cancelGrace: .milliseconds(300))
+        try await VariantTests.fakeEnvironment(.phonon, manager, paths)
+        if outdated {
+            try EnvironmentMarker(service: "phonon", fingerprint: "old.whl", python: "3.12.0", createdAt: Date())
+                .write(paths.marker(.phonon))
+        }
+        try script(prefetch).write(to: paths.python(.phonon), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: paths.python(.phonon).path)
+
+        let install = Task { try await manager.install(.phononQ8).consume { _ in } }
+        if cancel {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !FileManager.default.fileExists(atPath: started.path), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            install.cancel()
+        }
+        let ended: Outcome
+        switch await install.result {
+        case .success: ended = .finished
+        case .failure(let error as InstallError): ended = .failed(error.stage)
+        case .failure(let error): ended = error is CancellationError ? .cancelled : .failed(.queued)
+        }
+        #expect(ended == outcome)
+        // A cancelled install unwinds in the background: give it time to (wrongly) record.
+        try await Task.sleep(for: .milliseconds(cancel ? 500 : 50))
+        #expect(manager.isRequested(.phononQ8) == recorded)
+    }
+}
+
+@Suite struct PipeDrainTests {
+    /// A child that exits while a grandchild still holds its pipes.
+    static let leaky = "(sleep 20) &\necho out\necho failed >&2\nexit 3\n"
+
+    @Test func anInstallStepEndsWhenAGrandchildHoldsItsPipes() async throws {
+        let paths = try InstallCancellationTests.paths()
+        let uv = paths.supportDir.appending(path: "uv")
+        try "#!/bin/sh\n\(Self.leaky)".write(to: uv, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
+        let manager = EnvironmentManager(
+            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
+        let ended = Flag()
+        let install = Task {
+            defer { ended.raise() }
+            try await manager.install(.tone).consume { _ in }
+        }
+        #expect(await ended.wait(.seconds(8)), "the install waited for the grandchild")
+        if case .failure(let error) = await install.result {
+            #expect((error as? InstallError)?.stage == .python)
+        } else {
+            Issue.record("a failing step finished")
+        }
+    }
+
+    @Test func collectEndsWhenAGrandchildHoldsItsPipes() async throws {
+        let sub = Subprocess(
+            .init(executable: URL(filePath: "/bin/sh"), arguments: ["-c", Self.leaky], environment: ProcessEnvironment.base()))
+        let ended = Flag()
+        let result = Task {
+            defer { ended.raise() }
+            return try await sub.collect()
+        }
+        #expect(await ended.wait(.seconds(8)), "collect waited for the grandchild")
+        let collected = try await result.value
+        #expect(collected.status == 3 && collected.stdout == ["out"] && collected.stderr == ["failed"])
+    }
+    enum Child: CaseIterable { case exits, fails, leaksAndFails, ignoresTermThenCancelled, leaksThenCancelled }
+
+    /// Every way an install subprocess (a uv step or `prefetch`) can end, with
+    /// and without a grandchild holding its pipes: the install ends promptly and
+    /// the family lock is free for the next one.
+    @Test(arguments: Child.allCases, [false, true])
+    func everyChildEndingReleasesTheFamily(child: Child, inPrefetch: Bool) async throws {
+        let paths = try InstallCancellationTests.paths()
+        let started = paths.supportDir.appending(path: "started")
+        let body: String
+        switch child {
+        case .exits: body = "[ \"$1\" = venv ] && mkdir -p \"$4\"\nexit 0"
+        case .fails: body = "exit 3"
+        case .leaksAndFails: body = "(sleep 20) &\nexit 3"
+        case .ignoresTermThenCancelled: body = "trap '' TERM\ntouch '\(started.path)'\nsleep 20"
+        case .leaksThenCancelled: body = "(sleep 20) &\ntouch '\(started.path)'\nexec sleep 20"
+        }
+        let script = paths.supportDir.appending(path: "child")
+        try "#!/bin/sh\n\(body)\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let manager = EnvironmentManager(
+            paths: paths,
+            tools: Tools(
+                uv: inPrefetch ? URL(filePath: "/usr/bin/true") : script,
+                wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil, helper: nil,
+                source: .override),
+            cancelGrace: .milliseconds(300), drainLimit: .milliseconds(300))
+        let service: Service = inPrefetch ? .phonon : .tone
+        if inPrefetch {
+            try await VariantTests.fakeEnvironment(.phonon, manager, paths)
+            try FileManager.default.removeItem(at: paths.python(.phonon))
+            try FileManager.default.copyItem(at: script, to: paths.python(.phonon))
+        }
+
+        let ended = Flag()
+        let install = Task {
+            defer { ended.raise() }
+            try await manager.install(service).consume { _ in }
+        }
+        if child == .ignoresTermThenCancelled || child == .leaksThenCancelled {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !FileManager.default.fileExists(atPath: started.path), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            install.cancel()
+        }
+        #expect(await ended.wait(.seconds(5)), "\(child): the install did not end")
+        let result = await install.result
+        switch child {
+        case .exits: if case .failure(let error) = result { Issue.record("\(child): \(error)") }
+        case .fails, .leaksAndFails: #expect((try? result.get()) == nil)
+        case .ignoresTermThenCancelled, .leaksThenCancelled:
+            if case .failure(let error) = result { #expect(error is CancellationError) } else { Issue.record("finished") }
+        }
+        // The lock comes free (a cancelled install unwinds in the background): the
+        // next install of the family gets past `.queued`.
+        let progressed = Flag()
+        let next = Task {
+            try? await manager.install(service).consume { if case .stage(let s) = $0, s != .queued { progressed.raise() } }
+        }
+        #expect(await progressed.wait(.seconds(3)), "\(child): the family lock was still held")
+        next.cancel()
+        _ = await next.value
+    }
+}

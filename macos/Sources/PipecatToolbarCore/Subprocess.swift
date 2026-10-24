@@ -177,12 +177,17 @@ public final class Subprocess: @unchecked Sendable {
     }
 
     /// Runs to completion, collecting every line (stdout first, then stderr).
-    public func collect() async throws -> (status: Int32, stdout: [String], stderr: [String]) {
+    /// Output is read until the pipes close or `drainLimit` after the exit, so
+    /// a grandchild holding them open can't make this wait.
+    public func collect(drainLimit: Duration = .seconds(2)) async throws -> (status: Int32, stdout: [String], stderr: [String]) {
         try run()
-        async let out = Self.drain(stdout)
-        async let err = Self.drain(stderr)
-        let status = await waitForExit()
-        return (status, await out, await err)
+        let out = Task { await Self.drain(stdout) }
+        let err = Task { await Self.drain(stderr) }
+        let status = await waitForExit(after: Task { _ = await (out.value, err.value) }, drainLimit: drainLimit)
+        // A cancelled drain ends at once with the lines it has.
+        out.cancel()
+        err.cancel()
+        return (status, await out.value, await err.value)
     }
 
     private static func drain(_ stream: AsyncStream<String>) async -> [String] {
