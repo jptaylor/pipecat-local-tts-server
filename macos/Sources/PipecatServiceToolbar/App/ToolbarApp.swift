@@ -83,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !quitting, model.hasLiveWork || !model.running.isEmpty else {
+        guard !quitting, model.blocksQuit else {
             return .terminateNow
         }
         quitting = true

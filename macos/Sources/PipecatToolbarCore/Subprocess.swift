@@ -365,3 +365,39 @@ private final class ExitSignal: @unchecked Sendable {
         }
     }
 }
+
+/// Subprocesses that run outside `EnvironmentManager` (the repository bootstrap's
+/// `uv build` / `uv export`, which run before a manager exists), so app quit
+/// can stop them. After `shutdown()` nothing new registers, and a step that
+/// tries is refused before it starts.
+public final class ProcessRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var live: [ObjectIdentifier: Subprocess] = [:]
+    private var closed = false
+
+    public init() {}
+
+    /// Runs `sub` to completion (`collect`), registered while it runs.
+    public func collect(_ sub: Subprocess) async throws -> (status: Int32, stdout: [String], stderr: [String]) {
+        let admitted: Bool = lock.withLock {
+            guard !closed else { return false }
+            live[ObjectIdentifier(sub)] = sub
+            return true
+        }
+        guard admitted else { throw CancellationError() }
+        defer { lock.withLock { live[ObjectIdentifier(sub)] = nil } }
+        return try await sub.collect()
+    }
+
+    /// Stops every registered subprocess (SIGTERM, then SIGKILL after `grace`)
+    /// and refuses new ones.
+    public func shutdown(grace: Duration = .seconds(5)) async {
+        let subs: [Subprocess] = lock.withLock {
+            closed = true
+            return Array(live.values)
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for sub in subs { group.addTask { _ = await sub.stop(grace: grace) } }
+        }
+    }
+}

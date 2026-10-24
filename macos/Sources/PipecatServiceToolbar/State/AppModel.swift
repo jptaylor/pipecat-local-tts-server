@@ -25,6 +25,10 @@ final class AppModel {
     private(set) var bootstrapping = true
     private(set) var setupError: String?
     private(set) var staleLayout = false
+    /// App quit began: bootstrap installs no new manager after it.
+    private(set) var shuttingDown = false
+    /// The bootstrap's own subprocesses (the repository wheel build), stopped on quit.
+    @ObservationIgnored private var bootstrapProcesses = ProcessRegistry()
     var page: Page = .running
     /// Families of variants opened in the catalog's Available group.
     var expandedFamilies: Set<Service> = []
@@ -118,7 +122,8 @@ final class AppModel {
             return
         }
         do {
-            let tools = try await ToolLocator.locate(paths: paths)
+            let tools = try await ToolLocator.locate(paths: paths, processes: bootstrapProcesses)
+            guard !shuttingDown else { return }
             self.tools = tools
             manager = EnvironmentManager(paths: paths, tools: tools)
             setupError = nil
@@ -161,36 +166,47 @@ final class AppModel {
         }
     }
 
-    /// Whether quitting has to wait: a server to stop, or an install/removal whose
-    /// subprocess must not outlive the app.
-    var hasLiveWork: Bool {
-        services.contains {
-            switch $0.phase {
-            case .starting, .running, .stopping, .installing, .removing: true
-            default: false
-            }
-        }
+    /// Whether quitting has to wait: the bootstrap (its wheel build), or a
+    /// service's server, install or removal (`LifecycleState.blocksQuit`).
+    var blocksQuit: Bool {
+        bootstrapping || services.contains { $0.driver.state.blocksQuit }
     }
 
-    /// Stops every running server (SIGTERM, 10 s grace, then SIGKILL) and aborts
-    /// every install, waiting for their subprocesses to exit.
+    /// Stops every running server (SIGTERM, 10 s grace, then SIGKILL) and the
+    /// bootstrap's and the manager's subprocesses (installs, probes), then waits
+    /// for busy families to drain (`EnvironmentManager.shutdown`).
     func shutdownAll() async {
+        shuttingDown = true
         await withTaskGroup(of: Void.self) { group in
             for model in services {
                 group.addTask { await model.shutdown() }
             }
+            let processes = bootstrapProcesses
+            group.addTask { await processes.shutdown() }
             if let manager {
                 group.addTask { await manager.shutdown() }
             }
         }
     }
 
+    /// Reset is offered only while nothing quit would wait for runs: it deletes
+    /// the environments and swaps the manager.
+    var canReset: Bool { !blocksQuit && !shuttingDown }
+
     /// Deletes per-service environments left by an incompatible older layout.
+    /// Refused under live work (the same rule quit waits on); the old manager
+    /// is shut down (its probes stopped) before the environments go.
     func resetLayout() {
-        try? FileManager.default.removeItem(at: paths.envsDir)
-        try? FileManager.default.removeItem(at: paths.layoutFile)
+        guard canReset else { return }
         staleLayout = false
-        Task { await bootstrap() }
+        let old = manager
+        manager = nil
+        Task {
+            await old?.shutdown()
+            try? FileManager.default.removeItem(at: paths.envsDir)
+            try? FileManager.default.removeItem(at: paths.layoutFile)
+            await bootstrap()
+        }
     }
 
     #if DEBUG

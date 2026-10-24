@@ -706,6 +706,7 @@ struct StaleLayoutBanner: View {
                 .font(.system(size: 11.5))
             Spacer()
             Button("Reset") { app.resetLayout() }.buttonStyle(PillButtonStyle(tint: .orange))
+                .disabled(!app.canReset)
         }
         .padding(10)
         .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))

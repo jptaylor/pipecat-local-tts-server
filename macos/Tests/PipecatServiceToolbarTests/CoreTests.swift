@@ -1589,3 +1589,31 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(abs(out.count / 2 - 1600) <= 2)
     }
 }
+
+/// The repository bootstrap's uv steps are registered so app quit stops them.
+@Suite struct BootstrapProcessTests {
+    @Test func quitStopsTheRepositoryWheelBuild() async throws {
+        let paths = try InstallCancellationTests.paths()
+        let started = paths.supportDir.appending(path: "building")
+        let uv = paths.supportDir.appending(path: "uv")
+        try "#!/bin/sh\ntouch '\(started.path)'\nsleep 30\n".write(to: uv, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
+        let processes = ProcessRegistry()
+        let clock = ContinuousClock()
+        let begin = clock.now
+        let build = Task {
+            try await ToolLocator.buildFromRepository(paths.supportDir, uv: uv, helper: nil, paths: paths, processes: processes)
+        }
+        let deadline = clock.now + .seconds(30)
+        while !FileManager.default.fileExists(atPath: started.path), clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(FileManager.default.fileExists(atPath: started.path), "uv build never started")
+        await processes.shutdown(grace: .seconds(1))
+        await #expect(throws: (any Error).self) { try await build.value }
+        #expect(clock.now - begin < .seconds(20), "the build outlived quit")
+        // Nothing starts after quit.
+        let late = Subprocess(.init(executable: uv, arguments: [], environment: [:]))
+        await #expect(throws: CancellationError.self) { _ = try await processes.collect(late) }
+    }
+}

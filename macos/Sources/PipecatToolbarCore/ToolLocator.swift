@@ -87,7 +87,8 @@ public enum ToolLocator {
     public static func locate(
         bundle: Bundle = .main,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        paths: AppPaths
+        paths: AppPaths,
+        processes: ProcessRegistry = ProcessRegistry()
     ) async throws -> Tools {
         let fm = FileManager.default
 
@@ -127,7 +128,8 @@ public enum ToolLocator {
         }
 
         guard let repo else { throw ToolLocatorError.wheelNotFound }
-        return try await buildFromRepository(repo, uv: uv, helper: helper, sttConstraints: sttConstraints, paths: paths)
+        return try await buildFromRepository(
+            repo, uv: uv, helper: helper, sttConstraints: sttConstraints, paths: paths, processes: processes)
     }
 
     static func findUV(environment: [String: String]) -> URL? {
@@ -163,7 +165,8 @@ public enum ToolLocator {
     }
 
     static func buildFromRepository(
-        _ repo: URL, uv: URL, helper: URL?, sttConstraints: URL? = nil, paths: AppPaths
+        _ repo: URL, uv: URL, helper: URL?, sttConstraints: URL? = nil, paths: AppPaths,
+        processes: ProcessRegistry = ProcessRegistry()
     ) async throws -> Tools {
         let out = paths.cacheDir.appending(path: "dev-wheel")
         try? FileManager.default.removeItem(at: out)
@@ -174,7 +177,8 @@ public enum ToolLocator {
             .init(
                 executable: uv, arguments: ["build", "--wheel", "--out-dir", out.path],
                 environment: env, currentDirectory: repo))
-        let built = try await build.collect()
+        // Registered so app quit stops it (no manager exists yet to own it).
+        let built = try await processes.collect(build)
         guard built.status == 0 else {
             throw ToolLocatorError.buildFailed((built.stderr.suffix(3)).joined(separator: "\n"))
         }
@@ -191,7 +195,7 @@ public enum ToolLocator {
                     "--format", "requirements.txt", "--output-file", constraints.path,
                 ],
                 environment: env, currentDirectory: repo))
-        let exported = try await export.collect()
+        let exported = try await processes.collect(export)
         return Tools(
             uv: uv, wheel: wheel, constraints: exported.status == 0 ? constraints : nil,
             helper: helper.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil },
