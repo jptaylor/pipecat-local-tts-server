@@ -133,7 +133,8 @@ public actor EnvironmentManager {
 
     // MARK: - Commands
 
-    /// What `uv pip install` gets for a service, and whether the TTS lockfile pins apply.
+    /// What `uv pip install` gets for a service, and whether pins apply: the TTS
+    /// lockfile export, or the STT engine's hash-pinned constraints.
     public nonisolated func requirements(for info: ServiceInfo) -> (specs: [String], constrained: Bool) {
         switch info.runtime {
         case .ttsServer(let extra):
@@ -141,7 +142,7 @@ public actor EnvironmentManager {
             if let extra { spec += "[\(extra)]" }
             return (["\(spec) @ \(tools.wheel.absoluteString)"], true)
         case .sttHelper(_, let requirements):
-            return (requirements, false)
+            return (requirements, true)
         case .appleSpeech:
             return ([], false)
         }
@@ -420,9 +421,11 @@ public actor EnvironmentManager {
         // uv splits a `--constraint` path at spaces (and the app bundle name has
         // them), so run from the file's directory and pass the bare name.
         var workingDir: URL?
-        if constrained, let constraints = tools.constraints {
+        if constrained, let constraints = tools.constraints(for: info) {
             args += ["--constraint", constraints.lastPathComponent]
             workingDir = constraints.deletingLastPathComponent()
+            // The STT constraints carry a sha256 for every wheel (the uv.lock export does not).
+            if case .sttHelper = info.runtime { args.append("--require-hashes") }
         }
         args += specs
         try await step(backend, .packages, emit: emit) {

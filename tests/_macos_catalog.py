@@ -38,6 +38,9 @@ class CatalogEntry:
     model_repo: str | None
     model_argument: str | None
     streaming: bool
+    # ``runtime: .sttHelper(engine:requirements:)`` (STT helper engines only)
+    engine: str | None = None
+    requirements: tuple[str, ...] = ()
 
     @property
     def is_variant(self) -> bool:
@@ -54,9 +57,26 @@ def _optional_string(block: str, label: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _stt_helper(block: str, constants: dict[str, str]) -> tuple[str | None, tuple[str, ...]]:
+    """``(engine, requirements)`` of ``.sttHelper(engine: "x", requirements: [...])``;
+    a bare identifier in the list is a ``static let`` string of ``ServiceCatalog``."""
+    m = re.search(r'\.sttHelper\(\s*engine: "(\w+)", requirements: \[(.*?)\]\)', block, re.DOTALL)
+    if not m:
+        return None, ()
+    items = []
+    for item in (part.strip() for part in m.group(2).split(",")):
+        if item.startswith('"'):
+            items.append(item.strip('"'))
+        elif item:
+            assert item in constants, f"unknown requirement constant {item}"
+            items.append(constants[item])
+    return m.group(1), tuple(items)
+
+
 def macos_catalog() -> dict[str, CatalogEntry]:
     """``{raw name: entry}`` for every ``Service`` case, variants included."""
     text = SERVICE_SWIFT.read_text()
+    constants = dict(re.findall(r'public static let (\w+) = "([^"]+)"', text))
     enum = text.split("public enum Service:", 1)[1].split("public var id", 1)[0]
     raw = {case: value or case for case, value in _CASE.findall(enum)}
     body = text.split("public static func info(for service: Service) -> ServiceInfo {", 1)[1]
@@ -71,7 +91,10 @@ def macos_catalog() -> dict[str, CatalogEntry]:
             continue
         assert "ServiceInfo(" in block, f"{case}: neither a ServiceInfo literal nor a variant"
         assert _field(block, r"service: \.(\w+),") == case, f"{case}: literal names another service"
+        engine, requirements = _stt_helper(block, constants)
         literals[case] = CatalogEntry(
+            engine=engine,
+            requirements=requirements,
             name=raw[case],
             family=raw[case],
             kind=_field(block, r"kind: \.(tts|stt),"),

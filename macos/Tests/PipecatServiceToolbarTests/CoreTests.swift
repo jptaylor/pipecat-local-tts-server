@@ -130,6 +130,60 @@ import Testing
         #expect(paths.appLog(.phononQ8) != paths.appLog(.phonon))
     }
 
+    /// STT environments install against their engine's hash-pinned constraints
+    /// (`--require-hashes`); TTS against the `uv.lock` export, without hashes.
+    @Test(arguments: [Service.kyutai, .whisperSmall, .phonon])
+    func packagesInstallWithTheirConstraints(_ service: Service) async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-pins-\(UUID().uuidString.prefix(8))")
+        let paths = AppPaths(
+            supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"),
+            hubDir: root.appending(path: "hub"), derivedModelsDir: root.appending(path: "derived"))
+        try paths.prepare()
+        let pins = root.appending(path: "constraints")
+        try FileManager.default.createDirectory(at: pins, withIntermediateDirectories: true)
+        for engine in ["whisper", "kyutai"] {
+            FileManager.default.createFile(atPath: pins.appending(path: "stt-\(engine).txt").path, contents: Data())
+        }
+        let lock = root.appending(path: "constraints.txt")
+        FileManager.default.createFile(atPath: lock.path, contents: Data())
+        let argsFile = root.appending(path: "uv-args")
+        let uv = root.appending(path: "uv")
+        try "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\" > '\(argsFile.path)'\n".write(to: uv, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
+        let tools = Tools(
+            uv: uv, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: lock,
+            helper: URL(filePath: "/tmp/helper.py"), sttConstraints: pins, source: .override)
+        let manager = EnvironmentManager(paths: paths, tools: tools)
+        try await Self.fakeEnvironment(service, manager, paths)
+
+        try await manager.install(service, mode: .packages).consume { _ in }
+
+        let args = try String(contentsOf: argsFile, encoding: .utf8).split(separator: "\n").map(String.init)
+        let expected: URL? = switch service.info.runtime {
+        case .sttHelper(let engine, _): pins.appending(path: "stt-\(engine).txt")
+        default: lock
+        }
+        #expect(tools.constraints(for: service.info) == expected)
+        let constraint = try #require(args.firstIndex(of: "--constraint"))
+        #expect(args[constraint + 1] == expected?.lastPathComponent)
+        // uv runs from the file's folder (the bundle path has spaces uv would split).
+        #expect(URL(filePath: args[0]).resolvingSymlinksInPath().path == expected?.deletingLastPathComponent().resolvingSymlinksInPath().path)
+        #expect(args.contains("--require-hashes") == (service.kind == .stt))
+        // The pins are not part of the fingerprint: adding them leaves an existing environment ready.
+        guard case .ready = manager.environmentStatus(service) else {
+            Issue.record("constraints must not mark an environment outdated")
+            return
+        }
+    }
+
+    @Test func sttConstraintsAreOptionalPerEngine() {
+        let tools = Tools(
+            uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil,
+            sttConstraints: URL(filePath: "/nonexistent"), source: .override)
+        #expect(tools.constraints(for: Service.kyutai.info) == nil)
+        #expect(tools.constraints(for: Service.appleSpeech.info) == nil)
+    }
+
     /// A built environment as `install` leaves it: an executable python and the marker.
     static func fakeEnvironment(_ service: Service, _ manager: EnvironmentManager, _ paths: AppPaths) async throws {
         try FileManager.default.createDirectory(
