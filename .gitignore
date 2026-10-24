@@ -25,4 +25,5 @@ dist/
 # macOS menu bar app (macos/) build output
 macos/.build/
 macos/build/
+/.build/
 .swiftpm/
