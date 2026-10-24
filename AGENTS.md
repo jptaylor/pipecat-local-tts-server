@@ -40,7 +40,7 @@ precedence everywhere: **URI > socket > host+port**.
 | `serve` (default) | `--backend {tone,kokoro,voxtral_tts,pocket_tts,dia,qwen3_tts,fish_tts,phonon}` (default `tone`), `--model <id>`, `--socket-path`, `--host`, `--port`, `--auth-token-file <path>`, `--log-level <LEVEL>` (default `INFO`), `--supervised` | Runs the server. `--supervised` (for the macOS app): stdout carries only JSON lines (`ready` once listening, or `error{code}`, e.g. `EADDRINUSE` before the model load), and stdin EOF stops the server like SIGTERM. `--model` defaults per backend (Kokoro repo for `kokoro`; none for `tone`). `phonon` also accepts the aliases `phonon` (fp), `phonon-q8`, `phonon-q4` (converted once into `$XDG_CACHE_HOME/pipecat-tts-server/phonon/`). No `--uri` (the listener is built from socket-path/host+port). |
 | `status` | `--socket-path`, `--host`, `--port`, `--uri <ws://…>`, `--auth-token-file`, `--timeout <s>` (default `3.0`), `--json` | Preflight health probe: handshake + `server.status`, prints backend/model/rate/caps/queue-depth/voices/uptime/pid. Exits non-zero if unreachable. `--json` emits raw `hello`+`status`. |
 | `voices` | `--backend <name>` (default `phonon`; any other exits non-zero), `--language <code>`, `--json`, `--refresh` | Lists the bundled Phonon voice catalog (slug, language, enabled via `PIPECAT_TTS_PHONON_VOICES`, cached in the HF cache; `cached` is `?`/JSON `null` when `huggingface_hub` is not installed). `--refresh` diffs the live `voices.jsonl` (added/removed/changed, plus duplicate and invalid/reserved slugs) and changes nothing. Never talks to a server. |
-| `prefetch` | `--backend <name>` (required), `--model <id>`, `--check`, `--json`, `--log-level` (default `WARNING`) | Downloads what `serve` would fetch (model repo, dia codec, pocket voice embeddings, phonon pin + enabled voices; runs the phonon-q8/q4 conversion) into the standard HF cache. `--check` is offline and reports `cached`. `--json` emits JSON-lines events (`start`/`progress`/`done`/`complete`, `check`/`summary`, `error`). Per-backend specs live in each backend module's `prefetch_specs(model)`. |
+| `prefetch` | `--backend <name>` (required), `--model <id>`, `--check`, `--json`, `--log-level` (default `WARNING`) | Downloads what `serve` would fetch (model repo, dia codec, pocket voice embeddings, phonon pin + enabled voices; runs the phonon-q8/q4 conversion) into the standard HF cache. `--check` is offline and reports `cached`. `--json` emits JSON-lines events (`start`/`progress`/`done`/`complete`, `convert` (phonon aliases), `warning` (an optional snapshot failed), `check`/`summary`, `error`; fields in README). Per-backend specs live in each backend module's `prefetch_specs(model)`. |
 
 A plaintext `--auth-token` flag is **intentionally unsupported** (`ps` exposure) —
 use `--auth-token-file`.
@@ -57,6 +57,15 @@ use `--auth-token-file`.
 | `PIPECAT_TTS_PHONON_VOICES` | server | Comma-separated Phonon catalog slugs (e.g. `zoey,juniper`) to advertise + download; `default` is always advertised. Unknown/unfetchable slugs are warned and skipped. Baked into the plist for the `phonon` backend only. |
 | `HF_HOME` / `HF_HUB_CACHE` | server | Standard Hugging Face cache location, honoured by both `serve` and `prefetch` (default `~/.cache/huggingface/hub`). |
 | `TTS_WS_PING_INTERVAL` / `TTS_WS_PING_TIMEOUT` | server | Keepalive ping period / pong timeout (seconds). Defaults `20` / `120`: ping kept, pong timeout **large but finite** so GIL-holding Metal compute can't trip a `1011` mid-generation *and* a dead idle peer is still reaped (~140s). a disable token (`none`/`off`/`disable`/`disabled` or any zero) disables a knob (disabling the timeout reintroduces the idle-peer leak). Mirror knobs on `TTSClient(ping_interval=, ping_timeout=)`. |
+
+Installer (`scripts/install_tts_agent.sh`, behind the `just tts-*` recipes, which set
+them from the canonical port map): `PIPECAT_TTS_LABEL` (launchd label / plist name,
+default `pipecat.tts-server`), `PIPECAT_TTS_BACKEND` (default `tone`),
+`PIPECAT_TTS_HOST` (default `127.0.0.1`), `PIPECAT_TTS_PORT` (default `8665`),
+`PIPECAT_TTS_MODEL` (optional), `PIPECAT_TTS_LOG_DIR` (default
+`~/Library/Logs/pipecat-tts`), `PIPECAT_TTS_AUTH_TOKEN_FILE` (required for a
+non-loopback host). macOS app build knobs (`SIGN_IDENTITY`, `CONFIG`, `BUNDLE_ID`,
+`PIPECAT_TTS_BUILD_CACHE`, `PIPECAT_UV`) are listed in `macos/README.md`.
 
 CLI flags and env vars are **trusted** inputs; untrusted input is websocket
 traffic. The UDS (default mode `0o600`, parent-dir guarded) is the trust boundary.

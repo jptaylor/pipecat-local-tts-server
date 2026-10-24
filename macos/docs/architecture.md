@@ -35,7 +35,7 @@ flowchart LR
 | Processes | `Subprocess.swift` | `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL to the child's process group. Its exit always resolves (`notLaunched` for a failed launch, or a `stop()` before `run()`, which refuses the launch), and `stop()` returns once no process of the group is left. |
 | Ports | `PortProbe.swift` | Whether a loopback port is free and, if not, who holds it (`lsof`, plus a loaded `pipecat.tts-server.<backend>` launchd agent): the "port busy" failure in the README's Problems section. |
 | Download sizes | `HubSizes.swift`, `ServiceCatalog.snapshots(for:)` | Approximate download size of a service from the public Hugging Face tree API (shown in Add Models before install): the sum over every snapshot its install fetches, each at its pinned revision and through its own file filter (mlx-audio's allow patterns, dia's codec patterns, pocket_tts's `embeddings/*.safetensors`, the STT helper's "all but docs"). STT repos are sized at the helper's `MODEL_REVISIONS` commit, which `ServiceCatalog.sttModelRevisions` repeats. The table sits in `Service.swift` next to the model repos; a lean drift test compares it with `prefetch_specs(model)` and the STT pins with the helper's. `prefetch --check --json` can't be the source: its events carry no allow patterns, and it needs the installed environment the size is shown before. |
-| Lifecycle | `ServiceLifecycle.swift`, `ServiceDriver.swift` | The per-service state machine, UI-free. `ServiceLifecycle.reduce(state, event) -> [effect]` is pure and makes every phase change and guard (a ready, exit or ready timeout from a replaced server, or one after Stop or Delete, changes nothing; a requested exit only completes a Stop; an install ending during a removal leaves the phase to it; quit cancels only an Apple Speech install). `ServiceDriver` (`@MainActor @Observable`) runs the effects through injectable seams (`ServiceEnvironment` for `EnvironmentManager`, `ServerProcess` for `Subprocess`, `NativeSpeechServer`, the port probe, Apple Speech, the clock and the timeouts in `ServiceDependencies`) and holds the progress the UI shows. |
+| Lifecycle | `ServiceLifecycle.swift`, `ServiceDriver.swift` | The per-service state machine, UI-free. `ServiceLifecycle.reduce(state, event) -> [effect]` is pure and makes every phase change and guard (a ready, exit or ready timeout from a replaced server, or one after Stop or Delete, changes nothing; a requested exit only completes a Stop; an install ending during a removal leaves the phase to it). On quit each layer stops its own work: the reducer's `shutdownRequested` cancels only an Apple Speech install (the app runs it), and `EnvironmentManager.shutdown()` aborts every Python install, prefetch and probe. `ServiceDriver` (`@MainActor @Observable`) runs the effects through injectable seams (`ServiceEnvironment` for `EnvironmentManager`, `ServerProcess` for `Subprocess`, `NativeSpeechServer`, the port probe, Apple Speech, the clock and the timeouts in `ServiceDependencies`) and holds the progress the UI shows. |
 | Protocols | `TTSClient.swift`, `TTSRequestMachine.swift`, `TTSRequestDriver.swift`, `STTClient.swift`, `STTWebSocketServer.swift`, `PCMStreamConverter.swift` | WebSocket clients for both wire protocols, the TTS Try it request lifecycle (a pure state machine and the driver that runs it on a connection), plus a native stt-protocol server; `STTWire` is the one definition of the stt audio format. |
 | State | `AppModel`, `ServiceModel` (`@MainActor @Observable`) | Page navigation, delete confirmation. `ServiceModel` is a thin adapter over its `ServiceDriver`: it publishes the driver's state, forwards intents, and is the driver's `ServiceHost` (the environment manager, paths, Try it sessions, Apple Speech). |
 | Audio | `AudioPlayer`, `TryItSession`, `STTTryItSession`, `AppleSpeech` | TTS playback, microphone and sample capture, SpeechAnalyzer. |
@@ -218,6 +218,18 @@ Every Python server, and the native server, follows one contract.
   a model server asserting those invariants, and drives the real tone server
   through busy, Stop mid-flight, Stop before the commit, a refused voice and a
   dropped connection.
+
+  STT Try it (`STTTryItSession`) stays in the app shell, unextracted: it is one
+  record-or-sample, one commit, one reply per connection, with no reused buffer,
+  no barge-in cancel and no in-flight slot to strand, so none of the ordering
+  hazards that made the TTS request a machine exist; its states are tied to
+  `AVAudioEngine` capture and the microphone permission, which only the app
+  target can drive. It would move into Core with its own reducer if it gains
+  streaming or reuse.
+
+  `docs/protocol.md` states the wire rules a reused connection must keep (clear
+  after an abandoned refusal, cancel only after the commit it stops); clearing
+  before every request, as Try it does, is the SHOULD it recommends.
 - **STT.** The protocol of
   [pipecat-local-stt-server](https://github.com/vr000m/pipecat-local-stt-server).
   Clients send binary pcm16 at 16 kHz mono, then `input_audio_buffer.commit`.

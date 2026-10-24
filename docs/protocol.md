@@ -102,17 +102,19 @@ backend's text validation) — so a client can retry the same commit after `busy
 server before its commit is a no-op, and that commit is then admitted. So a client that reuses
 a connection:
 
-- MUST send `input_text.clear` before a new request (or after a refusal it will not retry),
-  else the retained text is synthesized as the start of its next request;
+- MUST send `input_text.clear` before its next `input_text.append` after any append or commit
+  that was not admitted and that it will not retry, else the retained text is synthesized as
+  the start of its next request;
+- SHOULD send `input_text.clear` before every new request anyway (a defensive reset; a client
+  that clears after every abandoned refusal is already correct without it);
 - MUST send a barge-in `response.cancel` after the commit it stops, never before it, else the
   stopped commit is admitted and holds the connection's in-flight slot (`K=1`), and the next
   commit is refused `busy` until that synthesis ends.
 
 `input_text.clear` is valid in every state (it never touches a response in flight) and is
-always acknowledged with `input_text.cleared`. The app's Try it client
-(`TTSRequestMachine`) sends `clear` → `append` → `commit` for every request, one request
-at a time, and sends Stop's cancel only after the commit (no commit at all if Stop came
-first);
+always acknowledged with `input_text.cleared`. None of this changes v0.1: it states what the
+server already does and what a correct client already had to do (the reference Pipecat
+adapter clears only after a commit that was not admitted).
 `tests/test_request_lifecycle.py` pins this table against the server.
 
 **Per-connection isolation:** each connection has its own session state (text buffer,

@@ -93,6 +93,7 @@ Or set `TTS_WS_HOST`/`TTS_WS_PORT` and `STT_WS_HOST`/`STT_WS_PORT`.
 | `~/Library/Caches/Pipecat Service Toolbar/uv/` | package cache |
 | `~/.cache/huggingface/hub/` | model weights, shared with CLI use (`HF_HOME` honoured) |
 | `~/Library/Logs/Pipecat Service Toolbar/` | one log per service |
+| `~/Library/Caches/pipecat-tts-build/uv/<version>/` | the pinned `uv` the build bundles (build time only; `PIPECAT_TTS_BUILD_CACHE` moves the root) |
 
 App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolbar"'`.
 
@@ -155,7 +156,15 @@ uv run python macos/scripts/compile_stt_constraints.py   # writes macos/constrai
 To move an STT model pin, update `MODEL_REVISIONS` in `Helper/pipecat_app_helper.py`
 with the repo's commit sha (`https://huggingface.co/api/models/<repo>` → `sha`).
 
-Sign for distribution with `SIGN_IDENTITY="Developer ID Application: …" just app-build`.
+Build knobs (environment variables read by `macos/scripts/`):
+
+| Variable | Read by | Effect |
+|---|---|---|
+| `SIGN_IDENTITY` | `build_app.sh` | Code-signing identity (default `-`, ad hoc). Sign for distribution with `SIGN_IDENTITY="Developer ID Application: …" just app-build`. |
+| `CONFIG` | `build_app.sh` | Swift build configuration, `release` (default) or `debug`. |
+| `BUNDLE_ID` | `build_app.sh` | Overrides `CFBundleIdentifier` (default `ai.pipecat.ServiceToolbar`); `just app-open` quits the id the build wrote. |
+| `PIPECAT_TTS_BUILD_CACHE` | `fetch_uv.sh` | Root of the build cache for the pinned `uv` download (default `~/Library/Caches/pipecat-tts-build`). |
+| `PIPECAT_UV` | `compile_stt_constraints.py` | The `uv` binary used to compile the STT constraints (default: the app's pinned uv). |
 
 ## License
 

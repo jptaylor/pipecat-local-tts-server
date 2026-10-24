@@ -63,8 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `docs/protocol.md` §3 now states the request lifecycle on a reused connection
   (no wire change, protocol stays v0.1): every refusal of an append or commit keeps the
-  buffer, so a client that does not retry sends `input_text.clear` before its next
-  request, and a barge-in cancel must follow the commit it stops. "Try it" now does
+  buffer, so a client MUST `input_text.clear` after a refusal it will not retry (and
+  SHOULD clear before every request), and a barge-in cancel must follow the commit it
+  stops. "Try it" now does
   both, so a refused request's text can no longer prefix the next one and Stop between
   append and commit no longer leaves a synthesis holding the connection.
 - Pipecat Service Toolbar internals (no change to behaviour, ports or on-disk layout):
@@ -94,6 +95,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the supervisor leaves mid-startup) moved to `tts_server.supervise`
   (`run_supervised`, `StdinEofLifecycle`, `emit_ready`); `server` no longer imports
   `supervise` or calls `os._exit`. JSON lines and exit codes are unchanged.
+
+### Fixed
+
+- phonon: a q8/q4 conversion killed by SIGTERM (the app's Cancel) or `os._exit` no
+  longer leaves its temp folder forever; the next conversion of the same key removes
+  temp folders whose process is gone.
+- Pipecat Service Toolbar: a late refresh (Reset, Try Again, a sibling's install, a
+  slow cache probe) no longer hides a running server or undoes a Delete; Cancel during
+  the busy-port check works and a late answer is dropped; an obsolete server's `error`
+  line no longer judges the next server; an Apple Speech download already under way
+  is attached to (progress and Cancel work); a fresh install cancelled during setup
+  reads as not installed; Delete Everything also removes partially downloaded repos
+  and reports any folder it refused; a bundled app missing an STT engine's hash pins
+  refuses that install instead of resolving unpinned; choosing "Default voice" in
+  Try it is remembered; stale audio no longer replays after an output-device change;
+  `just app-open` quits the bundle id the build used.
 
 ## [0.6.0] - 2026-10-22
 
