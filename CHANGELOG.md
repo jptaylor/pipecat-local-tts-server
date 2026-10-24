@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request (requests are matched by `event_id`), shows server error messages, and
   ends cleanly when the output device changes. A cancelled queued install records
   nothing; an install step no longer waits on a grandchild holding its pipes.
+  STT environments install against checked-in, hash-pinned constraints
+  (`macos/constraints/stt-<engine>.txt`, `--require-hashes`) and load model weights
+  pinned to a commit, which `prefetch` downloads and `serve-stt` loads; neither pin
+  marks an existing environment outdated. The supervised/prefetch JSON lines both
+  emitters write (this server and the STT helper) are fixed in
+  `docs/supervised-contract.json` and drift-tested from both sides.
   `HF_TOKEN` reaches only `prefetch` and `serve`, never `uv`. The Apple Speech
   server caps clients at 8 and decodes one at a time, and survives Stop with a
   decode in flight; microphone audio is resampled without per-buffer seams.

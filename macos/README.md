@@ -101,18 +101,23 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
 - **TTS**: `uv pip install "pipecat-local-tts-server[<backend>] @ <bundled wheel>"`,
   pinned to `uv.lock`, then `python -m tts_server prefetch` and
   `serve --supervised`.
-- **Whisper, Kyutai**: pinned PyPI packages, run by the bundled
+- **Whisper, Kyutai**: PyPI packages hash-pinned to the last transitive
+  dependency (`constraints/stt-<engine>.txt`, `uv pip install --require-hashes`)
+  and model weights pinned to a commit, run by the bundled
   `Helper/pipecat_app_helper.py`. Kyutai runs as a `moshi_mlx` backend inside
   `stt_server`.
 - **Apple Speech**: SpeechAnalyzer in the app process, behind a Swift
   WebSocket server that speaks the same STT protocol.
 - **Supervision**: every server prints a JSON `ready` line and exits when the
-  app closes its stdin.
+  app closes its stdin. Every event and error code is fixed in
+  [`docs/supervised-contract.json`](../docs/supervised-contract.json).
 
 ## Docs
 
 - [Architecture](docs/architecture.md): components, runtimes, the supervision
   contract, protocols, state, packaging.
+- [Loopback auth](docs/loopback-auth.md): why the listeners have no token, and
+  what one would take.
 - [Plans](docs/plans/): the phase 1 (TTS menu bar app) and phase 2 (STT,
   Service Toolbar) plans and their verification.
 
@@ -126,8 +131,19 @@ swift run --package-path macos PipecatServiceToolbar --snapshot /tmp/shots  # re
 ```
 
 Unbundled runs find their tools through `PIPECAT_TOOLBAR_UV`, `PIPECAT_TOOLBAR_WHEEL`,
-`PIPECAT_TOOLBAR_CONSTRAINTS`, `PIPECAT_TOOLBAR_HELPER` and `PIPECAT_TOOLBAR_REPO` (see
+`PIPECAT_TOOLBAR_CONSTRAINTS`, `PIPECAT_TOOLBAR_HELPER`, `PIPECAT_TOOLBAR_STT_CONSTRAINTS`
+and `PIPECAT_TOOLBAR_REPO` (see
 [Architecture](docs/architecture.md#development-overrides)); a built app uses its bundle.
+
+After changing an STT requirement in `Service.swift`, regenerate its hash-pinned
+constraints (network needed; `tests/test_supervised_contract.py` fails until you do):
+
+```bash
+uv run python macos/scripts/compile_stt_constraints.py   # writes macos/constraints/stt-<engine>.txt
+```
+
+To move an STT model pin, update `MODEL_REVISIONS` in `Helper/pipecat_app_helper.py`
+with the repo's commit sha (`https://huggingface.co/api/models/<repo>` → `sha`).
 
 Sign for distribution with `SIGN_IDENTITY="Developer ID Application: …" just app-build`.
 

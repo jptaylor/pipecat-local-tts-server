@@ -56,6 +56,7 @@ built `.app` always uses its bundle.
 | `PIPECAT_TOOLBAR_WHEEL` | The TTS server wheel (used only if the file exists). |
 | `PIPECAT_TOOLBAR_CONSTRAINTS` | The `uv.lock` constraints file installed with that wheel. |
 | `PIPECAT_TOOLBAR_HELPER` | The STT helper script (`macos/Helper/pipecat_app_helper.py`). |
+| `PIPECAT_TOOLBAR_STT_CONSTRAINTS` | The folder of hash-pinned `stt-<engine>.txt` constraints (else `macos/constraints/` of the checkout). |
 | `PIPECAT_TOOLBAR_REPO` | The repo checkout to build the wheel from when no wheel is given. |
 | `PIPECAT_TOOLBAR_E2E` | Set to `1` to run the end-to-end tests (real installs). |
 
@@ -66,7 +67,7 @@ Each service has one of three `ServiceRuntime` values:
 | Runtime | Install | Serve | Services |
 |---|---|---|---|
 | `ttsServer(extra:)` | `uv pip install "pipecat-local-tts-server[extra] @ <bundled wheel>"` with `uv.lock` constraints, then `python -m tts_server prefetch --json` | `python -m tts_server serve --supervised` | 8 TTS backends |
-| `sttHelper(engine:requirements:)` | `uv pip install <pinned PyPI requirements>`, then `helper prefetch --repo R --json` | `helper serve-stt --engine whisper\|kyutai` | Whisper, Kyutai |
+| `sttHelper(engine:requirements:)` | `uv pip install --require-hashes <pinned PyPI requirements>` with the engine's `stt-<engine>.txt` constraints, then `helper prefetch --repo R --json` (at the repo's pinned commit) | `helper serve-stt --engine whisper\|kyutai` | Whisper, Kyutai |
 | `appleSpeech` | `AssetInventory` model download | `STTWebSocketServer` in-process | Apple Speech |
 
 On first use, all Python services share one uv-managed CPython 3.12, stored under
@@ -201,8 +202,8 @@ Installed and Available.
 2. Fetches the pinned `uv` release and verifies its SHA-256.
 3. Compiles a release build.
 4. Renders the icon from the vector catmark (`--render-icon`).
-5. Copies `uv`, the wheel, the constraints and the helper into
-   `Contents/Resources`.
+5. Copies `uv`, the wheel, the constraints, the helper and the checked-in STT
+   constraints (`macos/constraints/stt-*.txt`) into `Contents/Resources`.
 6. Codesigns inside-out with the hardened runtime. The only entitlement is
    microphone input, for STT Try it.
 
@@ -212,6 +213,34 @@ uv 0.12.5 splits a `--constraint` path at spaces, and the bundle path has
 them. So the install step runs from the constraints file's folder and passes
 the bare file name.
 
+### Pins
+
+- **STT packages.** `macos/constraints/stt-<engine>.txt` pins every transitive
+  dependency of an engine's requirements with sha256 hashes, resolved for
+  CPython 3.12 on arm64 macOS 15. They are generated, checked in (so a build is
+  reproducible offline) and installed with `--require-hashes` (verified for every
+  dependency, mlx and torch wheels included, with uv 0.12.5). After changing a
+  requirement in `Service.swift`, regenerate them (network needed):
+  `uv run python macos/scripts/compile_stt_constraints.py`. The TTS export from
+  `uv.lock` stays `--no-hashes`.
+- **STT weights.** The helper's `MODEL_REVISIONS` pins each STT model repo to a
+  commit; `prefetch` downloads that commit and `serve-stt` loads it (Whisper is
+  handed the snapshot folder, Kyutai fetches each file at the commit), and
+  `prefetch --check` reports a snapshot of another commit as not cached.
+- **Fingerprints.** Neither pin is part of `Tools.fingerprint(for:)` (the TTS
+  wheel name, or an STT engine's requirement list), so adding or refreshing
+  them never marks an existing environment outdated. A pin refresh reaches an
+  existing environment only with its next package reinstall.
+
+### Supervised contract
+
+The app reads the same JSON lines from two independent emitters: `tts_server`
+(`serve --supervised`, `prefetch --json`) and the STT helper. Their events,
+fields, types and error codes are fixed in `docs/supervised-contract.json`;
+`tests/test_supervised_contract.py` runs both emitters on stub inputs and checks
+each line against it, and checks the Swift decoder (`ServerCLIEvent`), the error
+codes (`SupervisedErrorCode`) and the stt wire rate (`STTWire.rate`) against it.
+
 ## Testing
 
 | Suite | What it covers |
@@ -219,14 +248,15 @@ the bare file name.
 | Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion and the one stt wire format, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots (on disk, with symlinked leaves, backend directories and roots), logo parsing, `Subprocess` stdin and kill handling, exit-after-drain ordering and its lifecycle table (launch failure, stop before launch, descendants that obey or ignore SIGTERM), install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, Try-it routing of every event by request (`ResponseTracker`), request frame order against Stop at every point (`TTSRequestQueue`) and decoding of real server frames (`Fixtures/tts_wire_frames.json`, which also holds the request frames the server was sent), `ServiceModel` exits against every phase and quit during an Apple Speech install, seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, the unread-reply cap, which processes get `HF_TOKEN`. |
 | Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403). |
 | End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny and Kyutai against the built bundle, then serve and use each. |
-| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and `PrefetchEvent.swift` and checks their backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases and supervised error codes against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server. |
+| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and `PrefetchEvent.swift` and checks their backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases and supervised error codes against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server; `test_supervised_contract.py`, which runs the TTS server and the STT helper on stub inputs and checks every JSON line, error code, the Swift decoder's keys and `STTWire.rate` against `docs/supervised-contract.json`, the helper's default models and model pins against `Service.swift`, and the STT constraints against each engine's requirements. |
 | Visual (`--snapshot <dir>`) | Renders every page in light and dark from sample states. |
 
 ## Security notes
 
 - **Loopback only.** Every listener binds `127.0.0.1`, and requests that carry
   a browser `Origin` are refused. No auth tokens are configured because the
-  app serves loopback only.
+  app serves loopback only; any local process can connect. What a token would
+  take, and why it is not done: [`loopback-auth.md`](loopback-auth.md).
 - **Credentials.** `HF_TOKEN`, when set, reaches only `prefetch` and `serve`
   (`ProcessEnvironment.huggingFace()`), never `uv`, whose package builds run
   third-party code.
@@ -234,9 +264,10 @@ the bare file name.
   per-service interpreters. The hardened runtime is on.
 - **Pinned downloads.**
   - `uv` is pinned to a version and SHA-256.
-  - TTS packages follow `uv.lock`, and STT packages use exact pins.
-  - Phonon's weights are pinned to a revision. Other repos follow `main`, as
-    `serve` does.
+  - TTS packages follow `uv.lock`; STT packages are hash-pinned to the last
+    transitive dependency (see Pins).
+  - Phonon's and every STT model's weights are pinned to a commit. Other TTS
+    repos follow `main`, as `serve` does.
 - **Logs.** The app never writes audio or transcripts to disk itself. Each
   service's log file holds what that server prints at INFO level, plus the
   app's start and stop markers.
