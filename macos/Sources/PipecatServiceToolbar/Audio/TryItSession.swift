@@ -66,7 +66,8 @@ final class TryItSession {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isBusy else { return }
         UserDefaults.standard.set(text, forKey: Self.textKey)
-        if let voice { UserDefaults.standard.set(voice, forKey: voiceKey) }
+        // "Default voice" (nil) is a choice too: forget the last named one.
+        if let voice { UserDefaults.standard.set(voice, forKey: voiceKey) } else { UserDefaults.standard.removeObject(forKey: voiceKey) }
         driver.handle(.userSpeak(text: trimmed, voice: voice))
     }
 

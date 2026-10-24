@@ -78,7 +78,12 @@ final class AudioPlayer {
         pending.removeAll()
         scheduled = 0
         finishing = false
-        if engine.isRunning { node.stop() }
+        // Whether or not the engine runs: `node.stop()` is what clears the node's
+        // scheduled buffers, and after a configuration change the engine has
+        // already stopped itself, so an `isRunning` guard would leave the lost
+        // utterance queued for the next play(). (Skipped only before the node was
+        // ever connected, when nothing can be queued.)
+        if format != nil { node.stop() }
     }
 
     private func flush() {

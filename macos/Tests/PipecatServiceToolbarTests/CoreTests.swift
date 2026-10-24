@@ -943,10 +943,30 @@ final class Lines: @unchecked Sendable {
             // The bug: a cancelled `for try await` returns normally, like `.finished`.
             case .cancelled: #expect(error is CancellationError)
             }
-            // Nothing is delivered after a cancel.
-            continuation.yield(2)
             #expect(seen.all == ["1"], "\(ending)")
         }
+    }
+
+    /// Nothing is delivered once the task is cancelled, even an element that
+    /// was already buffered: the cancel lands while `body` handles element 1
+    /// (the stream iterator would still hand out the buffered 2).
+    @Test func aBufferedElementIsNotDeliveredAfterACancel() async throws {
+        let (stream, continuation) = AsyncThrowingStream.makeStream(of: Int.self, throwing: (any Error).self)
+        continuation.yield(1)
+        continuation.yield(2)
+        let seen = Lines()
+        let consumer = Task { () -> (any Error)? in
+            do {
+                try await stream.consume { element in
+                    seen.append("\(element)")
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                return nil
+            } catch { return error }
+        }
+        let error = await consumer.value
+        #expect(error is CancellationError)
+        #expect(seen.all == ["1"], "an element was delivered after the cancel")
     }
 }
 

@@ -86,12 +86,25 @@ enum AppleSpeech {
             }
             return parts.joined()
         }
+        // The collector is unstructured: end it on every exit (a throw from the
+        // analyzer, or the caller's cancellation), not only when its value is read.
+        defer { collector.cancel() }
         let (input, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
-        try await analyzer.start(inputSequence: input)
-        continuation.yield(AnalyzerInput(buffer: buffer))
-        continuation.finish()
-        try await analyzer.finalizeAndFinishThroughEndOfInput()
-        return try await collector.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await withTaskCancellationHandler {
+            do {
+                try await analyzer.start(inputSequence: input)
+                continuation.yield(AnalyzerInput(buffer: buffer))
+                continuation.finish()
+                try await analyzer.finalizeAndFinishThroughEndOfInput()
+                return try await collector.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch {
+                continuation.finish()
+                await analyzer.cancelAndFinishNow()
+                throw error
+            }
+        } onCancel: {
+            collector.cancel()
+        }
     }
 }
 
