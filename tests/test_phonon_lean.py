@@ -471,6 +471,16 @@ async def test_start_sweeps_only_stale_quantize_temp_dirs(seams, quant, monkeypa
     assert len(quant.calls) == 1  # the sweep did not stop the build
 
 
+def test_sweep_age_boundary_is_ten_minutes(tmp_path):
+    assert PH._STALE_TMP_AGE_S == 600.0
+    root = tmp_path / "phonon"
+    young = _plant(root, ".k.tmp-1-2", 9 * 60.0)
+    old = _plant(root, ".k.tmp-3-4", 11 * 60.0)
+    PH._sweep_stale_tmp(root)
+    assert young.exists()
+    assert not old.exists()
+
+
 def test_sweep_survives_missing_parent_and_unreadable_entries(tmp_path, monkeypatch):
     PH._sweep_stale_tmp(tmp_path / "does-not-exist")  # no cache dir yet: no error
     root = tmp_path / "phonon"

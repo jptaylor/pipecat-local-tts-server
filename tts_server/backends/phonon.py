@@ -198,11 +198,13 @@ def _quantize(snapshot_path: str, dest: str, bits: int) -> None:
 
 # ``_ensure_quantized`` builds into ``.<final>.tmp-<pid>-<tid>`` and renames it into
 # place, so a crash (kill -9, power loss) mid-convert strands only that sibling dir.
-# Age, not pid liveness, decides what is stale: a convert takes seconds to minutes, so
-# an hour-old dir cannot belong to a live one, and a pid check is wrong across hosts
-# sharing a home directory or after pid reuse.
+# Age, not pid liveness, decides what is stale: a convert takes seconds (a few minutes
+# at worst), so a 10-minute-old dir cannot belong to a live one, and a pid check is
+# wrong across hosts sharing a home directory or after pid reuse. Kept short because a
+# convert that is killed on every start (launchd restarts it every 10 s) strands one
+# ~60 MB dir per start, and this age bounds how many pile up (~60 dirs, not ~360).
 _STALE_TMP_RE = re.compile(r"\..+\.tmp-\d+-\d+")
-_STALE_TMP_AGE_S = 3600.0
+_STALE_TMP_AGE_S = 600.0
 
 
 def _newest_mtime(path: str) -> float:

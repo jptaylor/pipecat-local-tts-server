@@ -19,7 +19,7 @@ backwards compatible with wire protocol v0.1; none touches another backend.
 |---|---|---|
 | 1 | No server-side sentence splitter: a sentence over ~45 s of audio fails the response (`PhononTruncationError`) | **Waived.** The tripwire already makes the failure explicit and the README tells clients to send short sentences. A single sentence over ~150 words is rare in sentence-aggregated Pipecat output (a guess; no production data). A splitter would change prosody at every split and set a precedent for text rewriting. A phonon-local and a shared-helper variant were both considered. |
 | 2 | Reference adapter does not retry on `busy` | **Accepted.** Re-send only the commit after `retry_after_ms` (+ up to 25% jitter); defaults `busy_retries=3`, `busy_retry_budget_s=3.0`; `busy_retries=0` restores the old drop behaviour; no usable hint or a non-`busy` code is never retried; a barge-in during the wait cancels and clears. |
-| 3 | Stale quantize temp directory after a crash | **Accepted.** At quantized-alias start, remove only real directories named `.<name>.tmp-<int>-<int>` whose newest mtime is over 1 hour old; age, not pid liveness (a pid check is wrong across hosts sharing a home directory and after pid reuse). |
+| 3 | Stale quantize temp directory after a crash | **Accepted.** At quantized-alias start, remove only real directories named `.<name>.tmp-<int>-<int>` whose newest mtime is over 10 minutes old (first proposed at 1 h, shortened because a convert killed on every start leaves one ~60 MB directory per launchd restart, so the age bounds the pile-up: ~60 directories instead of ~360); age, not pid liveness (a pid check is wrong across hosts sharing a home directory and after pid reuse). |
 | 4 | Plist regexes use `re.match` with `^…$` | **Fact, no decision.** `$` matches before a trailing newline; all validated values now use `fullmatch`. |
 
 ## Facts verified
@@ -49,5 +49,5 @@ backwards compatible with wire protocol v0.1; none touches another backend.
 
 ## Open
 
-- The retry budget (3.0 s) and the sweep age (1 h) are chosen, not measured.
+- The retry budget (3.0 s) and the sweep age (10 min) are chosen, not measured.
 - No live-server test of the busy retry; coverage is unit-level against a scripted client, plus the server-code check above.

@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now uses `fullmatch`.
 - Phonon removes orphaned quantize temp directories (`.<name>.tmp-<pid>-<tid>`, left by
   a crash during the first conversion of an alias) when a quantized alias starts, but
-  only real directories with that exact name pattern that are more than an hour old.
+  only real directories with that exact name pattern that are more than ten minutes old.
 
 ## [0.6.0] - 2026-10-22
 

@@ -335,7 +335,7 @@ stays the default. The converted weights are cached under
 bit width and mlx-audio version, so a pin or mlx-audio change re-converts. A convert
 killed mid-run (`kill -9`, power loss) strands a `.<name>.tmp-<pid>-<tid>` sibling
 directory; the next start of a quantized alias removes such directories once they are
-more than an hour old. The server reports the alias you passed as its `model`.
+more than ten minutes old. The server reports the alias you passed as its `model`.
 
 ```sh
 uv run python -m tts_server serve --backend phonon --model phonon-q8
