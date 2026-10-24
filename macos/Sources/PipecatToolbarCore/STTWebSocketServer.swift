@@ -37,6 +37,10 @@ public final class STTWebSocketServer: @unchecked Sendable {
     static let maxBufferBytes = 300 * 16000 * 2  // 300 s, as in the reference server
     /// Bounds memory (each client may buffer `maxBufferBytes`) for this in-app server.
     static let maxConnections = 8
+    /// Replies a client has not read yet, per connection, beyond which it is
+    /// closed rather than buffered for (a stalled reader is a client bug, as in
+    /// the TTS server's outbound backpressure).
+    static let maxPendingSendBytes = 1 << 20
 
     let identity: Identity
     let transcriber: Transcriber
@@ -133,6 +137,25 @@ public final class STTWebSocketServer: @unchecked Sendable {
     }
 }
 
+/// Bytes handed to a connection that it has not finished sending, capped.
+struct OutboundBudget: Sendable, Equatable {
+    let limit: Int
+    private(set) var pending = 0
+
+    init(limit: Int) { self.limit = limit }
+
+    /// Accounts for `bytes` more, unless that would pass the limit.
+    mutating func reserve(_ bytes: Int) -> Bool {
+        guard pending + bytes <= limit else { return false }
+        pending += bytes
+        return true
+    }
+
+    mutating func release(_ bytes: Int) {
+        pending = max(0, pending - bytes)
+    }
+}
+
 private final class OnceFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var claimed = false
@@ -161,6 +184,7 @@ final class STTServerConnection: @unchecked Sendable {
     private var language: String?
     private var decode: Task<Void, Never>?
     private var closed = false
+    private var outbound = OutboundBudget(limit: STTWebSocketServer.maxPendingSendBytes)
     private let started = Date()
 
     init(connection: NWConnection, server: STTWebSocketServer) {
@@ -280,7 +304,9 @@ final class STTServerConnection: @unchecked Sendable {
             decode?.cancel()
             finishSession(reason: "client_cancel", waitForDecode: false)
         default:
-            sendError("unsupported_event", "unknown event: \(obj["type"] ?? "nil")", clientEventID)
+            // Echo at most a short prefix of a client-chosen type.
+            let type = String(describing: obj["type"] ?? "nil").prefix(64)
+            sendError("unsupported_event", "unknown event: \(type)", clientEventID)
         }
     }
 
@@ -365,8 +391,16 @@ final class STTServerConnection: @unchecked Sendable {
 
     private func send(_ object: [String: Any]) {
         guard !closed, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        guard outbound.reserve(data.count) else {
+            server?.onLog?("closing a client that stopped reading (\(outbound.pending) bytes of replies unread)")
+            return close()
+        }
         let context = NWConnection.ContentContext(identifier: "text", metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
-        connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
+        let size = data.count
+        // Completions run on the connection's queue (the server queue).
+        connection.send(
+            content: data, contentContext: context, isComplete: true,
+            completion: .contentProcessed { [weak self] _ in self?.outbound.release(size) })
     }
 
     private func event() -> String { "evt_" + Self.hex() }

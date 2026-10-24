@@ -1075,6 +1075,27 @@ final class Lines: @unchecked Sendable {
     }
 }
 
+@Suite struct OutboundBudgetTests {
+    /// Pending bytes never pass the limit; a reply that would is refused (the
+    /// connection then closes), and sent replies free their share.
+    @Test func neverQueuesPastTheLimit() {
+        var budget = OutboundBudget(limit: 100)
+        var granted: [Bool] = []
+        for bytes in [60, 40, 1] { granted.append(budget.reserve(bytes)) }
+        #expect(granted == [true, true, false])
+        #expect(budget.pending == 100)
+        budget.release(60)
+        granted = [budget.reserve(50), budget.reserve(11)]
+        #expect(granted == [true, false] && budget.pending == 90)
+        budget.release(1000)
+        #expect(budget.pending == 0)
+        // A single reply larger than the limit is refused outright.
+        var fresh = OutboundBudget(limit: 100)
+        let oversize = fresh.reserve(101)
+        #expect(!oversize && fresh.pending == 0)
+    }
+}
+
 @Suite struct STTServerStartupTests {
     /// Stop while the listener is still coming up: start() must end (with an
     /// error, or the port if it bound first), never hang.
