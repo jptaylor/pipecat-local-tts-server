@@ -29,6 +29,8 @@ import pytest
 
 from tts_server.__main__ import build_parser
 
+from ._macos_catalog import macos_catalog
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 README = REPO_ROOT / "README.md"
 JUSTFILE = REPO_ROOT / "justfile"
@@ -311,23 +313,14 @@ def test_plist_endpoint_extracts_auth_token_file(tmp_path):
 # Drift invariant: the macOS menu bar app's catalog (a fourth copy of the map)
 # ---------------------------------------------------------------------------
 
-MACOS_CATALOG = REPO_ROOT / "macos" / "Sources" / "PipecatToolbarCore" / "Service.swift"
 
-
-def _macos_catalog_ports(kind: str = "tts") -> dict[str, int]:
-    """``{server name: port}`` for one service kind, parsed from ``Service.swift``:
-    enum cases map Swift names to server names (``case pocketTTS = "pocket_tts"``),
-    and each ``ServiceInfo(service: .x, kind: .tts, ... port: N, ...)`` literal
-    carries the kind and port."""
-    text = MACOS_CATALOG.read_text()
-    names = {
-        m.group(1): m.group(2) or m.group(1)
-        for m in re.finditer(r'^\s*case (\w+)(?: = "(\w+)")?\s*$', text, re.MULTILINE)
-    }
+def _macos_catalog_ports(kind: str = "tts", *, variants: bool = False) -> dict[str, int]:
+    """``{server name: port}`` for one service kind, from the shared
+    ``Service.swift`` parser (family defaults only unless ``variants``)."""
     return {
-        names[m.group(1)]: int(m.group(3))
-        for m in re.finditer(r"service: \.(\w+), kind: \.(tts|stt),.*?port: (\d+)", text, re.DOTALL)
-        if m.group(2) == kind
+        e.name: e.port
+        for e in macos_catalog().values()
+        if e.kind == kind and (variants or not e.is_variant)
     }
 
 
@@ -339,6 +332,6 @@ def test_macos_app_catalog_matches_readme_ports():
 
 
 def test_macos_app_stt_ports_do_not_collide_with_tts():
-    stt = _macos_catalog_ports("stt")
+    stt = _macos_catalog_ports("stt", variants=True)
     assert stt, "expected STT services in the macOS catalog"
-    assert not set(stt.values()) & set(_macos_catalog_ports("tts").values())
+    assert not set(stt.values()) & set(_macos_catalog_ports("tts", variants=True).values())

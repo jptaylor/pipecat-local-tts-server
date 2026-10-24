@@ -1,16 +1,22 @@
 """The macOS app's Swift copies of server facts — LEAN drift guard.
 
 ``macos/Sources/PipecatToolbarCore/Service.swift`` repeats, per TTS backend, the
-``serve --backend`` name (as the package extra), the canonical port and the
-default model repo; ``PrefetchEvent.swift`` repeats the supervised error codes.
-Swift cannot import Python, so these tests parse the Swift source and assert it
-equals the Python/justfile source of truth:
+``serve --backend`` name (as the package extra), the canonical port, the
+default model repo, the streaming capability and (for variants) the ``--model``
+alias; ``PrefetchEvent.swift`` repeats the supervised error codes. Swift cannot
+import Python, so these tests parse the Swift source (one parser,
+``_macos_catalog``) and assert it equals the Python/justfile source of truth:
 
   * the TTS family set equals ``BACKEND_CHOICES``;
-  * each family's port equals the justfile ``_resolve`` port;
+  * each family's port equals the justfile ``_resolve`` port, and every port
+    (variants included) is unique;
   * each family's ``modelRepo`` equals the backend's ``DEFAULT_*_MODEL``
     (``tone`` has none);
-  * ``SupervisedErrorCode`` raw values equal ``tts_server.supervise``'s ``CODE_*``.
+  * each TTS entry's ``streaming`` equals its backend's ``capabilities()``;
+  * each variant ``modelArgument`` is an alias its backend resolves to the
+    family's repo;
+  * ``SupervisedErrorCode`` raw values equal ``tts_server.supervise``'s ``CODE_*``;
+  * the Try it wire fixture is what the server sends.
 """
 
 from __future__ import annotations
@@ -22,24 +28,23 @@ from pathlib import Path
 from tts_server import supervise
 from tts_server.__main__ import BACKEND_CHOICES
 
+from ._macos_catalog import macos_catalog
+
 REPO = Path(__file__).resolve().parents[1]
 CORE = REPO / "macos" / "Sources" / "PipecatToolbarCore"
 
-_FAMILY = re.compile(
-    r'service: \.(\w+), kind: \.tts,.*?runtime: \.ttsServer\(extra: (?:nil|"(\w+)")\),'
-    r'\s*port: (\d+),\s*modelRepo: (?:nil|"([^"]+)")',
-    re.DOTALL,
-)
 _RESOLVE = re.compile(r'^\s+(\w+)\)\s+printf .*?"127\.0\.0\.1"\s+"(\d+)"', re.MULTILINE)
 _DEFAULT_MODEL = re.compile(r'^DEFAULT_\w+_MODEL = "([^"]+)"', re.MULTILINE)
+_STREAMING = re.compile(r'^\s+"streaming": (True|False),', re.MULTILINE)
 
 
 def _swift_families() -> dict[str, tuple[int, str | None]]:
-    text = (CORE / "Service.swift").read_text()
     families = {}
-    for case, extra, port, repo in _FAMILY.findall(text):
-        name = extra or case  # only ``tone`` has no extra; its case is its name
-        families[name] = (int(port), repo or None)
+    for entry in macos_catalog().values():
+        if entry.kind == "tts" and not entry.is_variant:
+            # The package extra is the backend name; only ``tone`` has none.
+            assert entry.extra in (entry.name, None), entry
+            families[entry.name] = (entry.port, entry.model_repo)
     return families
 
 
@@ -53,6 +58,14 @@ def test_swift_ports_match_justfile_resolve():
     assert {name: port for name, (port, _) in _swift_families().items()} == resolve
 
 
+def test_swift_ports_are_unique_including_variants():
+    ports: dict[int, list[str]] = {}
+    for entry in macos_catalog().values():
+        ports.setdefault(entry.port, []).append(entry.name)
+    assert {port: names for port, names in ports.items() if len(names) > 1} == {}
+    assert any(e.is_variant for e in macos_catalog().values()), "the parser sees variants"
+
+
 def test_swift_model_repos_match_backend_defaults():
     for name, (_, repo) in _swift_families().items():
         if name == "tone":
@@ -62,6 +75,42 @@ def test_swift_model_repos_match_backend_defaults():
         defaults = _DEFAULT_MODEL.findall(source)
         assert len(defaults) == 1, f"{name}: expected one DEFAULT_*_MODEL"
         assert repo == defaults[0], f"{name}: Swift {repo!r} != Python {defaults[0]!r}"
+
+
+def _backend_streaming(family: str) -> bool:
+    if family == "tone":
+        from tts_server.backend import ToneBackend
+
+        return ToneBackend().capabilities()["streaming"]
+    flags = _STREAMING.findall((REPO / "tts_server" / "backends" / f"{family}.py").read_text())
+    assert len(flags) == 1, f"{family}: expected one capabilities() streaming flag"
+    return flags[0] == "True"
+
+
+def test_swift_streaming_flags_match_backend_capabilities():
+    for entry in macos_catalog().values():
+        if entry.kind == "tts":
+            assert entry.streaming == _backend_streaming(entry.family), entry.name
+
+
+def test_swift_model_arguments_are_backend_aliases():
+    from tts_server.backends import phonon
+
+    aliases = {"phonon": phonon._MODEL_ALIASES}
+    seen = set()
+    for entry in macos_catalog().values():
+        if entry.kind != "tts" or entry.model_argument is None:
+            continue
+        table = aliases.get(entry.family)
+        assert table is not None, f"{entry.name}: {entry.family} has no --model aliases"
+        assert entry.model_argument in table, (
+            f"{entry.name}: {entry.model_argument!r} is not an alias"
+        )
+        repo, _bits = table[entry.model_argument]
+        assert repo == entry.model_repo, f"{entry.name}: alias fetches {repo!r}"
+        seen.add(entry.model_argument)
+    # Every quantized alias is offered in the app; the bare default needs no argument.
+    assert seen == {alias for alias, (_, bits) in phonon._MODEL_ALIASES.items() if bits is not None}
 
 
 TRY_IT_FIXTURE = (
