@@ -91,6 +91,11 @@ import Testing
             #expect(info.runtime == service.family.info.runtime, "\(service)")
             #expect(info.kind == service.family.info.kind)
             #expect((info.variantLabel != nil) == (service.variants.count > 1), "\(service)")
+            // A non-default variant's name already carries its label, so a line naming the
+            // model (`TryItSession.testLine`) uses the name alone and never says "8-bit 8-bit".
+            if service != service.family, let label = info.variantLabel {
+                #expect(info.displayName.contains(label), "\(service)")
+            }
         }
         #expect(Service.phononQ8.info.displayName == "Phonon 8-bit")
         #expect(Service.phonon.info.launchdLabel == "pipecat.tts-server.phonon")

@@ -108,7 +108,8 @@ final class STTTryItSession {
     func transcribeSample() async {
         guard !isBusy else { return }
         await transcribe(STTSampleClip.pcm16, source: "Test clip: \u{201C}\(STTSampleClip.sentence)\u{201D}")
-        if let transcript, !isFailed { sampleMatch = STTSampleClip.matches(transcript) }
+        // `transcribe` clears the transcript first and sets it only on success.
+        if let transcript { sampleMatch = STTSampleClip.matches(transcript) }
     }
 
     // MARK: Transcribe

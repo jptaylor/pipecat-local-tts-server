@@ -12,7 +12,7 @@ public enum STTWire {
         commonFormat: .pcmFormatInt16, sampleRate: Double(rate), channels: AVAudioChannelCount(channels), interleaved: true)!
 }
 
-/// Converts a stream of audio buffers (microphone taps, synthesizer output) to
+/// Converts a stream of audio buffers (microphone taps) to
 /// the stt wire format (pcm16 LE, 16 kHz mono) through one `AVAudioConverter`.
 ///
 /// The resampler keeps filter state between buffers, so consecutive buffers

@@ -57,7 +57,9 @@ final class TryItSession {
 
     /// The line the menu's "Test Voice" speaks: it names the model under test.
     static func testLine(for info: ServiceInfo) -> String {
-        let model = [info.displayName, info.variantLabel].compactMap { $0 }.joined(separator: " ")
+        // A variant's display name already carries its label ("Phonon 8-bit"), so the
+        // label is not appended: that said "Phonon 8-bit 8-bit".
+        let model = info.displayName
         switch info.service {
         case .dia: return "[S1] Hello world, this is the Pipecat test server using \(model). [S2] It all runs on this Mac."
         case .tone: return sample(for: .tone)
