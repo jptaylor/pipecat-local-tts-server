@@ -9,8 +9,13 @@ public enum STTSampleClip {
     /// What the clip says.
     public static let sentence = "The quick brown fox jumps over the lazy dog."
 
+    /// The clip with half a second of silence on each side: the speech starts at the first
+    /// sample, and Kyutai STT 2.6B drops a first word it gets no lead-in for ("the quick
+    /// brown fox" came back as "quick brown fox"; measured against the running server).
     public static var pcm16: Data {
-        Data(base64Encoded: encoded, options: .ignoreUnknownCharacters) ?? Data()
+        let padding = Data(count: STTWire.rate * 2 / 2)  // 0.5 s of 16-bit samples
+        let speech = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters) ?? Data()
+        return padding + speech + padding
     }
 
     /// Whether `transcript` is the clip's sentence, ignoring case, punctuation and spacing,

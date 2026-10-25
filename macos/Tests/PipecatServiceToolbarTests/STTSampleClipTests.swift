@@ -15,6 +15,15 @@ import Testing
         #expect(peak > 5_000, "the clip is silent (peak \(peak))")
     }
 
+    @Test func clipHasHalfASecondOfSilenceOnEachSide() {
+        // Kyutai STT 2.6B drops the first word when the speech starts at sample 0.
+        let pcm = STTSampleClip.pcm16
+        let half = STTWire.rate  // bytes in 0.5 s of 16-bit samples
+        #expect(pcm.prefix(half).allSatisfy { $0 == 0 })
+        #expect(pcm.suffix(half).allSatisfy { $0 == 0 })
+        #expect(pcm.dropFirst(half).dropLast(half).contains { $0 != 0 })
+    }
+
     @Test(arguments: [
         "The quick brown fox jumps over the lazy dog.",
         "the quick brown fox jumps over the lazy dog",
