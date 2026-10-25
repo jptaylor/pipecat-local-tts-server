@@ -683,7 +683,8 @@ struct SetupBanner: View {
             Image(systemName: "exclamationmark.triangle.fill").legibleTint(.orange)
             VStack(alignment: .leading, spacing: 4) {
                 Text(message).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
-                Button("Try Again") { Task { await app.bootstrap() } }
+                Button("Try Again") { app.retryBootstrap() }
+                    .disabled(!app.canRetryBootstrap)
                     .buttonStyle(.link)
                     .font(.system(size: 11.5))
             }

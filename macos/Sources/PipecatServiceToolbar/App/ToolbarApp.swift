@@ -79,13 +79,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [model] _ in
             Task { @MainActor in await model.shutdownAll() }
         }
-        Task { await model.bootstrap() }
+        model.bootstrap()
     }
 
+    /// Quit always runs the shutdown: even with nothing running, a cache probe
+    /// or the bootstrap's build may be (`AppLifecycle`).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !quitting, model.blocksQuit else {
-            return .terminateNow
-        }
+        guard !quitting else { return .terminateNow }
         quitting = true
         Task {
             await model.shutdownAll()

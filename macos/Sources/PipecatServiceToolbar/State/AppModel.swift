@@ -22,13 +22,15 @@ final class AppModel {
     let services: [ServiceModel]
     private(set) var tools: Tools?
     private(set) var manager: EnvironmentManager?
-    private(set) var bootstrapping = true
-    private(set) var setupError: String?
+    /// The app-wide phase (`AppLifecycle`): bootstrap, Reset and quit.
+    private(set) var phase: AppPhase = .idle
     private(set) var staleLayout = false
-    /// App quit began: bootstrap installs no new manager after it.
-    private(set) var shuttingDown = false
     /// The bootstrap's own subprocesses (the repository wheel build), stopped on quit.
     @ObservationIgnored private var bootstrapProcesses = ProcessRegistry()
+    /// The one bootstrap or Reset in flight (`AppPhase.hasJob`), awaited by quit.
+    @ObservationIgnored private var job: Task<Void, Never>?
+    /// The quit shutdown, shared by every quit request.
+    @ObservationIgnored private var shutdownTask: Task<Void, Never>?
     var page: Page = .running
     /// Families of variants opened in the catalog's Available group.
     var expandedFamilies: Set<Service> = []
@@ -93,6 +95,11 @@ final class AppModel {
         services.contains { if case .installing = $0.phase { true } else { false } }
     }
 
+    /// Nothing known yet, or a bootstrap / Reset re-reads it.
+    var bootstrapping: Bool { phase.isChecking }
+    var setupError: String? { phase.setupError }
+    var canRetryBootstrap: Bool { phase.canRetryBootstrap }
+
     var summary: String {
         if bootstrapping { return "Checking services…" }
         let runningCount = running.count
@@ -112,26 +119,47 @@ final class AppModel {
 
     // MARK: - Lifecycle
 
-    func bootstrap() async {
-        bootstrapping = true
-        defer { bootstrapping = false }
+    /// Applies `event` to the phase and runs what it asks for. The phase moves
+    /// here, synchronously, before any job's task starts.
+    private func send(_ event: AppEvent) {
+        for effect in AppLifecycle.reduce(&phase, event) {
+            switch effect {
+            case .runBootstrap: job = Task { await runBootstrap() }
+            case .runReset:
+                staleLayout = false
+                let old = manager
+                manager = nil
+                job = Task { await runReset(old: old) }
+            case .shutdown:
+                shutdownTask = Task { await runShutdown() }
+            }
+        }
+    }
+
+    /// App launch.
+    func bootstrap() { send(.bootstrap) }
+
+    /// Try Again (refused while a bootstrap runs).
+    func retryBootstrap() { send(.retry) }
+
+    private func runBootstrap() async {
         do {
             staleLayout = !(try paths.prepare())
         } catch {
-            setupError = "Couldn't create \(paths.supportDir.path): \(error.localizedDescription)"
+            send(.bootstrapFailed("Couldn't create \(paths.supportDir.path): \(error.localizedDescription)"))
             return
         }
         do {
             let tools = try await ToolLocator.locate(paths: paths, processes: bootstrapProcesses)
-            guard !shuttingDown else { return }
+            // Quit began: install no manager it would not shut down.
+            guard phase == .bootstrapping else { return }
             self.tools = tools
             manager = EnvironmentManager(paths: paths, tools: tools)
-            setupError = nil
             Log.app.info("tools from \(tools.source.rawValue, privacy: .public): uv=\(tools.uv.path, privacy: .public) wheel=\(tools.wheelName, privacy: .public) constraints=\(tools.constraints != nil)")
         } catch {
-            setupError = error.localizedDescription
             Log.app.error("tool lookup failed: \(error.localizedDescription, privacy: .public)")
             for model in services { await model.refresh() }
+            send(.bootstrapFailed(error.localizedDescription))
             return
         }
         await withTaskGroup(of: Void.self) { group in
@@ -142,6 +170,7 @@ final class AppModel {
         for model in services {
             Log.app.info("\(model.service.rawValue, privacy: .public): \(String(describing: model.phase), privacy: .public)")
         }
+        send(.bootstrapDone)
         Task { await loadDownloadSizes() }
     }
 
@@ -166,17 +195,18 @@ final class AppModel {
         }
     }
 
-    /// Whether quitting has to wait: the bootstrap (its wheel build), or a
-    /// service's server, install or removal (`LifecycleState.blocksQuit`).
-    var blocksQuit: Bool {
-        bootstrapping || services.contains { $0.driver.state.blocksQuit }
+    /// App quit (and power-off): stops every running server (SIGTERM, 10 s
+    /// grace, then SIGKILL), the bootstrap's subprocesses and the manager's
+    /// (installs, cache probes), waits for busy families to drain
+    /// (`EnvironmentManager.shutdown`), then for the bootstrap or Reset in
+    /// flight. Every call waits for the same shutdown.
+    func shutdownAll() async {
+        send(.quit)
+        await shutdownTask?.value
     }
 
-    /// Stops every running server (SIGTERM, 10 s grace, then SIGKILL) and the
-    /// bootstrap's and the manager's subprocesses (installs, probes), then waits
-    /// for busy families to drain (`EnvironmentManager.shutdown`).
-    func shutdownAll() async {
-        shuttingDown = true
+    private func runShutdown() async {
+        let manager = self.manager
         await withTaskGroup(of: Void.self) { group in
             for model in services {
                 group.addTask { await model.shutdown() }
@@ -187,30 +217,31 @@ final class AppModel {
                 group.addTask { await manager.shutdown() }
             }
         }
+        // The job in flight unwinds (a Reset finishes its shutdown and deletion);
+        // after quit it starts no other.
+        await job?.value
     }
 
-    /// Reset is offered only while nothing quit would wait for runs: it deletes
-    /// the environments and swaps the manager.
-    var canReset: Bool { !blocksQuit && !shuttingDown }
+    /// Reset is offered only when no bootstrap or Reset runs, quit has not
+    /// begun, and no service holds work quit would wait for (its server,
+    /// install or removal): it deletes the environments and swaps the manager.
+    var canReset: Bool { phase.canReset && !servicesBusy }
+
+    private var servicesBusy: Bool { services.contains { $0.driver.state.blocksQuit } }
 
     /// Deletes per-service environments left by an incompatible older layout.
-    /// Refused under live work (the same rule quit waits on); the old manager
-    /// is shut down (its probes stopped) before the environments go.
-    func resetLayout() {
-        guard canReset else { return }
-        staleLayout = false
-        let old = manager
-        manager = nil
-        Task {
-            await old?.shutdown()
-            try? FileManager.default.removeItem(at: paths.envsDir)
-            try? FileManager.default.removeItem(at: paths.layoutFile)
-            await bootstrap()
-        }
+    func resetLayout() { send(.reset(servicesBusy: servicesBusy)) }
+
+    /// The old manager is shut down (its probes stopped) before the environments go.
+    private func runReset(old: EnvironmentManager?) async {
+        await old?.shutdown()
+        try? FileManager.default.removeItem(at: paths.envsDir)
+        try? FileManager.default.removeItem(at: paths.layoutFile)
+        send(.resetDone)
     }
 
     #if DEBUG
-        func finishPreviewBootstrap() { bootstrapping = false }
+        func finishPreviewBootstrap() { phase = .ready }
     #endif
 
     // MARK: - Settings

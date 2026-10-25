@@ -1143,6 +1143,31 @@ final class Lines: @unchecked Sendable {
     }
 }
 
+extension VariantTests {
+    /// Quit while a cache probe (`prefetch --check`) runs: the manager's
+    /// `shutdown()` stops it, so it can't outlive the app (`AppLifecycle`'s quit
+    /// always runs the manager shutdown, whatever the services are doing).
+    @Test func shutdownStopsAnInFlightCacheProbe() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        try await VariantTests.fakeEnvironment(.pocketTTS, manager, paths)
+        let pidFile = paths.supportDir.appending(path: "probe-pid")
+        try "#!/bin/sh\necho $$ > '\(pidFile.path)'\nexec sleep 30\n"
+            .write(to: paths.python(.pocketTTS), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: paths.python(.pocketTTS).path)
+        let probe = Task { await manager.modelCacheStatus(.pocketTTS) }
+        var pid: Int32?
+        let deadline = ContinuousClock.now + .seconds(10)
+        while pid == nil, ContinuousClock.now < deadline {
+            pid = (try? String(contentsOf: pidFile, encoding: .utf8)).flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if pid == nil { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        let started = try #require(pid, "the cache probe never started")
+        await manager.shutdown(grace: .milliseconds(500), drain: .milliseconds(200))
+        #expect(!(await SubprocessLifecycleTests.alive(started, polls: 10)), "the cache probe outlived shutdown")
+        #expect(await probe.value == nil)
+    }
+}
+
 @Suite struct QueuedInstallCancelTests {
     /// Cancel while queued behind a sibling's install: it records nothing,
     /// though the environment it would share exists.
