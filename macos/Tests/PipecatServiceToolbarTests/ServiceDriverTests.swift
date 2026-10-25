@@ -234,8 +234,12 @@ import Testing
         var deps = ServiceDependencies()
         deps.installDrain = .milliseconds(200)
         deps.appleSpeechInstall = { _ in
+            // Ignores cancellation without spinning: a cancelled task's own sleep throws at once,
+            // which would busy-loop and starve a small runner's task pool (and the drain timer).
             let deadline = ContinuousClock.now + .seconds(3)
-            while ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+            while ContinuousClock.now < deadline {
+                await Task.detached { try? await Task.sleep(for: .milliseconds(20)) }.value
+            }
         }
         let driver = ServiceDriver(info: Service.appleSpeech.info, dependencies: deps)
         driver.install()
