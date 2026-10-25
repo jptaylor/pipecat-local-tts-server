@@ -524,6 +524,27 @@ import Testing
         #expect(await Self.within(.seconds(2)) { await sub.stop(grace: .seconds(30)) } == Subprocess.notLaunched)
     }
 
+    /// A port probe's subprocess (`PortProbe.collect`, the `lsof` step) stops
+    /// when its task is cancelled (Stop or quit), and the call returns once it exited.
+    @Test func aCancelledPortProbeStopsItsSubprocess() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "probe-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let pidFile = dir.appending(path: "pid")
+        let sub = Self.sh("echo $$ > '\(pidFile.path)'; exec sleep 30")
+        let probe = Task { await PortProbe.collect(sub) }
+        var pid: Int32?
+        let deadline = ContinuousClock.now + .seconds(10)
+        while pid == nil, ContinuousClock.now < deadline {
+            pid = (try? String(contentsOf: pidFile, encoding: .utf8)).flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if pid == nil { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        let started = try #require(pid, "the probe never started")
+        probe.cancel()
+        let ended = await Self.within(.seconds(5)) { await probe.value?.status }
+        #expect(ended != nil, "the cancelled probe kept running")
+        #expect(!(await Self.alive(started, polls: 10)), "the probe's subprocess outlived its cancel")
+    }
+
     /// The probe case: registered for shutdown before `collect()` launches it.
     @Test func stopBeforeLaunchRefusesTheLaunch() async throws {
         let sub = Self.sh("sleep 30")

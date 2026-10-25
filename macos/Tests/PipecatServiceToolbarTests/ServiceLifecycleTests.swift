@@ -535,12 +535,35 @@ import Testing
         #expect(s.phase == .running && s.native == Self.current)
     }
 
+    /// {every event kind} in `.starting` with a probe in flight: an event that
+    /// ends the probe (other than its own answer) cancels it, exactly once, by
+    /// its tag; one that leaves it running cancels nothing.
+    @Test func anEndedProbeIsCancelled() {
+        for kind in LifecycleEvent.Kind.allCases {
+            var s = Self.tagged(.starting, for: kind)
+            guard let probe = s.probe else { continue }
+            let effects = ServiceLifecycle.reduce(&s, Self.sample(kind, stale: false))
+            let cancels = effects.filter { if case .cancelProbe = $0 { true } else { false } }
+            if s.probe != probe, kind != .portOwnerFound {
+                #expect(cancels == [.cancelProbe(probe: probe)], "\(kind): \(effects)")
+            } else {
+                #expect(cancels.isEmpty, "\(kind): \(effects)")
+            }
+        }
+        // The probe's own answer ends it without a cancel; a second Start replaces it and cancels the first.
+        var s = Self.state(.installed, server: nil)
+        _ = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
+        let first = s.probe!
+        let again = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
+        #expect(again.contains(.cancelProbe(probe: first)) && s.probe != first)
+    }
+
     @Test func cancelDuringThePortProbeDropsIt() {
         var s = Self.state(.installed, server: nil)
         let effects = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
         let probe = s.probe!
         #expect(effects.last == .probePortOwner(port: 8665, probe: probe))
-        #expect(ServiceLifecycle.reduce(&s, .stopRequested) == [.refresh(epoch: s.epoch)])
+        #expect(ServiceLifecycle.reduce(&s, .stopRequested) == [.refresh(epoch: s.epoch), .cancelProbe(probe: probe)])
         #expect(s.phase == .checking && s.probe == nil)
         _ = ServiceLifecycle.reduce(&s, .refreshed(.installed, epoch: s.epoch))
         _ = ServiceLifecycle.reduce(&s, .portOwnerFound(PortProbe.Owner(), probe: probe))

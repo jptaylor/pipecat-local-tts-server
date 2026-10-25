@@ -244,6 +244,9 @@ public enum LifecycleEffect: Equatable, Sendable {
     /// Waits for the cancelled install to unwind; `bounded` caps it at the quit drain.
     case awaitInstall(bounded: Bool)
     case probePortOwner(port: Int, probe: Int)
+    /// Stops the port-owner probe `probe` (its `lsof`): the probe ended some
+    /// other way than its own answer (Stop, a launch, a removal).
+    case cancelProbe(probe: Int)
     case launch(port: Int)
     case launchNative(port: Int)
     /// Stops a native server that bound after Stop or a relaunch.
@@ -430,7 +433,8 @@ public enum ServiceLifecycle {
     ///    runs, so the work it issues is tagged with the new epoch and any read
     ///    issued earlier is stale. An event that then changes nothing (its guard
     ///    rejected it: no state change, no effect) leaves the epoch as it was.
-    /// 3. A probe lives only while the phase is `.starting` with no server.
+    /// 3. A probe lives only while the phase is `.starting` with no server; a
+    ///    probe that ends any other way than its own answer is cancelled.
     /// 4. A read the advance orphaned is issued again when nothing owns the
     ///    phase (otherwise the owner's own end re-reads it); it never carries a
     ///    start with it.
@@ -449,6 +453,9 @@ public enum ServiceLifecycle {
             return []
         }
         if s.phase != .starting || s.server != nil || s.native != nil { s.probe = nil }
+        if let probe = before.probe, s.probe != probe, event.kind != .portOwnerFound {
+            effects.append(.cancelProbe(probe: probe))
+        }
         if let reading = s.reading, reading != s.epoch {
             s.startAfterRead = false
             if s.hasLiveWork {

@@ -106,6 +106,9 @@ public final class ServiceDriver {
     @ObservationIgnored private var nextID = 0
     /// The output readers of each launched server, cancelled at its exit.
     @ObservationIgnored private var readers: [ServerID: [Task<Void, Never>]] = [:]
+    /// The port-owner probes still running, by probe tag (a cancelled one stays
+    /// until its `lsof` has exited, so quit can wait for it).
+    @ObservationIgnored private var probes: [Int: Task<Void, Never>] = [:]
 
     public init(info: ServiceInfo, dependencies: ServiceDependencies = ServiceDependencies()) {
         self.info = info
@@ -195,10 +198,14 @@ public final class ServiceDriver {
 
     /// For app quit (and before removal): stop and wait. Quit also cancels an
     /// Apple Speech model install and waits (at most `installDrain`) for it to
-    /// unwind; a Python install is the environment manager's to stop.
+    /// unwind; a Python install is the environment manager's to stop. A port
+    /// probe in flight is cancelled and waited for (its `lsof` never outlives quit).
     public func shutdown() async {
         await run(send(.shutdownRequested))
         await run(send(.shutdownServers))
+        let running = Array(probes.values)
+        for probe in running { probe.cancel() }
+        for probe in running { await probe.value }
     }
 
     public func dismissFailure() { execute(send(.dismissFailure)) }
@@ -219,10 +226,17 @@ public final class ServiceDriver {
             cancelledInstall = installTask
             installTask?.cancel()
         case .probePortOwner(let port, let probe):
-            Task {
-                let owner = await dependencies.portOwner(port, service)
+            let portOwner = dependencies.portOwner
+            let service = self.service
+            probes[probe] = Task {
+                let owner = await portOwner(port, service)
+                self.probes[probe] = nil
+                // A cancelled probe (Stop, quit) reports nothing.
+                guard !Task.isCancelled else { return }
                 self.send(.portOwnerFound(owner, probe: probe))
             }
+        case .cancelProbe(let probe):
+            probes[probe]?.cancel()
         case .launch(let port): launch(port: port)
         case .launchNative(let port): launchNative(port: port)
         case .stopNative:

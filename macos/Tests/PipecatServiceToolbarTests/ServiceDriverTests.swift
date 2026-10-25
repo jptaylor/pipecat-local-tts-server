@@ -345,6 +345,58 @@ import Testing
         #expect(driver.state.phase == .installed, "\(driver.state.phase)")
     }
 
+    /// A port probe that would run for 30 s: records that it started, and how it ended.
+    @MainActor final class SlowProbe {
+        var started = false
+        var ended = false
+        var cancelled = false
+        func run() async -> PortProbe.Owner {
+            started = true
+            try? await Task.sleep(for: .seconds(30))
+            cancelled = Task.isCancelled
+            ended = true
+            return PortProbe.Owner(pid: 1)
+        }
+    }
+
+    /// Stop while the busy-port probe runs cancels it (its `lsof` is stopped),
+    /// and the cancelled probe's answer never reaches the reducer.
+    @Test func stopCancelsThePortProbe() async {
+        let probe = SlowProbe()
+        let host = FakeHost()  // the driver holds its host weakly
+        let driver = makeDriver(FakeProcess(), host: host) {
+            $0.isPortFree = { _ in false }
+            $0.portOwner = { _, _ in await probe.run() }
+        }
+        await driver.refresh()
+        driver.start()
+        await until { probe.started }
+        #expect(probe.started)
+        driver.stop()
+        await until { probe.ended }
+        #expect(probe.ended && probe.cancelled, "Stop left the port probe running")
+        await until { driver.state.phase == .installed }
+        #expect(driver.state.phase == .installed, "\(driver.state.phase)")
+    }
+
+    /// Quit while the busy-port probe runs: `shutdown()` cancels it and returns
+    /// only once it has ended (its subprocess can't outlive the app).
+    @Test func quitWaitsForThePortProbe() async {
+        let probe = SlowProbe()
+        let host = FakeHost()  // the driver holds its host weakly
+        let driver = makeDriver(FakeProcess(), host: host) {
+            $0.isPortFree = { _ in false }
+            $0.portOwner = { _, _ in await probe.run() }
+        }
+        await driver.refresh()
+        driver.start()
+        await until { probe.started }
+        #expect(probe.started)
+        await driver.shutdown()
+        #expect(probe.ended && probe.cancelled, "shutdown returned with the port probe still running")
+        #expect(driver.state.phase == .starting, "a cancelled probe's answer failed the service: \(driver.state.phase)")
+    }
+
     /// Apple Speech already downloading (no install of ours): the refresh attaches
     /// an install task, so progress and Cancel act on it.
     @Test func aSystemAppleSpeechDownloadIsAttached() async {

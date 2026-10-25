@@ -51,21 +51,31 @@ public enum PortProbe {
                 executable: URL(filePath: "/usr/sbin/lsof"),
                 arguments: ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-Fpc"],
                 environment: ProcessEnvironment.base()))
-        if let result = try? await lsof.collect() {
+        if let result = await collect(lsof) {
             for line in result.stdout {
                 if line.hasPrefix("p"), owner.pid == nil { owner.pid = Int32(line.dropFirst()) }
                 if line.hasPrefix("c"), owner.command == nil { owner.command = String(line.dropFirst()) }
             }
         }
-        guard let label = backend.info.launchdLabel else { return owner }
+        guard let label = backend.info.launchdLabel, !Task.isCancelled else { return owner }
         let launchctl = Subprocess(
             .init(
                 executable: URL(filePath: "/bin/launchctl"),
                 arguments: ["print", "gui/\(getuid())/\(label)"],
                 environment: ProcessEnvironment.base()))
-        if let result = try? await launchctl.collect(), result.status == 0 {
+        if let result = await collect(launchctl), result.status == 0 {
             owner.launchdLabel = label
         }
         return owner
+    }
+
+    /// Runs `sub` to completion; cancelling the calling task stops it (SIGTERM,
+    /// then SIGKILL), and this returns once it has exited.
+    static func collect(_ sub: Subprocess) async -> (status: Int32, stdout: [String], stderr: [String])? {
+        await withTaskCancellationHandler {
+            try? await sub.collect()
+        } onCancel: {
+            Task { _ = await sub.stop(grace: .seconds(1)) }
+        }
     }
 }
