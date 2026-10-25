@@ -88,7 +88,10 @@ its own port (the family's port + 1, 2, ...), log and state, so siblings run sid
 by side. They share the family's venv (`envs/<family>`) and server backend; a
 variant only adds `--model` (`phonon-q8`, a Whisper repo) to `prefetch` and
 `serve`. `envs/<family>/.variants/` holds one empty file per installed variant;
-a venv from before variants counts the service its marker names. Installing a
+a venv from before variants counts the service its marker names, and is moved
+to variant records (`EnvironmentManager.adoptVariants`, one rename) before any
+sibling's install or Cancel changes its marker, so its builder stays installed.
+Installing a
 second variant downloads only its weights. Installs and removals on one family
 are serialized. Deleting a variant keeps the files an installed sibling still
 uses (Phonon's variants share one Hugging Face repo; the 8-bit and 4-bit
@@ -127,9 +130,8 @@ from a replaced server is ignored. The guards: a ready flips only the current
 server's `starting`; a requested exit only completes a Stop; a removal owns the
 phase over an install it cancelled; Start never runs during a removal or with a
 server up; quit cancels only an Apple Speech install and waits for it at most
-`installDrain`. Quit waits (`LifecycleState.blocksQuit`, and the bootstrap)
-while a server, install or removal is live; Reset of a stale layout is refused
-under the same condition.
+`installDrain`. Reset of a stale layout is refused while a server, install or
+removal is live (`LifecycleState.blocksQuit`).
 
 Late async results follow one rule (`ServiceLifecycle.reduce`): a result is
 applied only if the owner it was issued for is still current, and the phase
@@ -138,7 +140,8 @@ still permits it. For a one-shot read (a refresh: `environmentRead`, then
 lifetime it is the slot that work was recorded in: `install`, `probe` and
 `removal` hold the epoch they started under, and `server`/`native` the
 `ServerID` of the launch (readiness, `error` lines, the ready timeout and the
-exit name it). A stale result changes nothing, the epoch included.
+exit name it). A stale result changes no state, the epoch included (a stale
+native bind only releases the server it holds: `discardNative`).
 `LifecycleState.epoch` advances on every event except the closed non-owning set
 (`cancelInstallRequested`, `environmentRead`, `supervisedError`: none changes a
 phase, a slot or `requested`, or issues tagged work) and except an event whose
@@ -153,7 +156,11 @@ A current read re-reads the environment but moves the phase only when nothing
 owns it, so Reset, Try Again or a sibling's refresh never hides a running server
 or undoes a Delete. A port probe lives only while the phase is `starting` with
 no server, so a launch ends it and its late answer can't fail the server; Cancel
-during it drops it and re-reads the phase. The package refresh before a start
+during it drops it and re-reads the phase. A probe that ends any other way than
+its own answer (Stop, a launch, a removal, a second Start) is cancelled
+(`cancelProbe`, keyed by its tag): the driver keeps each probe task until it
+ends, its `lsof` is stopped on cancel (`PortProbe.collect`), and the driver's
+`shutdown()` cancels and waits for every probe, so none outlives Stop or quit. The package refresh before a start
 (`refreshThenStart`) is a flag on its read: if the read is orphaned (Delete
 during it) the start is dropped with it, so a stale read never starts a service.
 An Apple Speech refresh that finds the system already downloading the model
@@ -165,8 +172,39 @@ the user presses Install. A launched server's output readers belong to its
 current, so a descendant holding the pipes can't write into the next launch.
 `ServiceLifecycleTests.everyKindIsClassified` checks {every event kind} x {every
 phase} x {current, stale} against an independent, compile-time exhaustive
-classification table; the other tables cover refresh x owner, the port probe,
-and every exit.
+classification table; the other tables cover refresh x owner, the port probe
+(and its cancel), and every exit.
+
+## App lifecycle
+
+The app-wide phase is `AppLifecycle.reduce`'s alone (`AppModel` is its
+adapter): `idle | bootstrapping | resetting | ready | failed(message) |
+shuttingDown`, driven by `bootstrap` (launch), `retry` (Try Again), `reset`,
+`quit` and the job ends `bootstrapDone`, `bootstrapFailed`, `resetDone`. One
+rule: at most one job (a bootstrap or a Reset) runs, and the phase names it. The
+intent moves the phase synchronously, before the job's task starts, so a second
+Try Again or Reset in the same window is refused. Try Again is offered only in
+`failed` (`canRetryBootstrap`), Reset only in `ready`/`failed` with no live
+service work (`canReset`), and "Checking services…" shows in `idle` and while a
+job runs. A Reset swaps the manager out, shuts the old one down (its probes
+stopped), deletes the environments, then bootstraps as the same job's tail.
+Quit is accepted from every phase but `shuttingDown`: it always runs the full
+shutdown (every service's, the bootstrap's subprocesses, the environment
+manager's installs and cache probes), even when no service is busy, then waits
+for the job in flight; after quit no job's end moves the phase or starts
+another. `AppLifecycleTests` checks {every phase} x {every event} against a
+table, plus the concrete sequences (Try Again twice, Reset twice, quit during a
+Reset or a bootstrap).
+
+### Known follow-ups
+
+Left as they are on purpose (the lifecycle guard seam was just redesigned):
+rule 4's re-issued read can replace a `.failed` phase (`ServiceLifecycle`,
+the orphaned read after `launchFailed`); `discardNative` and `stopServer(id)`
+are not executed keyed by `ServerID` (the driver keeps unkeyed handles);
+`isCurrent` repeats the classification `Kind.owner` encodes; the TTS 24000 Hz
+fallback rate when a ready line has none; the STT Try it phase logic; the
+loopback token.
 
 ## Supervision contract
 

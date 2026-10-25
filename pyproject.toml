@@ -21,8 +21,9 @@ classifiers = [
 dependencies = [
     # The wire transport. The client (TTSClient) and the server runtime both
     # depend on websockets; it is the only hard runtime dependency of the base
-    # package. Backend TTS engines live behind the [kokoro] (and later
-    # [voxtral_tts] / [pocket_tts] / [dia]) extras so a client-only consumer
+    # package. Backend TTS engines live behind the [kokoro] / [voxtral_tts] /
+    # [pocket_tts] / [dia] / [qwen3_tts] / [fish_tts] / [phonon] extras (the
+    # install list is in AGENTS.md) so a client-only consumer
     # (e.g. a bot that just talks to a running server) does not pull mlx-audio
     # or its heavy transitive deps (torch, spacy, ...). numpy is dev-only and
     # is NEVER a runtime dependency — ToneBackend and the shared float->pcm16

@@ -64,9 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `docs/protocol.md` §3 now states the request lifecycle on a reused connection
   (no wire change, protocol stays v0.1): every refusal of an append or commit keeps the
-  buffer, so a client MUST `input_text.clear` after a refusal it will not retry (and
-  SHOULD clear before every request), and a barge-in cancel must follow the commit it
-  stops. "Try it" now does
+  buffer, so a client MUST `input_text.clear` before its next append after any append or
+  commit that was not admitted and that it will not retry (a refusal, a failed send, or a
+  request abandoned before it was admitted), and SHOULD clear before every request; a
+  barge-in cancel must follow the commit it stops. "Try it" now does
   both, so a refused request's text can no longer prefix the next one and Stop between
   append and commit no longer leaves a synthesis holding the connection.
 - Pipecat Service Toolbar internals (no change to behaviour, ports or on-disk layout):
@@ -112,6 +113,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses that install instead of resolving unpinned; choosing "Default voice" in
   Try it is remembered; stale audio no longer replays after an output-device change;
   `just app-open` quits the bundle id the build used.
+- Pipecat Service Toolbar: an environment from before variants keeps its builder
+  installed when a sibling variant installs or is cancelled; a variant record that
+  can't be written or removed now fails the install or removal instead of reporting
+  success; Reset is refused while a service is running, installing or removing;
+  Stop and quit stop a busy-port probe (`lsof`) in flight; quit always stops the
+  environment manager's subprocesses (a cache probe included) and waits for a
+  bootstrap or Reset in flight; Try Again and Reset no longer start a second
+  bootstrap or Reset while one runs.
 
 ## [0.6.0] - 2026-10-22
 
