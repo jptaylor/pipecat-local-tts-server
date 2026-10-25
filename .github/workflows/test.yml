@@ -78,7 +78,8 @@ jobs:
             tests/test_macos_catalog_drift.py \
             tests/test_backend_registry.py \
             tests/test_supervise_lifecycle.py \
-            tests/test_supervised_contract.py
+            tests/test_supervised_contract.py \
+            tests/test_supervised_smoke_helpers.py
 
   # Examples job: installs the `examples` extra (pipecat-ai, pinned) and runs the
   # reference Pipecat adapter tests. These are NOT in the lean allow-list above:

@@ -44,6 +44,7 @@ from tts_server.backend import ToneBackend
 
 from ._helpers import running_server
 from ._macos_catalog import macos_catalog
+from .smoke._supervised_contract import event_errors
 from .test_prefetch_cli import PH, _run, fake_hub  # noqa: F401 - fake_hub is a fixture
 
 REPO = Path(__file__).resolve().parents[1]
@@ -51,13 +52,6 @@ CONTRACT = json.loads((REPO / "docs" / "supervised-contract.json").read_text())
 HELPER_PATH = REPO / "macos" / "Helper" / "pipecat_app_helper.py"
 CORE = REPO / "macos" / "Sources" / "PipecatToolbarCore"
 SCOPES = ("serve", "prefetch")
-
-_JSON_TYPES = {
-    "string": lambda v: isinstance(v, str),
-    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
-    "boolean": lambda v: isinstance(v, bool),
-    "null": lambda v: v is None,
-}
 
 
 @pytest.fixture(scope="module")
@@ -69,19 +63,9 @@ def helper():
 
 
 def conform(scope: str, event: dict) -> None:
-    """Assert ``event`` matches its contract entry exactly."""
-    entry = CONTRACT[scope].get(event.get("event"))
-    assert entry is not None, f"{scope}: {event.get('event')!r} is not a contract event"
-    fields, optional = entry["fields"], entry.get("optional", {})
-    keys = set(event)
-    assert set(fields) <= keys, f"{event['event']}: missing {sorted(set(fields) - keys)}"
-    extra = keys - set(fields) - set(optional)
-    assert not extra, f"{event['event']}: not in the contract {sorted(extra)}"
-    for key, value in event.items():
-        allowed = {**fields, **optional}[key]
-        assert any(_JSON_TYPES[t](value) for t in allowed), (
-            f"{event['event']}.{key} = {value!r} is not {allowed}"
-        )
+    """Assert ``event`` matches its contract entry exactly (shared with the app-path smoke)."""
+    errors = event_errors(scope, event, CONTRACT)
+    assert not errors, errors
 
 
 def required_keys(scope: str, event: dict) -> frozenset[str]:
