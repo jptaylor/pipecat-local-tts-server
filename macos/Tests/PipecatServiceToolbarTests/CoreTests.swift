@@ -1166,6 +1166,58 @@ extension VariantTests {
         #expect(!(await SubprocessLifecycleTests.alive(started, polls: 10)), "the cache probe outlived shutdown")
         #expect(await probe.value == nil)
     }
+
+    /// Delete Everything on Phonon 8-bit while full precision stays installed,
+    /// and quit begins during the sibling's check: the stopped check is
+    /// "unknown", so the voices repo full precision uses (not its model repo,
+    /// known only from its check) is kept and reported, never deleted.
+    @Test func quitDuringARemovalKeepsWhatASiblingMayUse() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        try await VariantTests.fakeEnvironment(.phonon, manager, paths)
+        try await manager.recordVariant(.phonon, installed: true)
+        try await manager.recordVariant(.phononQ8, installed: true)
+        let repo = paths.hubDir.appending(path: "models--gradium--phonon-31m-en")
+        let voices = paths.hubDir.appending(path: "models--gradium--phonon-voices")
+        let q8 = paths.derivedModelsDir.appending(path: "phonon/abc-q8")
+        for folder in [repo, voices, q8] {
+            try FileManager.default.createDirectory(at: folder.appending(path: "snapshots/abc"), withIntermediateDirectories: true)
+        }
+        // The 8-bit check answers at once; full precision's (no `--model`) hangs
+        // until quit stops it.
+        let pidFile = paths.supportDir.appending(path: "sibling-check-pid")
+        let rows = """
+            {"event":"check","repo":"gradium/phonon-31m-en","path":"\(repo.path)/snapshots/abc","cached":true}
+            {"event":"check","repo":"gradium/phonon-voices","path":"\(voices.path)/snapshots/abc","cached":true}
+            {"event":"summary","cached":true,"size_bytes":8,"quantized":true,"quantized_path":"\(q8.path)"}
+            """
+        let script = """
+            #!/bin/sh
+            case "$*" in
+            *phonon-q8*) cat <<'EOF'
+            \(rows)
+            EOF
+            ;;
+            *) echo $$ > '\(pidFile.path)'; exec sleep 30 ;;
+            esac
+            """
+        try script.write(to: paths.python(.phonon), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: paths.python(.phonon).path)
+
+        let removal = Task { try await manager.remove(.phononQ8, deleteModel: true) }
+        var pid: Int32?
+        let deadline = ContinuousClock.now + .seconds(10)
+        while pid == nil, ContinuousClock.now < deadline {
+            pid = (try? String(contentsOf: pidFile, encoding: .utf8)).flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if pid == nil { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        _ = try #require(pid, "the sibling's check never started")
+        await manager.shutdown(grace: .milliseconds(500), drain: .seconds(5))
+
+        await #expect(throws: RemovalError.self) { try await removal.value }
+        #expect(FileManager.default.fileExists(atPath: voices.path), "a repo the sibling uses was deleted")
+        #expect(FileManager.default.fileExists(atPath: repo.path))
+        #expect(!manager.isRequested(.phononQ8) && manager.isRequested(.phonon))
+    }
 }
 
 @Suite struct QueuedInstallCancelTests {

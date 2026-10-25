@@ -627,6 +627,11 @@ public actor EnvironmentManager {
     /// that no installed sibling uses (`known`, the last check the app saw,
     /// when the environment can't report them). The repo-to-folder mapping
     /// lives here. The family environment goes with its last variant.
+    ///
+    /// Invariant: a folder is deleted only when every installed sibling's check
+    /// answered, in full, and named none of it. A sibling whose check gave no
+    /// answer (it failed, or quit stopped it) keeps every candidate folder, and
+    /// the kept ones are reported like any other leftover.
     public func remove(_ backend: Service, deleteModel: Bool, known: ModelCacheStatus? = nil) async throws {
         cancel(backend)
         try await lockFamily(backend.family)
@@ -634,6 +639,8 @@ public actor EnvironmentManager {
         let fm = FileManager.default
         let siblings = backend.variants.filter { $0 != backend && isRequested($0) }
         var doomed: [URL] = []
+        // Model folders kept because a sibling's use of them is unknown (reported).
+        var kept: [URL] = []
         if deleteModel {
             // An outdated environment (after an app update) still reports where its
             // weights are; only fall back to the cached/derived folders if it can't.
@@ -645,14 +652,27 @@ public actor EnvironmentManager {
                 + repos.map { paths.hubDir.appending(path: Self.cacheFolderName(repo: $0)) }
             var shared: [URL] = []
             var sharedRepos = siblings.compactMap(\.info.modelRepo)
+            var siblingsKnown = true
             for sibling in siblings {
-                let siblingStatus = await modelCacheStatus(sibling, includeOutdated: true)
-                shared += siblingStatus?.repoFolders ?? []
-                sharedRepos += siblingStatus?.repoIDs ?? []
+                // nil is "unknown" (a failed probe, or one quit stopped), never
+                // "uses nothing": a sibling's other repos (Phonon's voices) are
+                // known only from its check.
+                guard let siblingStatus = await modelCacheStatus(sibling, includeOutdated: true) else {
+                    siblingsKnown = false
+                    continue
+                }
+                shared += siblingStatus.repoFolders
+                sharedRepos += siblingStatus.repoIDs
             }
             var seen = Set<String>()
-            doomed = Self.unshared(own, siblingRepos: sharedRepos, siblingFolders: shared)
+            let candidates = Self.unshared(own, siblingRepos: sharedRepos, siblingFolders: shared)
                 .filter { seen.insert($0.standardizedFileURL.path).inserted }
+            // Quit began during the siblings' checks: don't judge sharing from them.
+            if siblings.isEmpty || (siblingsKnown && !shuttingDown) {
+                doomed = candidates
+            } else {
+                kept = candidates.filter(Self.exists)
+            }
         }
         if siblings.isEmpty {
             if fm.fileExists(atPath: paths.envDir(backend).path) {
@@ -664,7 +684,7 @@ public actor EnvironmentManager {
         // Try every folder, then report the ones that stayed: a silent leftover
         // is multiple gigabytes the user thinks are gone.
         // A folder the deletion guard refuses is reported too, never skipped.
-        var failures: [String] = []
+        var failures = kept.map { "\($0.path): kept, another installed variant may use it" }
         for candidate in doomed {
             guard let folder = Self.deletionTarget(candidate, hub: paths.hubDir, derived: paths.derivedModelsDir) else {
                 if Self.exists(candidate) { failures.append("\(candidate.path): outside the model caches, not deleted") }
