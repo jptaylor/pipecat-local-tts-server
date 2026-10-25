@@ -16,12 +16,12 @@ import Testing
     }
 
     @Test(arguments: [
-        "Pipecat runs speech services right here on this Mac.",
-        "pipecat runs speech services right here on this mac",
-        "Pipe cat runs speech services, right here on this Mac!",
-        "  Pipecat runs speech services right here on this Max.  ",  // one slip
+        "The quick brown fox jumps over the lazy dog.",
+        "the quick brown fox jumps over the lazy dog",
+        "The quick brown fox, jumps over the lazy dog!",
+        "  The quick brown fox jumps over the lazy dogs.  ",  // one stray character
     ])
-    func acceptsTheSentenceAndSmallSlips(_ transcript: String) {
+    func acceptsTheSentenceAndOneSlip(_ transcript: String) {
         #expect(STTSampleClip.matches(transcript))
     }
 
@@ -29,7 +29,8 @@ import Testing
         "",
         "(no speech detected)",
         "Hello from Pipecat.",
-        "Pipecat runs speech",  // truncated
+        "The quick brown fox jumps",  // truncated
+        "The quick brown socks jumps over the lazy dog.",  // a wrong word
         "Something else entirely about the weather today.",
     ])
     func rejectsOtherText(_ transcript: String) {
