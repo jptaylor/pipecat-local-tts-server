@@ -2,7 +2,7 @@
 
 **Status**: Complete. Shipped on `feature/macos-menubar-app`, then extended and renamed by [phase 2](20261023-feature-stt-service-toolbar.md).
 **Component**: macos (new), tts-server (supervised mode, prefetch)
-**Branch**: `feature/macos-menubar-app` (off `main` @ `802914b`)
+**Branch**: `feature/macos-menubar-app` (off `main` @ `802914b`, PR #20)
 **Created**: 2026-10-23
 
 This is the plan approved before implementation, copied verbatim below the line.

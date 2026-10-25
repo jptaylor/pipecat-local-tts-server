@@ -2,7 +2,7 @@
 
 **Status**: Complete on `feature/macos-menubar-app`
 **Component**: macos
-**Branch**: `feature/macos-menubar-app`
+**Branch**: `feature/macos-menubar-app` (PR #20)
 **Created**: 2026-10-23
 **Follows**: [phase 1](20261023-feature-macos-menubar-app.md)
 
