@@ -221,13 +221,42 @@ def test_smoke_scripts_enumerate_every_backend(script):
 def test_justfile_has_phonon_smoke_recipes():
     text = JUSTFILE.read_text()
     assert re.search(
-        r"^smoke-phonon \*args:\n\s+tests/smoke/run_smoke.sh --backend phonon", text, re.M
+        r"^smoke-phonon \*args:\n\s+tests/smoke/run_smoke.sh --backend phonon", text, re.MULTILINE
     )
     assert re.search(
         r"^smoke-multiconn-phonon \*args:\n\s+tests/smoke/run_multiconn.sh --backend phonon",
         text,
-        re.M,
+        re.MULTILINE,
     )
+
+
+def test_justfile_has_supervised_smoke_recipes():
+    """``smoke-supervised <backend>`` defaults to tone; ``-all`` takes its backend
+    list from the registry (``--all``), never a hand-written one."""
+    text = JUSTFILE.read_text()
+    assert re.search(
+        r'^smoke-supervised backend="tone" \*args:\n\s+uv run --no-sync python '
+        r"tests/smoke/supervised_smoke.py --backend \{\{quote\(backend\)\}\} \{\{args\}\}",
+        text,
+        re.MULTILINE,
+    )
+    body = _recipe_body("smoke-supervised-all")
+    assert "tests/smoke/supervised_smoke.py --all {{args}}" in body
+    named = {b for b in _argparse_backends() if re.search(rf"\b{b}\b", body)}
+    assert not named, f"smoke-supervised-all hand-lists backends: {sorted(named)}"
+
+
+@_skip_no_just
+def test_smoke_supervised_dry_run_passes_backend_and_args():
+    out = subprocess.run(
+        ["just", "--dry-run", "smoke-supervised", "phonon", "--download"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    # just shell-quotes the backend (`quote()`); args pass through verbatim.
+    assert re.search(r"supervised_smoke\.py --backend '?phonon'? --download", out.stderr)
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--check` reports whether the weights are cached without touching the network.
   Each backend module now exports `prefetch_specs(model)`.
 - `pipecat-tts` console script (same CLI as `python -m tts_server`).
+- **App-path smoke** (`just smoke-supervised [backend]`, `just smoke-supervised-all`;
+  `tests/smoke/supervised_smoke.py`): drives a backend the way the menu bar app does
+  (`prefetch --json --check`, `serve --supervised` on an ephemeral loopback port with the
+  app's environment, the `ready` line, a TCP synthesis, a busy-port `EADDRINUSE`, and a
+  stdin-EOF stop with no orphan). Never downloads weights unless `--download`.
 - **Pipecat Service Toolbar** (`macos/`): native SwiftUI menu bar app that installs
   and serves local speech services on fixed loopback ports. TTS: every backend here
   (bundled pinned `uv` + this wheel + `uv.lock` constraints; a managed CPython 3.12 and

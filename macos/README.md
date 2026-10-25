@@ -164,6 +164,13 @@ Manual UI checklist, for what needs a person (or a terminal granted Accessibilit
    `pgrep -fl "Pipecat Service Toolbar"` and `lsof -nP -iTCP:8665` print nothing.
 5. Tone > Delete: the row returns to Install.
 
+To check the server side of the app's contract without the app, `just smoke-supervised
+[backend]` (or `just smoke-supervised-all`) runs the same `prefetch --json --check` and
+`serve --supervised` commands the app builds, with its environment, on an ephemeral
+port: `ready`, a TCP synthesis, busy-port `EADDRINUSE`, and the stdin-EOF stop. Pass
+`--python <service env>/bin/python` to test an environment the app installed. See
+[tests/smoke/README.md](../tests/smoke/README.md#app-path-supervised_smokepy).
+
 The service lifecycle (install, start, stop, delete, and each service's part of quit)
 lives in `PipecatToolbarCore` as a reducer, `ServiceLifecycle.reduce(_ state: inout
 LifecycleState, _ event:) -> [LifecycleEffect]` (no I/O), plus `ServiceDriver`, which runs

@@ -433,6 +433,18 @@ smoke-multiconn-phonon *args:
 smoke-reconnect *args:
     tests/smoke/run_reconnect.sh {{args}}
 
+# App-path smoke: drive one backend the way the macOS app does (prefetch --check
+# --json, serve --supervised on an ephemeral loopback port, ready line, TCP synth,
+# busy-port EADDRINUSE, stdin-EOF stop). Never downloads unless --download.
+# Uses the current .venv as-is (--no-sync keeps installed extras).
+smoke-supervised backend="tone" *args:
+    uv run --no-sync python tests/smoke/supervised_smoke.py --backend {{quote(backend)}} {{args}}
+
+# The app-path smoke for every backend in tts_server.backends.BACKENDS (SKIPs a
+# backend whose weights are not cached or whose extra is not installed).
+smoke-supervised-all *args:
+    uv run --no-sync python tests/smoke/supervised_smoke.py --all {{args}}
+
 # ---------------------------------------------------------------------------
 # macOS menu bar app ("Pipecat Service Toolbar", macos/). See macos/README.md.
 # ---------------------------------------------------------------------------
