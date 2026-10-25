@@ -138,7 +138,31 @@ just app-run     # run unbundled from the checkout (swift run)
 just app-test    # Swift tests
 PIPECAT_TOOLBAR_E2E=1 swift test --package-path macos --filter EndToEnd   # real installs
 swift run --package-path macos PipecatServiceToolbar --snapshot /tmp/shots  # render the UI
+just app-smoke   # unattended UI smoke: render, launch, quit and SIGTERM with no leftovers
 ```
+
+`AppleSpeechEndToEndTests` (in the `EndToEnd` filter) runs the debug app binary's
+`--serve-apple-speech <port>` mode, the same `STTWebSocketServer` + SpeechAnalyzer the
+app serves, and transcribes `say` clips through `STTClient`. It needs no permission
+prompt, but it skips unless the debug binary's own speech asset is installed (assets
+are reserved per client, so the bundled app's install does not count). Once:
+`swift build --package-path macos`, then
+`macos/.build/debug/PipecatServiceToolbar --apple-speech-selftest <16 kHz mono .wav>`
+(downloads the asset if needed); `--apple-speech-status` prints `installed` after.
+
+`just app-smoke` (`scripts/ui_smoke.sh`) needs no Accessibility or Screen Recording
+grant, so it cannot open the panel or click. It launches the app with your real
+support and log folders (installing nothing) and refuses while another copy runs.
+Manual UI checklist, for what needs a person (or a terminal granted Accessibility):
+
+1. `just app-open`; the Pipecat icon appears in the menu bar; click it, the panel opens.
+2. Tone > Install: progress, then Installed. Start: the row turns running and
+   `lsof -nP -iTCP:8665 -sTCP:LISTEN` shows the server; Try it plays a tone.
+3. STT > Apple Speech > Install (if needed) > Start: `lsof -nP -iTCP:9465 -sTCP:LISTEN`
+   shows the app; Try it > sample transcribes the sample sentence.
+4. Stop each: the port closes. Quit from the panel with Tone running: within ~10 s
+   `pgrep -fl "Pipecat Service Toolbar"` and `lsof -nP -iTCP:8665` print nothing.
+5. Tone > Delete: the row returns to Install.
 
 The service lifecycle (install, start, stop, delete, and each service's part of quit)
 lives in `PipecatToolbarCore` as a reducer, `ServiceLifecycle.reduce(_ state: inout

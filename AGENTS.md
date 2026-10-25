@@ -109,7 +109,8 @@ Publishing (OIDC — no token). A plain merge or tag push does not trigger it.
 | `just smoke-voxtral_tts` / `smoke-pocket_tts` / `smoke-dia` / `smoke-qwen3_tts` / `smoke-fish_tts` / `smoke-phonon` | Per-backend live smoke (WAV round-trip + TTFB/cadence, or rate assertion for the non-streaming backends). |
 | `just smoke-multiconn` / `smoke-reconnect` | Multi-connection fairness / reconnect smoke. |
 | `just app-build` / `app-open` | Build (and launch) `macos/build/Pipecat Service Toolbar.app`: server wheel + pinned uv + `uv.lock` constraints + STT helper, ad-hoc signed (`SIGN_IDENTITY` for Developer ID). |
-| `just app-run` / `app-test` | Run the menu bar app unbundled (`swift run`) / Swift tests (`PIPECAT_TOOLBAR_E2E=1` adds the real install tests). |
+| `just app-run` / `app-test` | Run the menu bar app unbundled (`swift run`) / Swift tests (`PIPECAT_TOOLBAR_E2E=1` adds the real install tests and the Apple Speech wire test). |
+| `just app-smoke` | Unattended UI smoke (`macos/scripts/ui_smoke.sh`, no Accessibility grant): `--snapshot` render, bundle launch + bootstrap, quit and SIGTERM leave no children. Clicking through the panel stays manual (`macos/README.md`). |
 | `just smoke-multiconn-voxtral_tts` / `-pocket_tts` / `-qwen3_tts` / `-fish_tts` / `-phonon` | Per-backend multi-connection fairness smoke. |
 
 Smoke scripts start their own server on a `mktemp` socket and tear it down — they

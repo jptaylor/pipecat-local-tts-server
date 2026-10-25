@@ -459,3 +459,7 @@ app-run *args:
 # Swift unit tests (+ a live tone-server test when .venv exists: `uv sync --extra client`).
 app-test:
     swift test --package-path macos
+
+# Unattended UI smoke (no Accessibility grant): --snapshot render, bundle launch, quit + SIGTERM leave no children.
+app-smoke *args:
+    macos/scripts/ui_smoke.sh {{args}}
