@@ -33,7 +33,7 @@ public enum AppEvent: Equatable, Sendable {
     /// Try Again after a failed bootstrap.
     case retry
     /// Reset the environments; `servicesBusy`: a service holds live work
-    /// (`LifecycleState.blocksQuit`), which refuses it.
+    /// (`LifecycleState.blocksReset`), which refuses it.
     case reset(servicesBusy: Bool)
     case quit
     case bootstrapDone
@@ -90,6 +90,20 @@ extension AppPhase {
         }
     }
 
+    /// The one Reset rule, for the reducer and the Reset button alike: no job,
+    /// quit not begun, and no service's live work (`LifecycleState.blocksReset`).
+    public func allowsReset(servicesBusy: Bool) -> Bool { canReset && !servicesBusy }
+
+    /// Whether a service's Get / Start / Delete can run now. A Python service
+    /// needs the environment manager, which a bootstrap installs and a Reset
+    /// takes away, and its row shows the old state until the job's re-read, so
+    /// its actions wait for the job. Apple Speech needs neither. Nothing new
+    /// starts once quit began.
+    public func acceptsServiceActions(usesPython: Bool, managerInstalled: Bool) -> Bool {
+        guard self != .shuttingDown else { return false }
+        return !usesPython || (managerInstalled && !hasJob)
+    }
+
     public var setupError: String? {
         if case .failed(let message) = self { return message }
         return nil
@@ -108,7 +122,7 @@ public enum AppLifecycle {
         case (.idle, .bootstrap), (.failed, .retry):
             phase = .bootstrapping
             return [.runBootstrap]
-        case (_, .reset(let servicesBusy)) where phase.canReset && !servicesBusy:
+        case (_, .reset(let servicesBusy)) where phase.allowsReset(servicesBusy: servicesBusy):
             phase = .resetting
             return [.runReset]
         case (.bootstrapping, .bootstrapDone):

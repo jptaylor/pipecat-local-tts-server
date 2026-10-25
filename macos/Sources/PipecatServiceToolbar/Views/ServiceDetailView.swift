@@ -13,6 +13,7 @@ struct ServiceDetailView: View {
                 VStack(spacing: 12) {
                     hero
                     primaryAction
+                        .disabled(!model.acceptsActions)
                     if case .installing(let stage) = model.phase {
                         InstallProgressCard(model: model, stage: stage)
                     }
@@ -38,6 +39,7 @@ struct ServiceDetailView: View {
                     }
                     if model.canDeleteModel, !model.isBusy {
                         RemoveSection(model: model)
+                            .disabled(!model.acceptsActions)
                     }
                 }
                 .padding(14)
@@ -281,6 +283,7 @@ struct FailureCard: View {
                     .buttonStyle(PillButtonStyle(tint: .secondary))
                 Button(retryTitle) { retry() }
                     .buttonStyle(PillButtonStyle(tint: .red, prominent: true))
+                    .disabled(!model.acceptsActions)
             }
         }
         .padding(12)

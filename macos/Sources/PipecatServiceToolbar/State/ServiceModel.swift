@@ -85,14 +85,27 @@ final class ServiceModel: Identifiable {
     /// After a sibling variant changed the shared environment: re-read it, but
     /// leave a phase that work in progress (or a failure on screen) owns.
     func environmentChanged() async { await driver.environmentChanged() }
-    func install() { driver.install() }
+    /// Get / Start / Delete can run now (`AppModel.acceptsActions`); the views
+    /// disable them otherwise, and the intents refuse them too.
+    var acceptsActions: Bool { app?.acceptsActions(self) ?? false }
+
+    func install() {
+        guard acceptsActions else { return }
+        driver.install()
+    }
     func cancelInstall() { driver.cancelInstall() }
-    func start() { driver.start() }
+    func start() {
+        guard acceptsActions else { return }
+        driver.start()
+    }
     func stop() { driver.stop() }
     /// App quit: nothing new starts from here on; stop and wait.
     func shutdown() async { await driver.quit() }
     func dismissFailure() { driver.dismissFailure() }
-    func remove(deleteModel: Bool) { driver.remove(deleteModel: deleteModel) }
+    func remove(deleteModel: Bool) {
+        guard acceptsActions else { return }
+        driver.remove(deleteModel: deleteModel)
+    }
 
     static func logMessage(_ line: String) -> String? { ServiceDriver.logMessage(line) }
 

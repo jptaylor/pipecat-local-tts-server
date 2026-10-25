@@ -227,12 +227,17 @@ final class AppModel {
         await job?.value
     }
 
-    /// Reset is offered only when no bootstrap or Reset runs, quit has not
-    /// begun, and no service holds work quit would wait for (its server,
-    /// install or removal): it deletes the environments and swaps the manager.
-    var canReset: Bool { phase.canReset && !servicesBusy }
+    /// Reset is offered only when the reducer would accept it
+    /// (`AppPhase.allowsReset`): it deletes the environments and swaps the manager.
+    var canReset: Bool { phase.allowsReset(servicesBusy: servicesBusy) }
 
-    private var servicesBusy: Bool { services.contains { $0.driver.state.blocksQuit } }
+    private var servicesBusy: Bool { services.contains { $0.driver.state.blocksReset } }
+
+    /// Whether `model`'s Get / Start / Delete can run now (`AppPhase.acceptsServiceActions`):
+    /// the views disable them otherwise, so a Start during Reset can't fail on the missing manager.
+    func acceptsActions(_ model: ServiceModel) -> Bool {
+        phase.acceptsServiceActions(usesPython: model.info.runtime.usesPython, managerInstalled: manager != nil)
+    }
 
     /// Deletes per-service environments left by an incompatible older layout.
     func resetLayout() { send(.reset(servicesBusy: servicesBusy)) }

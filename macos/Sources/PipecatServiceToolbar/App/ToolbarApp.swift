@@ -52,7 +52,11 @@ struct MenuBarIcon: View {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
-    private var quitting = false
+    /// AppKit's terminate handshake, not quit state: a `.terminateLater` is out
+    /// and its reply is owed. `model.phase == .shuttingDown` can't stand in:
+    /// power-off moves the phase without a terminate, and that terminate must
+    /// still wait for the shutdown (AppLifecycle owns quit; this owns the reply).
+    private var terminateReplyPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // No Dock icon. The bundle sets LSUIElement; this covers `swift run`.
@@ -85,8 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Quit always runs the shutdown: even with nothing running, a cache probe
     /// or the bootstrap's build may be (`AppLifecycle`).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !quitting else { return .terminateNow }
-        quitting = true
+        guard !terminateReplyPending else { return .terminateNow }
+        terminateReplyPending = true
         Task {
             await model.shutdownAll()
             NSApp.reply(toApplicationShouldTerminate: true)

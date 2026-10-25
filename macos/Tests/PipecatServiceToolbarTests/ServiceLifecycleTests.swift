@@ -625,21 +625,21 @@ import Testing
                 }
                 #expect(s.isActive == active && s.isInstalled == installed && s.isBusy == busy, "\(phase) \(requested)")
                 #expect(s.isInstalling == (phase == .installing(.model)), "\(phase)")
-                // Quit waits for a phase a server, install or removal holds...
-                let quitPhases: [ServicePhase] = [.starting, .running, .stopping, .installing(.model), .removing]
-                #expect(s.blocksQuit == quitPhases.contains(phase), "quit \(phase)")
+                // Reset is refused in a phase a server, install or removal holds...
+                let busyPhases: [ServicePhase] = [.starting, .running, .stopping, .installing(.model), .removing]
+                #expect(s.blocksReset == busyPhases.contains(phase), "reset \(phase)")
             }
         }
     }
 
     /// ...and for any owner slot, whatever the phase reads.
-    @Test func blocksQuitForEveryOwner() {
+    @Test func blocksResetForEveryOwner() {
         for phase in Self.phases {
             for owner in Owner.allCases {
                 let s = Self.owned(phase, by: owner)
                 let expected = [.server, .stoppedServer, .native, .install, .removal].contains(owner)
                     || [.starting, .running, .stopping, .installing(.model), .removing].contains(phase)
-                #expect(s.blocksQuit == expected, "\(phase) \(owner)")
+                #expect(s.blocksReset == expected, "\(phase) \(owner)")
             }
         }
     }

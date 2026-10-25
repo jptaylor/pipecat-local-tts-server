@@ -333,9 +333,9 @@ extension LifecycleState {
         }
     }
 
-    /// App quit must wait: a server to stop, or an install or removal whose
-    /// subprocess must not outlive the app.
-    public var blocksQuit: Bool {
+    /// Reset is refused: a server, or an install or removal, still uses the
+    /// environment Reset would delete (quit never waits on this; it stops them).
+    public var blocksReset: Bool {
         if install != nil || removal != nil || server != nil || native != nil { return true }
         switch phase {
         case .starting, .running, .stopping, .installing, .removing: return true

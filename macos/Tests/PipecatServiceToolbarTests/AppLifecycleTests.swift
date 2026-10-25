@@ -5,25 +5,90 @@ import Testing
 /// `AppLifecycle.reduce`: the app-wide bootstrap / Reset / quit machine
 /// (`AppModel` is its adapter).
 @Suite struct AppLifecycleTests {
-    static let phases: [AppPhase] = [.idle, .bootstrapping, .resetting, .ready, .failed("x"), .shuttingDown]
-    static let events: [AppEvent] = [
-        .bootstrap, .retry, .reset(servicesBusy: false), .reset(servicesBusy: true), .quit, .bootstrapDone,
-        .bootstrapFailed("e"), .resetDone,
-    ]
+    /// One test-side name per `AppPhase` case. `kind(of:)` and `sample(_:)` switch
+    /// with no default, so a new phase fails to compile here until it is named,
+    /// sampled and given its row in `expected`.
+    enum PhaseKind: CaseIterable { case idle, bootstrapping, resetting, ready, failed, shuttingDown }
 
-    /// The accepted transitions; every other (phase, event) pair is refused:
-    /// no phase change, no effect.
+    static func kind(of phase: AppPhase) -> PhaseKind {
+        switch phase {
+        case .idle: .idle
+        case .bootstrapping: .bootstrapping
+        case .resetting: .resetting
+        case .ready: .ready
+        case .failed: .failed
+        case .shuttingDown: .shuttingDown
+        }
+    }
+
+    static func sample(_ kind: PhaseKind) -> AppPhase {
+        switch kind {
+        case .idle: .idle
+        case .bootstrapping: .bootstrapping
+        case .resetting: .resetting
+        case .ready: .ready
+        case .failed: .failed("x")
+        case .shuttingDown: .shuttingDown
+        }
+    }
+
+    /// Every event of a kind (Reset with and without live work), no default either.
+    static func samples(_ kind: AppEvent.Kind) -> [AppEvent] {
+        switch kind {
+        case .bootstrap: [.bootstrap]
+        case .retry: [.retry]
+        case .reset: [.reset(servicesBusy: false), .reset(servicesBusy: true)]
+        case .quit: [.quit]
+        case .bootstrapDone: [.bootstrapDone]
+        case .bootstrapFailed: [.bootstrapFailed("e")]
+        case .resetDone: [.resetDone]
+        }
+    }
+
+    static let phases: [AppPhase] = PhaseKind.allCases.map(sample)
+    static let events: [AppEvent] = AppEvent.Kind.allCases.flatMap(samples)
+
+    /// The accepted transitions, written per event kind and then per phase
+    /// (not the reducer's order), every pair named: nil is refused (no phase
+    /// change, no effect).
     static func expected(_ phase: AppPhase, _ event: AppEvent) -> (AppPhase, [AppEffect])? {
-        switch (phase, event) {
-        case (.shuttingDown, _): nil
-        case (_, .quit): (.shuttingDown, [.shutdown])
-        case (.idle, .bootstrap): (.bootstrapping, [.runBootstrap])
-        case (.failed, .retry): (.bootstrapping, [.runBootstrap])
-        case (.ready, .reset(false)), (.failed, .reset(false)): (.resetting, [.runReset])
-        case (.bootstrapping, .bootstrapDone): (.ready, [])
-        case (.bootstrapping, .bootstrapFailed(let m)): (.failed(m), [])
-        case (.resetting, .resetDone): (.bootstrapping, [.runBootstrap])
-        default: nil
+        let p = kind(of: phase)
+        switch event {
+        case .quit:
+            switch p {
+            case .idle, .bootstrapping, .resetting, .ready, .failed: return (.shuttingDown, [.shutdown])
+            case .shuttingDown: return nil
+            }
+        case .bootstrap:
+            switch p {
+            case .idle: return (.bootstrapping, [.runBootstrap])
+            case .bootstrapping, .resetting, .ready, .failed, .shuttingDown: return nil
+            }
+        case .retry:
+            switch p {
+            case .failed: return (.bootstrapping, [.runBootstrap])
+            case .idle, .bootstrapping, .resetting, .ready, .shuttingDown: return nil
+            }
+        case .reset(let busy):
+            switch p {
+            case .ready, .failed: return busy ? nil : (.resetting, [.runReset])
+            case .idle, .bootstrapping, .resetting, .shuttingDown: return nil
+            }
+        case .bootstrapDone:
+            switch p {
+            case .bootstrapping: return (.ready, [])
+            case .idle, .resetting, .ready, .failed, .shuttingDown: return nil
+            }
+        case .bootstrapFailed(let message):
+            switch p {
+            case .bootstrapping: return (.failed(message), [])
+            case .idle, .resetting, .ready, .failed, .shuttingDown: return nil
+            }
+        case .resetDone:
+            switch p {
+            case .resetting: return (.bootstrapping, [.runBootstrap])
+            case .idle, .bootstrapping, .ready, .failed, .shuttingDown: return nil
+            }
         }
     }
 
@@ -32,7 +97,6 @@ import Testing
     /// phase that names it; quit runs the shutdown from every phase but
     /// `shuttingDown`, which nothing leaves.
     @Test func wholeSpace() {
-        #expect(AppEvent.Kind.allCases.count == 7)
         #expect(Set(Self.events.map(\.kind)).count == AppEvent.Kind.allCases.count)
         for phase in Self.phases {
             for event in Self.events {
@@ -49,6 +113,35 @@ import Testing
                     #expect(p.hasJob, "a job started without a phase naming it: \(label)")
                 }
                 if phase == .shuttingDown { #expect(p == .shuttingDown && effects.isEmpty, "\(label)") }
+            }
+        }
+    }
+
+    /// The Reset button reads the reducer's own rule: it is enabled exactly
+    /// when the reducer would accept the Reset.
+    @Test func theResetButtonMatchesTheReducer() {
+        for phase in Self.phases {
+            for busy in [false, true] {
+                var p = phase
+                let accepted = AppLifecycle.reduce(&p, .reset(servicesBusy: busy)) == [.runReset]
+                #expect(phase.allowsReset(servicesBusy: busy) == accepted, "\(phase) busy=\(busy)")
+            }
+        }
+    }
+
+    /// Get / Start / Delete: a Python service needs the manager and no job in
+    /// flight (Reset took the manager away; its rows are stale until the
+    /// re-read); Apple Speech needs neither; nothing starts after quit.
+    @Test func serviceActionsWaitForTheManagerAndTheJob() {
+        for phase in Self.phases {
+            for manager in [false, true] {
+                let quit = phase == .shuttingDown
+                #expect(
+                    phase.acceptsServiceActions(usesPython: true, managerInstalled: manager)
+                        == (!quit && manager && !phase.hasJob), "python \(phase) manager=\(manager)")
+                #expect(
+                    phase.acceptsServiceActions(usesPython: false, managerInstalled: manager) == !quit,
+                    "apple \(phase) manager=\(manager)")
             }
         }
     }

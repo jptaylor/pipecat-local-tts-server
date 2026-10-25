@@ -232,6 +232,7 @@ struct RunningRow: View {
             ProgressView().controlSize(.small).frame(width: 44)
         case .failed:
             Button("Retry") { model.start() }.buttonStyle(PillButtonStyle(tint: .red))
+                .disabled(!model.acceptsActions)
         default:
             EmptyView()
         }
@@ -535,7 +536,12 @@ struct CatalogSubtitle: View {
 struct CatalogAction: View {
     let model: ServiceModel
 
+    /// Disabled while the app can't run them (`AppPhase.acceptsServiceActions`).
     var body: some View {
+        action.disabled(!model.acceptsActions)
+    }
+
+    @ViewBuilder private var action: some View {
         switch model.phase {
         case .checking, .starting, .stopping, .removing:
             ProgressView().controlSize(.small).frame(width: 54)
@@ -576,6 +582,17 @@ struct ServiceMenuItems: View {
         Button("Copy Pipecat Service") { Pasteboard.copy(info.pipecatService(port: model.port)) }
         Button("Copy Environment Variables") { Pasteboard.copy(info.environment(port: model.port)) }
         Divider()
+        // Disabled while the app can't run them (`AppPhase.acceptsServiceActions`).
+        action.disabled(!model.acceptsActions)
+        Button("Show Details") { app.show(model.service) }
+        if model.canDeleteModel {
+            Divider()
+            Button("Delete Model…", role: .destructive) { app.confirmDelete(model) }
+                .disabled(!model.acceptsActions)
+        }
+    }
+
+    @ViewBuilder private var action: some View {
         switch model.phase {
         case .running:
             Button("Stop") { model.stop() }
@@ -589,11 +606,6 @@ struct ServiceMenuItems: View {
             }
         default:
             EmptyView()
-        }
-        Button("Show Details") { app.show(model.service) }
-        if model.canDeleteModel {
-            Divider()
-            Button("Delete Model…", role: .destructive) { app.confirmDelete(model) }
         }
     }
 }
