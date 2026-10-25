@@ -121,6 +121,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment manager's subprocesses (a cache probe included) and waits for a
   bootstrap or Reset in flight; Try Again and Reset no longer start a second
   bootstrap or Reset while one runs.
+- Pipecat Service Toolbar: Delete Everything on one variant keeps (and reports) the
+  model folders when a sibling's cache check gives no answer, such as one quit stopped,
+  so quitting while Phonon 8-bit is removed no longer deletes the voices Phonon still
+  uses; a late bootstrap refresh after quit no longer attaches an Apple Speech install,
+  and the download-size lookup no longer starts after quit; Stop cancels a busy-port
+  probe at once instead of after its re-read; Get, Start and Delete wait while Reset
+  or a bootstrap runs (a Start during Reset no longer fails with "missing the STT
+  helper"); a stop after a process was reaped never signals a reused pid's group.
 
 ## [0.6.0] - 2026-10-22
 

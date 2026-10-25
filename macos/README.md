@@ -71,6 +71,14 @@ launchd agents, so run one or the other, not both.
   microphone or transcribe a sample sentence spoken by the system voice.
 - **Problems** show inline: a busy port names the process (and the launchd
   agent) holding it; a crashed server keeps its log and a Restart button.
+- **Try Again**: if the app can't find its tools at launch (`uv`, the server
+  wheel), the main menu shows why with a Try Again button, which re-runs the
+  check. It is disabled while a check runs.
+- **Reset**: when environments from an incompatible app version are found, a
+  banner offers Reset, which deletes every Python environment (not model
+  weights) and checks the services again. It is refused while a service runs,
+  installs or is being deleted. While Reset or the launch check runs, the
+  Python services' Get, Start and Delete are disabled.
 
 ## Use a service from Pipecat
 
@@ -132,11 +140,14 @@ PIPECAT_TOOLBAR_E2E=1 swift test --package-path macos --filter EndToEnd   # real
 swift run --package-path macos PipecatServiceToolbar --snapshot /tmp/shots  # render the UI
 ```
 
-The service lifecycle (install, start, stop, delete, quit) lives in `PipecatToolbarCore`
-as a pure reducer, `ServiceLifecycle.reduce`, plus `ServiceDriver`, which runs its
-effects through injectable seams; the app's `ServiceModel` only publishes it. The
+The service lifecycle (install, start, stop, delete, and each service's part of quit)
+lives in `PipecatToolbarCore` as a reducer, `ServiceLifecycle.reduce(_ state: inout
+LifecycleState, _ event:) -> [LifecycleEffect]` (no I/O), plus `ServiceDriver`, which runs
+its effects through injectable seams; the app's `ServiceModel` only publishes it. The
+app-wide lifecycle (launch check, Try Again, Reset, quit) is `AppLifecycle.reduce` in
+`AppLifecycle.swift`, with `AppModel` as its adapter. The
 Swift tests depend on Core alone, so a lifecycle change is tested without the app
-target (`ServiceLifecycleTests`, `ServiceDriverTests`). Download sizes come from
+target (`ServiceLifecycleTests`, `ServiceDriverTests`, `AppLifecycleTests`). Download sizes come from
 `ServiceCatalog.snapshots(for:)` in `Service.swift`; when a backend's
 `prefetch_specs(model)` changes (a pin, a codec, voice files), update that table:
 `uv run pytest tests/test_macos_catalog_drift.py` fails until they match.

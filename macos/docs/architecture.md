@@ -35,9 +35,9 @@ flowchart LR
 | Processes | `Subprocess.swift` | `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL to the child's process group. Its exit always resolves (`notLaunched` for a failed launch, or a `stop()` before `run()`, which refuses the launch), and `stop()` returns once no process of the group is left. |
 | Ports | `PortProbe.swift` | Whether a loopback port is free and, if not, who holds it (`lsof`, plus a loaded `pipecat.tts-server.<backend>` launchd agent): the "port busy" failure in the README's Problems section. |
 | Download sizes | `HubSizes.swift`, `ServiceCatalog.snapshots(for:)` | Approximate download size of a service from the public Hugging Face tree API (shown in Add Models before install): the sum over every snapshot its install fetches, each at its pinned revision and through its own file filter (mlx-audio's allow patterns, dia's codec patterns, pocket_tts's `embeddings/*.safetensors`, the STT helper's "all but docs"). STT repos are sized at the helper's `MODEL_REVISIONS` commit, which `ServiceCatalog.sttModelRevisions` repeats. The table sits in `Service.swift` next to the model repos; a lean drift test compares it with `prefetch_specs(model)` and the STT pins with the helper's. `prefetch --check --json` can't be the source: its events carry no allow patterns, and it needs the installed environment the size is shown before. |
-| Lifecycle | `ServiceLifecycle.swift`, `ServiceDriver.swift` | The per-service state machine, UI-free. `ServiceLifecycle.reduce(state, event) -> [effect]` is pure and makes every phase change and guard (a ready, exit or ready timeout from a replaced server, or one after Stop or Delete, changes nothing; a requested exit only completes a Stop; an install ending during a removal leaves the phase to it). On quit each layer stops its own work: the reducer's `shutdownRequested` cancels only an Apple Speech install (the app runs it); `EnvironmentManager.shutdown()` stops the install or prefetch step subprocess in flight and every probe, sets `shuttingDown` so no later step or probe starts (the interrupted install unwinds), and waits up to 20 s for busy families; the bootstrap's own `uv build`/`uv export` are stopped through a `ProcessRegistry`. `ServiceDriver` (`@MainActor @Observable`) runs the effects through injectable seams (`ServiceEnvironment` for `EnvironmentManager`, `ServerProcess` for `Subprocess`, `NativeSpeechServer`, the port probe, Apple Speech, the clock and the timeouts in `ServiceDependencies`) and holds the progress the UI shows. |
+| Lifecycle | `ServiceLifecycle.swift`, `ServiceDriver.swift`, `AppLifecycle.swift` | The per-service state machine and the app-wide one, UI-free. `ServiceLifecycle.reduce(_ state: inout LifecycleState, _ event: LifecycleEvent) -> [LifecycleEffect]` mutates only the state it is handed and does no I/O; it makes every phase change and guard (a ready, exit or ready timeout from a replaced server, or one after Stop or Delete, changes nothing; a requested exit only completes a Stop; an install ending during a removal leaves the phase to it). On quit each layer stops its own work: `ServiceDriver.quit()` first stops new reads and intents, then the reducer's `shutdownRequested` cancels an Apple Speech install (the app runs it; a Python install is the manager's); `EnvironmentManager.shutdown()` stops the install or prefetch step subprocess in flight and every probe, sets `shuttingDown` so no later step or probe starts (the interrupted install unwinds), and waits up to 20 s for busy families; the bootstrap's own `uv build`/`uv export` are stopped through a `ProcessRegistry`. `ServiceDriver` (`@MainActor @Observable`) runs the effects through injectable seams (`ServiceEnvironment` for `EnvironmentManager`, `ServerProcess` for `Subprocess`, `NativeSpeechServer`, the port probe, Apple Speech, the clock and the timeouts in `ServiceDependencies`) and holds the progress the UI shows. `AppLifecycle.reduce(_ phase: inout AppPhase, _ event: AppEvent) -> [AppEffect]` owns bootstrap, Reset and quit the same way ([App lifecycle](#app-lifecycle)). |
 | Protocols | `TTSClient.swift`, `TTSRequestMachine.swift`, `TTSRequestDriver.swift`, `STTClient.swift`, `STTWebSocketServer.swift`, `PCMStreamConverter.swift` | WebSocket clients for both wire protocols, the TTS Try it request lifecycle (a pure state machine and the driver that runs it on a connection), plus a native stt-protocol server; `STTWire` is the one definition of the stt audio format. |
-| State | `AppModel`, `ServiceModel` (`@MainActor @Observable`) | Page navigation, delete confirmation. `ServiceModel` is a thin adapter over its `ServiceDriver`: it publishes the driver's state, forwards intents, and is the driver's `ServiceHost` (the environment manager, paths, Try it sessions, Apple Speech). |
+| State | `AppModel`, `ServiceModel` (`@MainActor @Observable`) | Page navigation, delete confirmation. `AppModel` is `AppLifecycle`'s adapter: it sends the events, runs the effects (the bootstrap and Reset jobs, the quit shutdown) and reads the derived flags (`AppPhase.allowsReset`, `acceptsServiceActions`) the views enable their buttons from. `ServiceModel` is a thin adapter over its `ServiceDriver`: it publishes the driver's state, forwards intents, and is the driver's `ServiceHost` (the environment manager, paths, Try it sessions, Apple Speech). |
 | Audio | `AudioPlayer`, `TryItSession`, `STTTryItSession`, `AppleSpeech` | TTS playback, microphone and sample capture, SpeechAnalyzer. |
 | Views | `PanelView`, `ServiceDetailView`, `Components`, `Brand` | Running list, catalog, detail page, right-click menu, catmark artwork. |
 
@@ -129,9 +129,12 @@ Every launch gets a `ServerID`; events name the server they come from, so one
 from a replaced server is ignored. The guards: a ready flips only the current
 server's `starting`; a requested exit only completes a Stop; a removal owns the
 phase over an install it cancelled; Start never runs during a removal or with a
-server up; quit cancels only an Apple Speech install and waits for it at most
-`installDrain`. Reset of a stale layout is refused while a server, install or
-removal is live (`LifecycleState.blocksQuit`).
+server up. The reducer's own quit step (`shutdownRequested`) cancels an Apple
+Speech install and waits for it at most `installDrain`; the rest of quit, every
+install or download step, every probe and up to 20 s for busy families, is
+`EnvironmentManager.shutdown()`'s ([Supervision contract](#supervision-contract),
+item 4). Reset of a stale layout is refused while a server, install or removal
+is live (`LifecycleState.blocksReset`).
 
 Late async results follow one rule (`ServiceLifecycle.reduce`): a result is
 applied only if the owner it was issued for is still current, and the phase
@@ -158,7 +161,8 @@ or undoes a Delete. A port probe lives only while the phase is `starting` with
 no server, so a launch ends it and its late answer can't fail the server; Cancel
 during it drops it and re-reads the phase. A probe that ends any other way than
 its own answer (Stop, a launch, a removal, a second Start) is cancelled
-(`cancelProbe`, keyed by its tag): the driver keeps each probe task until it
+(`cancelProbe`, keyed by its tag, always the first effect, so Stop's re-read
+and its cache probe never delay it): the driver keeps each probe task until it
 ends, its `lsof` is stopped on cancel (`PortProbe.collect`), and the driver's
 `shutdown()` cancels and waits for every probe, so none outlives Stop or quit. The package refresh before a start
 (`refreshThenStart`) is a flag on its read: if the read is orphaned (Delete
@@ -184,27 +188,49 @@ shuttingDown`, driven by `bootstrap` (launch), `retry` (Try Again), `reset`,
 rule: at most one job (a bootstrap or a Reset) runs, and the phase names it. The
 intent moves the phase synchronously, before the job's task starts, so a second
 Try Again or Reset in the same window is refused. Try Again is offered only in
-`failed` (`canRetryBootstrap`), Reset only in `ready`/`failed` with no live
-service work (`canReset`), and "Checking services…" shows in `idle` and while a
-job runs. A Reset swaps the manager out, shuts the old one down (its probes
-stopped), deletes the environments, then bootstraps as the same job's tail.
+`failed` (`canRetryBootstrap`). Reset is offered by one predicate the reducer
+reads too, `AppPhase.allowsReset(servicesBusy:)`: `ready`/`failed` with no
+service's live work (`LifecycleState.blocksReset`). "Checking services…" shows
+in `idle` and while a job runs. A Reset swaps the manager out, shuts the old
+one down (its probes stopped), deletes the environments, then bootstraps as the
+same job's tail. A Python service's Get, Start and Delete are enabled only by
+`AppPhase.acceptsServiceActions`: a manager installed and no job in flight (a
+Reset takes the manager away while the rows still show the old state), never
+after quit; Apple Speech needs neither. The intents refuse them too.
 Quit is accepted from every phase but `shuttingDown`: it always runs the full
 shutdown (every service's, the bootstrap's subprocesses, the environment
 manager's installs and cache probes), even when no service is busy, then waits
 for the job in flight; after quit no job's end moves the phase or starts
-another. `AppLifecycleTests` checks {every phase} x {every event} against a
-table, plus the concrete sequences (Try Again twice, Reset twice, quit during a
-Reset or a bootstrap).
+another. Each service's part starts with `ServiceDriver.quit()`, after which no
+read is issued or lands and no intent starts work, so a refresh the bootstrap
+issued late (or one in flight) can't attach an Apple Speech install the
+shutdown already passed. The download-size lookup starts only from a bootstrap
+that ended the job, and quit cancels it. `AppLifecycleTests` checks {every
+phase} x {every event} against an independent table written per event, then per
+phase, with no `default` (a new phase or event fails to compile), the Reset
+button against the reducer, the action gate, plus the concrete sequences (Try
+Again twice, Reset twice, quit during a Reset or a bootstrap).
 
-### Known follow-ups
+## Known follow-ups
 
-Left as they are on purpose (the lifecycle guard seam was just redesigned):
-rule 4's re-issued read can replace a `.failed` phase (`ServiceLifecycle`,
-the orphaned read after `launchFailed`); `discardNative` and `stopServer(id)`
-are not executed keyed by `ServerID` (the driver keeps unkeyed handles);
-`isCurrent` repeats the classification `Kind.owner` encodes; the TTS 24000 Hz
-fallback rate when a ready line has none; the STT Try it phase logic; the
-loopback token.
+Left as they are on purpose, across both lifecycles and their adapters:
+
+- `ServiceLifecycle`: rule 4's re-issued read can replace a `.failed` phase
+  (the orphaned read after `launchFailed`); `discardNative` and
+  `stopServer(id)` are not executed keyed by `ServerID` (the driver keeps
+  unkeyed handles); `isCurrent` repeats the classification `Kind.owner`
+  encodes; `shutdownRequested` marks `shuttingDown` only for an Apple Speech
+  install, so the quit gate on reads lives in the driver (`ServiceDriver.quitting`)
+  rather than the reducer.
+- Shell-held rules (`AppModel`, `AppDelegate`): `runBootstrap` installs the
+  located tools as the manager only while `phase == .bootstrapping` (no
+  `toolsLocated` event), and starts the size lookup only once the phase is
+  `ready`; the delegate's `terminateReplyPending` is AppKit's terminate
+  handshake, not quit state (power-off moves the phase without a terminate,
+  which must still wait), and a second terminate while the reply is owed
+  returns `.terminateNow`.
+- Out of scope: the TTS 24000 Hz fallback rate when a ready line has none; the
+  STT Try it phase logic; the loopback token.
 
 ## Supervision contract
 
@@ -228,7 +254,7 @@ Every Python server, and the native server, follows one contract.
    crashed, and the server shuts down as if sent SIGTERM. So servers never
    outlive the app.
 4. **Stop.** Stop sends SIGTERM and closes stdin, then sends SIGKILL after
-   10 s. Quitting the app stops all servers in parallel; `EnvironmentManager.shutdown()` stops the install or download step subprocess in flight and every probe (SIGTERM, then SIGKILL after 5 s) and sets `shuttingDown`, so no later install step or offline `prefetch --check` probe starts and the interrupted install unwinds; it then waits up to 20 s for busy families (installs, removals) before the app exits. The bootstrap's repository wheel build is stopped the same way. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first. An install queued behind a sibling's leaves the queue when cancelled and records nothing; the variant marker (`.variants/<service>`) is written only once packages are in and no Cancel has landed, so a cancel during the model download leaves the variant installed with weights to resume (needs model). An install step waits at most 2 s after its process exits for the output pipes to close (a grandchild such as a build backend can hold them), so the family lock is always released. Signals go to the child's process group, and a stopped step ends only once its descendants are gone too, so a removal or the next install never races a surviving grandchild. A server exit the app asked for only completes a Stop (`stopping` -> `installed`); reported after the stdout drain, it never overrides a removal that finished first. Quit also cancels an Apple Speech model install and waits up to 5 s for it.
+   10 s. Quitting the app stops all servers in parallel; `EnvironmentManager.shutdown()` stops the install or download step subprocess in flight and every probe (SIGTERM, then SIGKILL after 5 s) and sets `shuttingDown`, so no later install step or offline `prefetch --check` probe starts and the interrupted install unwinds; it then waits up to 20 s for busy families (installs, removals) before the app exits. The bootstrap's repository wheel build is stopped the same way. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first. An install queued behind a sibling's leaves the queue when cancelled and records nothing; the variant marker (`.variants/<service>`) is written only once packages are in and no Cancel has landed, so a cancel during the model download leaves the variant installed with weights to resume (needs model). An install step waits at most 2 s after its process exits for the output pipes to close (a grandchild such as a build backend can hold them), so the family lock is always released. Signals go to the child's process group, and a stopped step ends only once its descendants are gone too, so a removal or the next install never races a surviving grandchild. Once the child is reaped its pid may be reused, so a stop after that signals the group only while no process holds the pid (a group with members keeps its id reserved); a live process on it is another one and is left alone. A server exit the app asked for only completes a Stop (`stopping` -> `installed`); reported after the stdout drain, it never overrides a removal that finished first. Quit also cancels an Apple Speech model install and waits up to 5 s for it.
 
 `tts_server` implements this natively (`serve --supervised`,
 `tts_server/supervise.py`). The STT engines get it from the helper, which wraps
@@ -338,6 +364,29 @@ State is rebuilt from disk on every launch, never persisted:
 
 Running state is never restored, because servers always die with the app.
 
+### Delete
+
+- **Delete Model…** (right-click) asks first, then removes the service with its
+  model files: `remove(deleteModel: true)`.
+- The detail page's **Delete…** offers **Keep Model Files**
+  (`deleteModel: false`: only the environment, or the variant's record in a
+  shared one) and, for a service with downloaded weights, **Delete Everything**
+  (`deleteModel: true`).
+- Order: an install in flight is cancelled and unwinds first (dropping the
+  family lock), then the server is stopped, then `EnvironmentManager.remove`
+  runs under the family lock. The family environment goes with its last
+  installed variant; otherwise only the variant's `.variants/<service>` record.
+- What Delete Everything deletes: every repo the variant's offline check names
+  (cached or partial) plus its model repo and derived weights, minus anything an
+  installed sibling's check names (Phonon's variants share the model and voices
+  repos). A sibling whose check gives no answer (it failed, or quit stopped it)
+  keeps every candidate folder. Only folders inside the model roots are
+  deleted.
+- Leftovers are reported, never silent: a folder kept for an unanswered
+  sibling, one the deletion guard refuses, or one that can't be deleted fails
+  the removal with `RemovalError` ("Couldn't remove", listing each path), after
+  the environment itself is gone.
+
 The **main menu** lists services that are *active*: starting, running, stopping,
 or failed at runtime. **Add Models** lists the rest by kind, split into
 Installed and Available.
@@ -394,7 +443,7 @@ codes (`SupervisedErrorCode`) and the stt wire rate (`STTWire.rate`) against it.
 
 | Suite | What it covers |
 |---|---|
-| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion and the one stt wire format, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots (on disk, with symlinked leaves, backend directories and roots), logo parsing, `Subprocess` stdin and kill handling, exit-after-drain ordering and its lifecycle table (launch failure, stop before launch, descendants that obey or ignore SIGTERM), install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, the Try it request machine over every (state, event) cell (`Fixtures/tts_request_machine_table.txt`) and over random interleavings against a model server with its invariants asserted, real server frames driving it (`Fixtures/tts_wire_frames.json`, which also holds the request frames the server was sent), the driver's silence timeout, the lifecycle reducer's whole state space (every event against every phase, with the server current or replaced, Stop or removal under way, and quit under way) and its exits against every phase, the driver's start/ready/stop, late ready, ready timeout and supervised error, and quit during an Apple Speech install, download-size filters and pins, seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, the unread-reply cap, which processes get `HF_TOKEN`. |
+| Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion and the one stt wire format, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots (on disk, with symlinked leaves, backend directories and roots), logo parsing, `Subprocess` stdin and kill handling, exit-after-drain ordering and its lifecycle table (launch failure, stop before launch, descendants that obey or ignore SIGTERM), install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, a removal during quit keeping what a sibling may use, a reaped child's reused pid never signalled, the Try it request machine over every (state, event) cell (`Fixtures/tts_request_machine_table.txt`) and over random interleavings against a model server with its invariants asserted, real server frames driving it (`Fixtures/tts_wire_frames.json`, which also holds the request frames the server was sent), the driver's silence timeout, the lifecycle reducer's whole state space (every event against every phase, with the server current or replaced, Stop or removal under way, and quit under way) and its exits against every phase, the driver's start/ready/stop, late ready, ready timeout and supervised error, and quit during an Apple Speech install, download-size filters and pins, seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, the unread-reply cap, which processes get `HF_TOKEN`. |
 | Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403); `TTSRequestDriver` on one connection through a normal request, a busy refusal then retry, Stop mid-flight, Stop between append and commit, a refused voice and a dropped connection (reconnecting), and Stop while connecting. |
 | End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny and Kyutai against the built bundle, then serve and use each. |
 | Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and `PrefetchEvent.swift` and checks their backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases, the download-size snapshot table (against `prefetch_specs(model)`, the STT helper's filter and its `MODEL_REVISIONS` pins) and supervised error codes against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server; `test_supervised_contract.py`, which runs the TTS server and the STT helper on stub inputs and checks every JSON line, error code, the Swift decoder's keys and `STTWire.rate` against `docs/supervised-contract.json`, the helper's default models and model pins against `Service.swift`, and the STT constraints against each engine's requirements. |
