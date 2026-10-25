@@ -545,6 +545,32 @@ import Testing
         #expect(!(await Self.alive(started, polls: 10)), "the probe's subprocess outlived its cancel")
     }
 
+    /// Once the child is reaped, its pid may be reused: a process that holds it
+    /// is another one, and its group is never signalled (a stop after the exit,
+    /// such as a cancelled port probe whose `lsof` already ended). With no
+    /// process on the pid, the group can only be the child's descendants.
+    @Test func aReapedChildsReusedPidIsNeverSignalled() {
+        #expect(Subprocess.mayTargetGroup(reaped: false, pidHeldByAnother: false))
+        #expect(Subprocess.mayTargetGroup(reaped: true, pidHeldByAnother: false))
+        #expect(!Subprocess.mayTargetGroup(reaped: true, pidHeldByAnother: true))
+    }
+
+    /// After the child exited on its own, a stop still reaches a descendant
+    /// that outlived it (no process holds the reaped pid, so the group is ours).
+    @Test func aStopAfterTheExitStillStopsAnOrphanedDescendant() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "orphan-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let pidFile = dir.appending(path: "pid")
+        let sub = Self.sh("sleep 30 </dev/null >/dev/null 2>&1 & echo $! > '\(pidFile.path)'")
+        try sub.run()
+        #expect(await Self.within(.seconds(10)) { await sub.waitForExit() } == 0)
+        let descendant = try #require(
+            (try? String(contentsOf: pidFile, encoding: .utf8)).flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) })
+        defer { Darwin.kill(descendant, SIGKILL) }
+        #expect(await Self.within(.seconds(5)) { await sub.stop(grace: .milliseconds(500)) } != nil)
+        #expect(!(await Self.alive(descendant, polls: 10)), "the descendant outlived the stop")
+    }
+
     /// The probe case: registered for shutdown before `collect()` launches it.
     @Test func stopBeforeLaunchRefusesTheLaunch() async throws {
         let sub = Self.sh("sleep 30")

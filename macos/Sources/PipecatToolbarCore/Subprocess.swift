@@ -190,14 +190,32 @@ public final class Subprocess: @unchecked Sendable {
     /// descendants; once the group is empty it reaches nothing (ESRCH).
     private func signal(_ sig: Int32) {
         let pid = process.processIdentifier
-        guard pid > 0 else { return }  // not launched: killpg(0) would signal the app's own group
+        guard groupIsOurs(pid) else { return }
         if killpg(pid, sig) != 0, process.isRunning { Darwin.kill(pid, sig) }
     }
 
     /// Whether any process of the child's group is alive.
     private var groupAlive: Bool {
         let pid = process.processIdentifier
-        return pid > 0 && killpg(pid, 0) == 0
+        return groupIsOurs(pid) && killpg(pid, 0) == 0
+    }
+
+    /// Whether group `pid` can still only be the child's. Unreaped, the child
+    /// holds the pid. Reaped, the pid is free to be reused, but not while a
+    /// group with that id has a member: so a live process with the pid is
+    /// someone else's (its group is not ours), and with none, the group (if
+    /// any) is the child's descendants.
+    private func groupIsOurs(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }  // not launched: killpg(0) would signal the app's own group
+        let reaped = !process.isRunning
+        let pidHeld = reaped && (Darwin.kill(pid, 0) == 0 || errno != ESRCH)
+        return Self.mayTargetGroup(reaped: reaped, pidHeldByAnother: pidHeld)
+    }
+
+    /// The rule behind `groupIsOurs`: after the reap, a process holding the pid
+    /// is another one, and its group is never signalled.
+    static func mayTargetGroup(reaped: Bool, pidHeldByAnother: Bool) -> Bool {
+        !(reaped && pidHeldByAnother)
     }
 
     /// `stop()` was called (it may still be running).
