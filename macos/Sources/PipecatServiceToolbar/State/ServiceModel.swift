@@ -130,6 +130,14 @@ extension ServiceModel: ServiceHost {
 
     func detachTryIt() { ttsTryIt?.detach() }
 
+    /// The menu's "Test Voice" / "Test Transcription": runs the Try it check on this service.
+    func runTest() async {
+        switch kind {
+        case .tts: await ttsTryIt?.speakTest(TryItSession.testLine(for: info))
+        case .stt: await sttTryIt?.transcribeSample()
+        }
+    }
+
     func closeTryIt() {
         ttsTryIt?.detach()
         ttsTryIt = nil

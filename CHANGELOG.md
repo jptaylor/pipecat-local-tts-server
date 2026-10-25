@@ -63,7 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hangs on a failed or refused launch; a server exit reported after a removal no
   longer marks the service installed; quit cancels an Apple Speech model install;
   the Apple Speech server closes a client that stops reading its replies.
-  `just app-build` / `app-open` / `app-run` / `app-test`.
+  `just app-build` / `app-open` / `app-run` / `app-test`. Right-click a running
+  service for **Test Voice** (speaks "Hello world, this is the Pipecat test server
+  using the <model> model.") or **Test Transcription** (a bundled spoken clip, no
+  microphone, checked against its sentence); the STT Try it "Test Clip" button uses
+  the same clip instead of a live system-voice synthesis.
 
 ### Changed
 

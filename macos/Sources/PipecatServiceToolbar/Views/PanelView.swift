@@ -584,6 +584,14 @@ struct ServiceMenuItems: View {
         Divider()
         // Disabled while the app can't run them (`AppPhase.acceptsServiceActions`).
         action.disabled(!model.acceptsActions)
+        if model.isRunning {
+            // Opens the detail view, which shows the result (playing, transcript, or error).
+            Button(model.kind == .tts ? "Test Voice" : "Test Transcription") {
+                app.show(model.service)
+                Task { await model.runTest() }
+            }
+            .disabled(!model.acceptsActions)
+        }
         Button("Show Details") { app.show(model.service) }
         if model.canDeleteModel {
             Divider()

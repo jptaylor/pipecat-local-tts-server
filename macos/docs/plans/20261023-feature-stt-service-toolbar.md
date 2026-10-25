@@ -99,8 +99,9 @@ local speech services of both kinds:
   - `ToolLocator` finds the helper.
 - **App.**
   - `AppleSpeech` (status, install, transcribe) and `PCMConverter`.
-  - `STTTryItSession`: microphone, or a sample sentence from
-    `AVSpeechSynthesizer`.
+  - `STTTryItSession`: microphone, or the fixed test clip `STTSampleClip`
+    (PCM16 made once with `say`; no microphone, no dependence on the installed
+    system voice), checked against its sentence.
   - `ServiceModel` dispatches by runtime.
   - `AppModel` has a page model (running / catalog / detail).
   - New `PanelView` (running list, catalog, right-click menu), detail-page copy

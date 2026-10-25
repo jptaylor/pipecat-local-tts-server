@@ -55,6 +55,16 @@ final class TryItSession {
         }
     }
 
+    /// The line the menu's "Test Voice" speaks: it names the model under test.
+    static func testLine(for info: ServiceInfo) -> String {
+        let model = [info.displayName, info.variantLabel].compactMap { $0 }.joined(separator: " ")
+        switch info.service {
+        case .dia: return "[S1] Hello world, this is the Pipecat test server using \(model). [S2] It all runs on this Mac."
+        case .tone: return sample(for: .tone)
+        default: return "Hello world, this is the Pipecat test server using the \(model) model."
+        }
+    }
+
     var isBusy: Bool { phase == .connecting || phase == .speaking }
     var isSpeaking: Bool { phase == .speaking }
     var overLimit: Bool {
@@ -69,6 +79,12 @@ final class TryItSession {
         // "Default voice" (nil) is a choice too: forget the last named one.
         if let voice { UserDefaults.standard.set(voice, forKey: voiceKey) } else { UserDefaults.standard.removeObject(forKey: voiceKey) }
         driver.handle(.userSpeak(text: trimmed, voice: voice))
+    }
+
+    /// Speaks `line` once, leaving the Try it text box and its saved text alone.
+    func speakTest(_ line: String) async {
+        guard !isBusy else { return }
+        driver.handle(.userSpeak(text: line, voice: voice))
     }
 
     func stop() async {

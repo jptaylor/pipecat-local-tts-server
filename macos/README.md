@@ -68,7 +68,11 @@ launchd agents, so run one or the other, not both.
   Face cache, so a command-line or launchd server using the same model
   downloads them again after a delete.
 - **Try it**: type text and hear a TTS model. For STT, record from the
-  microphone or transcribe a sample sentence spoken by the system voice.
+  microphone or transcribe a fixed spoken test clip (`STTSampleClip`, no
+  microphone) and see whether the transcript matches its sentence.
+  Right-click a running service for **Test Voice** (speaks a line naming the
+  model) or **Test Transcription** (the clip); both open the details view,
+  which shows the result.
 - **Problems** show inline: a busy port names the process (and the launchd
   agent) holding it; a crashed server keeps its log and a Restart button.
 - **Try Again**: if the app can't find its tools at launch (`uv`, the server
@@ -159,7 +163,9 @@ Manual UI checklist, for what needs a person (or a terminal granted Accessibilit
 2. Tone > Install: progress, then Installed. Start: the row turns running and
    `lsof -nP -iTCP:8665 -sTCP:LISTEN` shows the server; Try it plays a tone.
 3. STT > Apple Speech > Install (if needed) > Start: `lsof -nP -iTCP:9465 -sTCP:LISTEN`
-   shows the app; Try it > sample transcribes the sample sentence.
+   shows the app; Try it > Test Clip shows "Matches the clip" (no microphone needed).
+   Right-click a running Tone or Apple Speech row: Test Voice plays a line, Test
+   Transcription shows the same match.
 4. Stop each: the port closes. Quit from the panel with Tone running: within ~10 s
    `pgrep -fl "Pipecat Service Toolbar"` and `lsof -nP -iTCP:8665` print nothing.
 5. Tone > Delete: the row returns to Install.
