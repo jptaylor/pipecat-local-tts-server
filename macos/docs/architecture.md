@@ -231,6 +231,11 @@ Left as they are on purpose, across both lifecycles and their adapters:
   returns `.terminateNow`.
 - Out of scope: the TTS 24000 Hz fallback rate when a ready line has none; the
   STT Try it phase logic; the loopback token.
+- Native Apple Speech server: a listener failure after it reported ready is not
+  reported, so the row keeps showing Running on a dead port (rare; liveness
+  checks planned with attach support). `AudioPlayer` never removes its
+  notification observer (the fix needs Swift 6.2). The Add Models download
+  sizes load one request at a time.
 
 ## Supervision contract
 
