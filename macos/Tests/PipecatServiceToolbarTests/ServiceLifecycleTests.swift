@@ -546,6 +546,7 @@ import Testing
             let cancels = effects.filter { if case .cancelProbe = $0 { true } else { false } }
             if s.probe != probe, kind != .portOwnerFound {
                 #expect(cancels == [.cancelProbe(probe: probe)], "\(kind): \(effects)")
+                #expect(effects.first == .cancelProbe(probe: probe), "the cancel waits behind other work: \(kind): \(effects)")
             } else {
                 #expect(cancels.isEmpty, "\(kind): \(effects)")
             }
@@ -563,7 +564,7 @@ import Testing
         let effects = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
         let probe = s.probe!
         #expect(effects.last == .probePortOwner(port: 8665, probe: probe))
-        #expect(ServiceLifecycle.reduce(&s, .stopRequested) == [.refresh(epoch: s.epoch), .cancelProbe(probe: probe)])
+        #expect(ServiceLifecycle.reduce(&s, .stopRequested) == [.cancelProbe(probe: probe), .refresh(epoch: s.epoch)])
         #expect(s.phase == .checking && s.probe == nil)
         _ = ServiceLifecycle.reduce(&s, .refreshed(.installed, epoch: s.epoch))
         _ = ServiceLifecycle.reduce(&s, .portOwnerFound(PortProbe.Owner(), probe: probe))

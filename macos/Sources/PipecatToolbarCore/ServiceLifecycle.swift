@@ -434,7 +434,8 @@ public enum ServiceLifecycle {
     ///    issued earlier is stale. An event that then changes nothing (its guard
     ///    rejected it: no state change, no effect) leaves the epoch as it was.
     /// 3. A probe lives only while the phase is `.starting` with no server; a
-    ///    probe that ends any other way than its own answer is cancelled.
+    ///    probe that ends any other way than its own answer is cancelled, by
+    ///    the first effect (so no other effect's wait delays it).
     /// 4. A read the advance orphaned is issued again when nothing owns the
     ///    phase (otherwise the owner's own end re-reads it); it never carries a
     ///    start with it.
@@ -453,8 +454,10 @@ public enum ServiceLifecycle {
             return []
         }
         if s.phase != .starting || s.server != nil || s.native != nil { s.probe = nil }
+        // First: the driver runs effects in order, so a cancel after a refresh
+        // would wait for its (slow) cache probe while `lsof` kept running.
         if let probe = before.probe, s.probe != probe, event.kind != .portOwnerFound {
-            effects.append(.cancelProbe(probe: probe))
+            effects.insert(.cancelProbe(probe: probe), at: 0)
         }
         if let reading = s.reading, reading != s.epoch {
             s.startAfterRead = false

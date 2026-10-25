@@ -397,6 +397,78 @@ import Testing
         #expect(driver.state.phase == .starting, "a cancelled probe's answer failed the service: \(driver.state.phase)")
     }
 
+    /// An environment whose cache probe answers at once until `arm()`, then waits for `release()`.
+    final class ArmableEnvironment: ServiceEnvironment, @unchecked Sendable {
+        let slow = SlowEnvironment()
+        private let lock = NSLock()
+        private var armed = false
+        func arm() { lock.withLock { armed = true } }
+        func environmentStatus(_ backend: Service) -> EnvironmentStatus { slow.environmentStatus(backend) }
+        func isRequested(_ service: Service) -> Bool { true }
+        func modelCacheStatus(_ backend: Service, includeOutdated: Bool) async -> ModelCacheStatus? {
+            guard lock.withLock({ armed }) else { return ModelCacheStatus(cached: true, sizeBytes: 1, repoFolders: []) }
+            return await slow.modelCacheStatus(backend, includeOutdated: includeOutdated)
+        }
+        func install(_ backend: Service, mode: InstallMode) -> AsyncThrowingStream<InstallEvent, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+        func remove(_ backend: Service, deleteModel: Bool, known: ModelCacheStatus?) async throws {}
+        func serveArguments(for info: ServiceInfo, port: Int) -> [String]? { ["serve"] }
+    }
+
+    /// Stop during the port probe cancels it before the re-read Stop issues:
+    /// a slow cache probe can't keep `lsof` running.
+    @Test func stopCancelsTheProbeBeforeItsRefresh() async {
+        let probe = SlowProbe()
+        let environment = ArmableEnvironment()
+        let host = FakeHost(environment: environment)  // the driver holds its host weakly
+        let driver = makeDriver(FakeProcess(), host: host) {
+            $0.isPortFree = { _ in false }
+            $0.portOwner = { _, _ in await probe.run() }
+        }
+        await driver.refresh()
+        driver.start()
+        await until { probe.started }
+        #expect(probe.started)
+        environment.arm()
+        driver.stop()
+        await until { probe.ended }
+        #expect(probe.ended && probe.cancelled, "the probe waited behind Stop's refresh")
+        environment.slow.release()
+        await until { driver.state.phase == .installed }
+        #expect(driver.state.phase == .installed, "\(driver.state.phase)")
+    }
+
+    /// Quit began, then a late refresh (the bootstrap's) sees the system
+    /// downloading the Apple Speech model: it attaches nothing, whether it was
+    /// issued after quit or was in flight when quit began.
+    @Test func aRefreshAfterQuitAttachesNoAppleSpeechInstall() async {
+        let gate = SlowEnvironment()
+        let attached = Flag()
+        let asked = Flag()
+        var deps = ServiceDependencies()
+        deps.appleSpeechPhase = {
+            asked.value = true
+            _ = await gate.modelCacheStatus(.appleSpeech, includeOutdated: false)
+            return .installing(.model)
+        }
+        deps.appleSpeechInstall = { _ in
+            attached.value = true
+            try await Task.sleep(for: .seconds(30))
+        }
+        let driver = ServiceDriver(info: Service.appleSpeech.info, dependencies: deps)
+        let inFlight = Task { await driver.refresh() }
+        await until { asked.value }
+        #expect(asked.value, "the first refresh never asked for the phase")
+        await driver.quit()
+        gate.release()
+        await inFlight.value
+        await driver.refresh()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(!attached.value, "a refresh after quit attached an install")
+        #expect(!driver.state.installing, "\(driver.state)")
+    }
+
     /// Apple Speech already downloading (no install of ours): the refresh attaches
     /// an install task, so progress and Cancel act on it.
     @Test func aSystemAppleSpeechDownloadIsAttached() async {

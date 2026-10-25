@@ -89,8 +89,8 @@ final class ServiceModel: Identifiable {
     func cancelInstall() { driver.cancelInstall() }
     func start() { driver.start() }
     func stop() { driver.stop() }
-    /// For app quit (and before removal): stop and wait.
-    func shutdown() async { await driver.shutdown() }
+    /// App quit: nothing new starts from here on; stop and wait.
+    func shutdown() async { await driver.quit() }
     func dismissFailure() { driver.dismissFailure() }
     func remove(deleteModel: Bool) { driver.remove(deleteModel: deleteModel) }
 

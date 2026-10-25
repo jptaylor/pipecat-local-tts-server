@@ -109,6 +109,10 @@ public final class ServiceDriver {
     /// The port-owner probes still running, by probe tag (a cancelled one stays
     /// until its `lsof` has exited, so quit can wait for it).
     @ObservationIgnored private var probes: [Int: Task<Void, Never>] = [:]
+    /// App quit began (`quit()`): no read is issued or lands, and no intent
+    /// starts work, so a late refresh (the bootstrap's, an install unwinding)
+    /// can't start what the shutdown already passed (an Apple Speech attach).
+    @ObservationIgnored public private(set) var quitting = false
 
     public init(info: ServiceInfo, dependencies: ServiceDependencies = ServiceDependencies()) {
         self.info = info
@@ -149,13 +153,18 @@ public final class ServiceDriver {
     /// Re-reads the phase (the reducer tags the read with a fresh epoch, so a
     /// newer read, or anything else that moved the epoch, makes this one stale).
     public func refresh() async {
+        guard !quitting else { return }
         await run(send(.refreshRequested))
     }
 
-    /// The read issued under `epoch`: every result carries it.
+    /// The read issued under `epoch`: every result carries it. After quit
+    /// began, none starts and none lands.
     private func read(epoch: Int) async {
+        guard !quitting else { return }
         if info.runtime == .appleSpeech {
-            execute(send(.refreshed(await dependencies.appleSpeechPhase(), epoch: epoch)))
+            let phase = await dependencies.appleSpeechPhase()
+            guard !quitting else { return }
+            execute(send(.refreshed(phase, epoch: epoch)))
             return
         }
         guard let environment else { return }
@@ -172,6 +181,7 @@ public final class ServiceDriver {
         // The environment is current while the (slow) cache probe runs.
         send(.environmentRead(status, epoch: epoch))
         let cache = await environment.modelCacheStatus(service, includeOutdated: false)
+        guard !quitting else { return }
         execute(
             send(
                 .refreshed(
@@ -183,10 +193,14 @@ public final class ServiceDriver {
         await run(send(.environmentChanged(environment?.environmentStatus(service))))
     }
 
-    public func install() { execute(send(.installRequested(managerAvailable: environment != nil))) }
+    public func install() {
+        guard !quitting else { return }
+        execute(send(.installRequested(managerAvailable: environment != nil)))
+    }
     public func cancelInstall() { execute(send(.cancelInstallRequested)) }
 
     public func start() {
+        guard !quitting else { return }
         execute(
             send(
                 .startRequested(
@@ -196,7 +210,7 @@ public final class ServiceDriver {
 
     public func stop() { execute(send(.stopRequested)) }
 
-    /// For app quit (and before removal): stop and wait. Quit also cancels an
+    /// Before removal, and for app quit (through `quit()`): stop and wait. It also cancels an
     /// Apple Speech model install and waits (at most `installDrain`) for it to
     /// unwind; a Python install is the environment manager's to stop. A port
     /// probe in flight is cancelled and waited for (its `lsof` never outlives quit).
@@ -208,11 +222,18 @@ public final class ServiceDriver {
         for probe in running { await probe.value }
     }
 
+    /// App quit: from here on nothing new starts (see `quitting`), then `shutdown()`.
+    public func quit() async {
+        quitting = true
+        await shutdown()
+    }
+
     public func dismissFailure() { execute(send(.dismissFailure)) }
 
     /// Uninstalls the service and, with `deleteModel`, the model files no installed
     /// sibling shares. The family environment goes with its last installed variant.
     public func remove(deleteModel: Bool) {
+        guard !quitting else { return }
         execute(send(.removeRequested(deleteModel: deleteModel, managerAvailable: environment != nil)))
     }
 

@@ -29,6 +29,8 @@ final class AppModel {
     @ObservationIgnored private var bootstrapProcesses = ProcessRegistry()
     /// The one bootstrap or Reset in flight (`AppPhase.hasJob`), awaited by quit.
     @ObservationIgnored private var job: Task<Void, Never>?
+    /// The download-size lookup a finished bootstrap starts, cancelled by quit.
+    @ObservationIgnored private var sizes: Task<Void, Never>?
     /// The quit shutdown, shared by every quit request.
     @ObservationIgnored private var shutdownTask: Task<Void, Never>?
     var page: Page = .running
@@ -171,13 +173,15 @@ final class AppModel {
             Log.app.info("\(model.service.rawValue, privacy: .public): \(String(describing: model.phase), privacy: .public)")
         }
         send(.bootstrapDone)
-        Task { await loadDownloadSizes() }
+        // Only a bootstrap that ended the job (not one quit overtook) looks up sizes.
+        guard phase == .ready else { return }
+        sizes = Task { await loadDownloadSizes() }
     }
 
     /// Approximate sizes for providers that aren't installed, cached for a week.
     private func loadDownloadSizes() async {
         let defaults = UserDefaults.standard
-        for model in services {
+        for model in services where !Task.isCancelled {
             guard model.info.modelRepo != nil else { continue }
             // Per service: a service's total spans several snapshots (the old `hubSize.<repo>` keys are left unread).
             let key = "hubSize.service.\(model.service.rawValue)"
@@ -206,6 +210,7 @@ final class AppModel {
     }
 
     private func runShutdown() async {
+        sizes?.cancel()
         let manager = self.manager
         await withTaskGroup(of: Void.self) { group in
             for model in services {
