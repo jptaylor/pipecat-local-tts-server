@@ -12,6 +12,15 @@
     enum DebugTools {
         static func runIfRequested() -> Bool {
             let args = CommandLine.arguments
+            // `--apple-speech-status`: prints this binary's asset status and exits. The
+            // status is per client (the asset is reserved for the app), so a test asks the app.
+            if args.contains("--apple-speech-status") {
+                Task {
+                    print(await AppleSpeech.status())
+                    exit(0)
+                }
+                return true
+            }
             if let i = args.firstIndex(of: "--serve-apple-speech"), i + 1 < args.count, let port = Int(args[i + 1]) {
                 Task {
                     let server = STTWebSocketServer(identity: .init(name: "apple_speech", model: "SpeechTranscriber")) { pcm, language in
