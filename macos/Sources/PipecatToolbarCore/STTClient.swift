@@ -26,7 +26,10 @@ public actor STTClient {
     private let task: URLSessionWebSocketTask
 
     public init(host: String = ServiceCatalog.host, port: Int) {
-        session = URLSession(configuration: .ephemeral)
+        // As TTSClient: a long transcription waits longer than the 60 s default for its reply.
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 600
+        session = URLSession(configuration: config)
         var request = URLRequest(url: URL(string: "ws://\(host):\(port)/")!)
         request.timeoutInterval = 10
         task = session.webSocketTask(with: request)
