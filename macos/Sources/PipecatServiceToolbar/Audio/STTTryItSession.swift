@@ -3,24 +3,23 @@ import Foundation
 import Observation
 import PipecatToolbarCore
 
-/// "Try it" for speech-to-text: speak into the microphone, or let the Mac read a
-/// sample sentence, then send the audio to the running server and show the transcript.
+/// "Try it" for speech-to-text: speak into the microphone, or send a fixed spoken test
+/// clip (`STTSampleClip`, no microphone), then show the transcript.
 @MainActor
 @Observable
 final class STTTryItSession {
     enum Phase: Equatable {
         case idle
         case recording
-        case preparingSample
         case transcribing
         case failed(String)
     }
 
-    static let sampleSentence = "Pipecat runs speech services right here on this Mac."
-
     private(set) var phase: Phase = .idle
     private(set) var transcript: String?
     private(set) var lastSource: String?
+    /// For the test clip: whether the transcript is its sentence. Nil for the microphone.
+    private(set) var sampleMatch: Bool?
     private(set) var latency: Duration?
     private(set) var level: Float = 0
 
@@ -103,40 +102,13 @@ final class STTTryItSession {
         return min(1, sqrt(sum / Float(buffer.frameLength)) * 6)
     }
 
-    // MARK: Sample sentence
+    // MARK: Test clip
 
-    /// Synthesizes the sample sentence with the system voice and transcribes it.
+    /// Transcribes the bundled test clip and checks the transcript against its sentence.
     func transcribeSample() async {
         guard !isBusy else { return }
-        phase = .preparingSample
-        transcript = nil
-        do {
-            let audio = try await Self.synthesize(Self.sampleSentence)
-            await transcribe(audio, source: "Sample: \u{201C}\(Self.sampleSentence)\u{201D}")
-        } catch {
-            fail("Couldn't synthesize the sample: \(error.localizedDescription)")
-        }
-    }
-
-    private static func synthesize(_ text: String) async throws -> Data {
-        let synthesizer = AVSpeechSynthesizer()
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        let collector = SampleCollector()
-        let converter = PCMStreamConverter()
-        let audio: Data = try await withCheckedThrowingContinuation { continuation in
-            synthesizer.write(utterance) { buffer in
-                guard let pcm = buffer as? AVAudioPCMBuffer else { return }
-                if pcm.frameLength == 0 {
-                    if let tail = try? converter.finish() { collector.append(tail) }
-                    if collector.finish() { continuation.resume(returning: collector.data) }
-                    return
-                }
-                if let chunk = try? converter.pcm16(from: pcm) { collector.append(chunk) }
-            }
-        }
-        withExtendedLifetime(synthesizer) {}
-        return audio
+        await transcribe(STTSampleClip.pcm16, source: "Test clip: \u{201C}\(STTSampleClip.sentence)\u{201D}")
+        if let transcript, !isFailed { sampleMatch = STTSampleClip.matches(transcript) }
     }
 
     // MARK: Transcribe
@@ -144,6 +116,8 @@ final class STTTryItSession {
     private func transcribe(_ audio: Data, source: String) async {
         phase = .transcribing
         lastSource = source
+        sampleMatch = nil
+        transcript = nil
         let client = STTClient(port: port)
         let clock = ContinuousClock()
         let start = clock.now
@@ -170,23 +144,5 @@ final class STTTryItSession {
 
     private func fail(_ message: String) {
         phase = .failed(message)
-    }
-}
-
-/// Thread-safe accumulator for synthesizer callbacks.
-private final class SampleCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private var buffer = Data()
-    private var done = false
-
-    var data: Data { lock.withLock { buffer } }
-    func append(_ chunk: Data) { lock.withLock { buffer.append(chunk) } }
-
-    /// True the first time only.
-    func finish() -> Bool {
-        lock.withLock {
-            defer { done = true }
-            return !done
-        }
     }
 }

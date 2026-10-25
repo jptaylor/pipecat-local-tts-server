@@ -546,7 +546,7 @@ struct RemoveSection: View {
     }
 }
 
-/// "Try it" for speech to text: record, or use a synthesized sample sentence.
+/// "Try it" for speech to text: record, or transcribe a fixed spoken test clip.
 struct STTTryItCard: View {
     let session: STTTryItSession
 
@@ -564,16 +564,16 @@ struct STTTryItCard: View {
                 Button {
                     Task { await session.transcribeSample() }
                 } label: {
-                    Label("Sample Voice", systemImage: "text.bubble")
+                    Label("Test Clip", systemImage: "text.bubble")
                 }
                 .buttonStyle(PillButtonStyle(tint: .accentColor))
                 .disabled(session.isBusy)
-                .help("Transcribe a sentence spoken by the system voice")
+                .help("Transcribe a fixed spoken clip and check the result (no microphone)")
 
                 Spacer()
                 if session.phase == .recording {
                     LevelMeter(level: session.level)
-                } else if session.phase == .transcribing || session.phase == .preparingSample {
+                } else if session.phase == .transcribing {
                     ProgressView().controlSize(.small)
                 }
             }
@@ -599,6 +599,14 @@ struct STTTryItCard: View {
                     }
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
+                    if let match = session.sampleMatch {
+                        Label(
+                            match ? "Matches the clip" : "Doesn't match the clip",
+                            systemImage: match ? "checkmark.circle.fill" : "xmark.circle.fill"
+                        )
+                        .font(.system(size: 11.5, weight: .medium))
+                        .legibleTint(match ? .green : .red)
+                    }
                 }
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)

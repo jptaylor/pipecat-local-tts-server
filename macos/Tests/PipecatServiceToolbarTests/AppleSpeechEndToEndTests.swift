@@ -98,6 +98,9 @@ struct AppleSpeechEndToEndTests {
         let second = try await client.transcribe(try EndToEndTests.spokenClip("Please call me back tomorrow morning."))
         #expect(second.lowercased().contains("tomorrow"), "transcript: \(second)")
         #expect(!second.lowercased().contains("weather"), "the second utterance carried the first: \(second)")
+        // The menu's "Test Transcription" clip must pass its own check against a real model.
+        let clip = try await client.transcribe(STTSampleClip.pcm16)
+        #expect(STTSampleClip.matches(clip), "test clip transcript: \(clip)")
         await client.close()
 
         server.terminate()
