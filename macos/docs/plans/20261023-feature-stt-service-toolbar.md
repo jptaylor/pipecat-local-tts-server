@@ -130,3 +130,22 @@ local speech services of both kinds:
 - **Streaming partials.** The stt protocol is commit-oriented today. Kyutai and
   SpeechAnalyzer can both stream partial transcripts if the protocol grows
   `delta` streaming.
+
+### Deferred from the review gauntlet
+
+Seven review rounds moved the app's decisions into pure `PipecatToolbarCore`
+state machines (`ServiceLifecycle`/`ServiceDriver`, `TTSRequestMachine`,
+`AppLifecycle`), pinned the STT installs (hash-pinned constraints,
+`MODEL_REVISIONS`) and shared the helper contract with the server
+(`docs/supervised-contract.json`). These were left on purpose; the same list is
+under "Known follow-ups" in [`../architecture.md`](../architecture.md):
+
+- A re-issued environment read can replace a `.failed` phase after
+  `launchFailed` (lifecycle rule 4).
+- `.discardNative` and `.stopServer(id)` are not keyed by `ServerID`.
+- `isCurrent` repeats the classification `Kind.owner` encodes.
+- The manager-install guard in `AppModel.runBootstrap` stays in the shell
+  (moving it needs new `AppLifecycle` transitions).
+- The TTS Try-it falls back to 24000 Hz when a ready line has no rate.
+- STT Try-it phase logic lives in the app target, not Core.
+- The loopback listeners have no token (`../loopback-auth.md`).
