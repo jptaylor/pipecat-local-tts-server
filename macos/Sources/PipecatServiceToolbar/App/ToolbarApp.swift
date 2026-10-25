@@ -89,6 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Quit always runs the shutdown: even with nothing running, a cache probe
     /// or the bootstrap's build may be (`AppLifecycle`).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // A second quit request while the drain runs ends the app at once: the way out of a
+        // stuck drain. Servers still exit with it (stdin EOF).
         guard !terminateReplyPending else { return .terminateNow }
         terminateReplyPending = true
         Task {
