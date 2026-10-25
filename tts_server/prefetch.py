@@ -39,6 +39,7 @@ reports ready), and any revision drift for backends that load a repo's ``main``
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import sys
@@ -153,6 +154,29 @@ def _has_weights(path: str | Path) -> bool:
     return any(p.name.endswith(_WEIGHT_SUFFIXES) for p in Path(path).rglob("*"))
 
 
+def _snapshot_complete(path: str | Path) -> bool:
+    """False when an interrupted download left the snapshot half-filled.
+
+    ``snapshot_download(local_files_only=True)`` returns the snapshot folder as soon as
+    it exists, and one finished shard satisfies ``_has_weights``, so a stopped multi-shard
+    download would read as cached. Two signals say otherwise: an unfinished blob
+    (``blobs/*.incomplete``, which huggingface_hub renames only when a file is done), and a
+    sharded checkpoint whose index names a shard that is not there. An unreadable index is
+    left to the loader to report."""
+    snap = Path(path)
+    blobs = snap.parent.parent / "blobs"
+    if blobs.is_dir() and any(blobs.glob("*.incomplete")):
+        return False
+    for index in snap.rglob("*.safetensors.index.json"):
+        try:
+            shards = set(json.loads(index.read_text())["weight_map"].values())
+        except (OSError, ValueError, KeyError, AttributeError):
+            continue
+        if any(not (index.parent / shard).exists() for shard in shards):  # broken symlink too
+            return False
+    return True
+
+
 def _progress_class(repo: str, emit: Callable[[dict], None]):
     """A plain ``tqdm`` subclass that turns hf's aggregate bars into JSON events.
 
@@ -233,6 +257,8 @@ def check_spec(spec: SnapshotSpec) -> dict[str, Any]:
         logger.debug("prefetch: %s not cached (%s)", spec.repo_id, exc)
         return row
     if spec.kind in ("model", "codec") and not _has_weights(path):
+        return row
+    if not _snapshot_complete(path):
         return row
     row.update(cached=True, path=path, size_bytes=_dir_size(path))
     return row

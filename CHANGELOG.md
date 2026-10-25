@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`prefetch` subcommand**: downloads exactly what `serve` would fetch (model repo,
   dia's codec, pocket_tts voice embeddings, phonon's pinned revision and enabled
   voices, and the phonon-q8/q4 conversion) with optional JSON-lines progress, and
-  `--check` reports whether the weights are cached without touching the network.
+  `--check` reports whether the weights are cached without touching the network (a
+  snapshot with an unfinished download blob, or missing a shard its index names, is not
+  cached).
   Each backend module now exports `prefetch_specs(model)`.
 - `pipecat-tts` console script (same CLI as `python -m tts_server`).
 - **App-path smoke** (`just smoke-supervised [backend]`, `just smoke-supervised-all`;

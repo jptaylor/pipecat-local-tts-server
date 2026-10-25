@@ -293,3 +293,66 @@ def test_cached_snapshot_is_offline_and_backends_use_only_public_prefetch_api(fa
     private = re.compile(r"\bprefetch\._\w+")
     offenders = [p.name for p in backends.glob("*.py") if private.search(p.read_text())]
     assert offenders == []
+
+
+def _hf_snapshot(root: Path, files: dict[str, bytes], blobs: tuple[str, ...] = ()) -> Path:
+    """A snapshot laid out like the HF cache: ``models--x/snapshots/<rev>/`` + ``blobs/``."""
+    repo = root / "models--org--name"
+    snap = repo / "snapshots" / "abc123"
+    snap.mkdir(parents=True)
+    (repo / "blobs").mkdir()
+    for name, data in files.items():
+        (snap / name).write_bytes(data)
+    for blob in blobs:
+        (repo / "blobs" / blob).write_bytes(b"partial")
+    return snap
+
+
+def _check(monkeypatch, snap: Path) -> dict:
+    monkeypatch.setattr(PF, "_snapshot_download", lambda spec, **_k: str(snap))
+    return PF.check_spec(PF.SnapshotSpec("org/name"))
+
+
+def _index(*shards: str) -> bytes:
+    return json.dumps({"weight_map": {f"layer{i}": s for i, s in enumerate(shards)}}).encode()
+
+
+def test_check_a_sharded_snapshot_missing_a_shard_is_not_cached(tmp_path, monkeypatch):
+    snap = _hf_snapshot(
+        tmp_path,
+        {
+            "model.safetensors.index.json": _index(
+                "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"
+            ),
+            "model-00001-of-00002.safetensors": b"x" * 10,
+            "config.json": b"{}",
+        },
+    )
+    assert _check(monkeypatch, snap)["cached"] is False  # the interrupted-download case
+
+
+def test_check_a_complete_sharded_snapshot_is_cached(tmp_path, monkeypatch):
+    snap = _hf_snapshot(
+        tmp_path,
+        {
+            "model.safetensors.index.json": _index(
+                "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"
+            ),
+            "model-00001-of-00002.safetensors": b"x" * 10,
+            "model-00002-of-00002.safetensors": b"x" * 10,
+        },
+    )
+    row = _check(monkeypatch, snap)
+    assert row["cached"] is True and row["size_bytes"] > 0
+
+
+def test_check_an_unfinished_blob_is_not_cached(tmp_path, monkeypatch):
+    snap = _hf_snapshot(tmp_path, {"model.safetensors": b"x" * 10}, blobs=("deadbeef.incomplete",))
+    assert _check(monkeypatch, snap)["cached"] is False
+
+
+def test_check_an_unreadable_index_is_left_to_the_loader(tmp_path, monkeypatch):
+    snap = _hf_snapshot(
+        tmp_path, {"model.safetensors.index.json": b"not json", "model-1.safetensors": b"x"}
+    )
+    assert _check(monkeypatch, snap)["cached"] is True
