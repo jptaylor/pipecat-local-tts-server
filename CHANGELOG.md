@@ -135,6 +135,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or a bootstrap runs (a Start during Reset no longer fails with "missing the STT
   helper"); a stop after a process was reaped never signals a reused pid's group.
 
+## [0.6.1] - 2026-10-23
+
+### Changed
+
+- Reference Pipecat adapter retries a commit rejected with `busy`, honouring the
+  server's `retry_after_ms` (+ up to 25% jitter), up to `busy_retries` (default 3)
+  within `busy_retry_budget_s` (default 3.0 s) of total waiting. Only the commit is
+  re-sent (the server keeps the buffered text on `busy`); a barge-in during the wait
+  cancels and clears. Past either bound it drops the utterance as before;
+  `busy_retries=0` restores the previous behaviour exactly.
+
+### Fixed
+
+- `scripts/render_tts_plist.py` validated values with `re.match` against `^…$`, where
+  `$` also matches before a trailing newline (`"zoey\n"` passed). Every validated value
+  now uses `fullmatch`.
+- Phonon removes orphaned quantize temp directories (`.<name>.tmp-<pid>-<tid>`, left by
+  a crash during the first conversion of an alias) when a quantized alias starts, but
+  only real directories with that exact name pattern that are more than ten minutes old.
+
 ## [0.6.0] - 2026-10-22
 
 ### Added
@@ -547,7 +567,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.3.0...v0.4.0

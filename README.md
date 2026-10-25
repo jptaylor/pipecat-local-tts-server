@@ -416,8 +416,10 @@ second) and load the result. This lowers memory, disk and load time only; TTFB a
 are unchanged. The quality of `phonon-q4` has not been judged by ear; full precision
 stays the default. The converted weights are cached under
 `$XDG_CACHE_HOME/pipecat-tts-server/phonon/` (default `~/.cache/...`), keyed by pin,
-bit width and mlx-audio version, so a pin or mlx-audio change re-converts. The server
-reports the alias you passed as its `model`.
+bit width and mlx-audio version, so a pin or mlx-audio change re-converts. A convert
+killed mid-run (`kill -9`, power loss) strands a `.<name>.tmp-<pid>-<tid>` sibling
+directory; the next start of a quantized alias removes such directories once they are
+more than ten minutes old. The server reports the alias you passed as its `model`.
 
 ```sh
 uv run python -m tts_server serve --backend phonon --model phonon-q8
@@ -722,7 +724,10 @@ re-measurement; the earlier "≈ tens of seconds" figure was a bridge-bug artifa
   reference Pipecat-framework `TTSService` adapter (`LocalTTSService`) that wraps
   the async `tts_server.client.TTSClient` so a bot pipeline can speak through a
   running server. Streams `TTSAudioRawFrame`s at the server-advertised rate and
-  sends `response.cancel` on interruption. Requires the Pipecat framework
+  sends `response.cancel` on interruption. A commit rejected with `busy` is re-sent
+  after the server's `retry_after_ms` (at most `busy_retries=3` times within
+  `busy_retry_budget_s=3.0` s of waiting); `busy_retries=0` drops the utterance on the
+  first `busy`. Requires the Pipecat framework
   (`uv sync --extra examples`, which pins `pipecat-ai==1.4.0`).
 
 ## Layout

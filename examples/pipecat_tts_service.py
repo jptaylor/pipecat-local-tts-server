@@ -17,6 +17,12 @@ What it does, mapped onto the wire protocol (``docs/protocol.md``):
 - **Barge-in** (an upstream :class:`~pipecat.frames.frames.InterruptionFrame`, or a
   pipeline ``CancelFrame``) sends ``response.cancel`` to the server so a cancelled
   response stops pinning the model's GPU lock.
+- **``busy`` retry.** A commit rejected with ``busy`` (synthesis backlog full) is
+  re-sent after the server's ``retry_after_ms`` (+ up to 25% jitter), at most
+  ``busy_retries`` times (default 3) within ``busy_retry_budget_s`` (default 3.0 s) of
+  total waiting; the text stays buffered server-side, so only the commit is re-sent.
+  Past either bound the utterance is dropped (buffer cleared, ``ErrorFrame``) exactly
+  as before; ``busy_retries=0`` restores that behaviour from the first ``busy``.
 
 **The rate contract (R1).** The server advertises its true model rate in
 ``server.hello.audio.rate`` (Kokoro = 24000) and every ``response.audio.delta`` is
@@ -61,6 +67,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import random
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
@@ -121,12 +128,24 @@ class LocalTTSService(TTSService):
         language: str | None = None,
         params: LocalTTSService.InputParams | None = None,
         sample_rate: int | None = None,
+        busy_retries: int = 3,
+        busy_retry_budget_s: float = 3.0,
         **kwargs: Any,
     ) -> None:
         # push_stop_frames lets the base class emit TTSStoppedFrame on idle, but we
         # also emit an explicit TTSStoppedFrame per response.audio.done so the
         # downstream knows the utterance ended even between commits.
         super().__init__(sample_rate=sample_rate, **kwargs)
+        # ``not (x >= 0)`` (not ``x < 0``) so a NaN budget is rejected, not silently
+        # accepted as "no time bound".
+        if not (busy_retries >= 0 and busy_retry_budget_s >= 0):
+            raise ValueError("busy_retries and busy_retry_budget_s must be >= 0")
+        # ``busy`` (synthesis backlog full) is a pre-admission rejection: the server
+        # leaves our appended text buffered, so a retry re-sends only the commit.
+        # Bounded so a late utterance never outlives its usefulness in a live call;
+        # ``busy_retries=0`` drops the utterance on the first ``busy`` (clear + error).
+        self._busy_retries = busy_retries
+        self._busy_retry_budget_s = busy_retry_budget_s
         self._client_kwargs: dict[str, Any] = {
             "socket_path": socket_path,
             "host": host,
@@ -325,6 +344,31 @@ class LocalTTSService(TTSService):
             # connection the session and its buffer are already gone.
             pass
 
+    def _busy_retry_delay(self, ev: dict[str, Any], waited_s: float) -> float | None:
+        """Seconds to wait before re-sending the commit after a ``busy`` ``error``, or
+        ``None`` to give up (not ``busy``, no usable ``retry_after_ms`` hint, or the
+        wait would exceed the remaining budget). The server's hint is honoured with up
+        to +25% jitter so concurrent clients do not retry in lockstep."""
+        err = ev.get("error")
+        err = err if isinstance(err, dict) else {}
+        if err.get("code", ev.get("code")) != P.ErrorCode.BUSY:
+            return None
+        hint = ev.get("retry_after_ms", err.get("retry_after_ms"))
+        # ``0 <= hint <= budget`` also rejects NaN (``hint < 0`` let it through, and
+        # ``asyncio.sleep(nan)`` returns at once), inf, and ints too large to convert to
+        # float (``hint / 1000.0`` would raise OverflowError); a hint over the whole
+        # budget could never be honoured anyway.
+        if (
+            isinstance(hint, bool)
+            or not isinstance(hint, int | float)
+            or not 0 <= hint <= self._busy_retry_budget_s * 1000.0
+        ):
+            return None
+        delay = hint / 1000.0 * (1.0 + random.uniform(0.0, 0.25))
+        if waited_s + delay > self._busy_retry_budget_s:
+            return None
+        return delay
+
     # --- synthesis ---------------------------------------------------------
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         """Synthesize ``text`` as one commit and yield its audio frames.
@@ -358,6 +402,8 @@ class LocalTTSService(TTSService):
         # text we appended (commit not yet admitted, or rejected pre-admission),
         # which must be cleared on any exit so it cannot leak into the next commit.
         commit_admitted = False
+        busy_attempts = 0
+        busy_waited_s = 0.0
         # ONE try spans the commit AND the drain so a cancellation anywhere from
         # the commit onward (barge-in / teardown) reaches the cancel handler. The
         # bare cancel it sends travels the SAME connection AFTER the commit, and the
@@ -457,7 +503,28 @@ class LocalTTSService(TTSService):
                         prev = ev["error"].get("event_id")
                     if prev is not None and prev != commit_event_id:
                         continue
-                    # Ours (or uncorrelated/connection-level), and not retried here.
+                    # Ours (or uncorrelated/connection-level). A pre-admission ``busy``
+                    # is retried below (bounded); anything else is not retried here.
+                    if not commit_admitted and busy_attempts < self._busy_retries:
+                        delay = self._busy_retry_delay(ev, busy_waited_s)
+                        if delay is not None:
+                            busy_attempts += 1
+                            busy_waited_s += delay
+                            # A cancel during this wait lands in the CancelledError
+                            # handler below: it cancels and clears the buffer.
+                            await asyncio.sleep(delay)
+                            commit_event_id = uuid.uuid4().hex
+                            try:
+                                await client.commit(
+                                    extras=self._params.to_extras() or None,
+                                    event_id=commit_event_id,
+                                )
+                            except Exception as exc:  # noqa: BLE001 (send-side failure)
+                                await self._drop_buffer()
+                                yield ErrorFrame(error=f"tts_server commit failed: {exc}")
+                                yield TTSStoppedFrame(context_id=context_id)
+                                return
+                            continue
                     # The cleanup depends on whether our commit was ever admitted:
                     #   - admitted (response in flight): an ``error`` is not
                     #     necessarily terminal server-side (unlike
@@ -468,7 +535,8 @@ class LocalTTSService(TTSService):
                     #     or ``payload_too_large``): there is no response to cancel,
                     #     and the server left our appended text in the buffer for a
                     #     retry we will not make. Clear it so it cannot be
-                    #     synthesized as part of the next utterance.
+                    #     synthesized as part of the next utterance. (Reached for a
+                    #     ``busy`` only once retries/budget are exhausted or disabled.)
                     if commit_admitted:
                         await self._send_cancel()
                     else:

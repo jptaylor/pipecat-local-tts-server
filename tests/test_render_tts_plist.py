@@ -394,3 +394,55 @@ def test_main_rejects_malformed_ws_ping(tmp_path, bad):
 def test_phonon_quant_alias_model_renders_unchanged():
     args = _render(backend="phonon", model="phonon-q8")["ProgramArguments"]
     assert args[args.index("--model") + 1] == "phonon-q8"
+
+
+@pytest.mark.parametrize(
+    ("var", "valid", "extra"),
+    [
+        ("PIPECAT_TTS_LABEL", "pipecat.tts-server.test", {}),
+        ("PYTHON", sys.executable, {}),
+        ("REPO_ROOT", str(REPO_ROOT), {}),
+        ("BACKEND", "kokoro", {}),
+        ("HOST", "127.0.0.1", {}),
+        ("PORT", "8765", {}),
+        ("HOME", "/Users/test", {}),
+        ("LOG_DIR", "/Users/test/logs", {}),
+        ("MODEL", "mlx-community/Kokoro-82M-bf16", {}),
+        ("AUTH_TOKEN_FILE", "/Users/test/token", {}),
+        ("PIPECAT_TTS_KOKORO_EXTRA_LANGS", "ja,zh", {}),
+        ("PIPECAT_TTS_PHONON_VOICES", "zoey,juniper", {"BACKEND": "phonon"}),
+        ("TTS_WS_PING_INTERVAL", "20", {}),
+        ("TTS_WS_PING_TIMEOUT", "none", {}),
+    ],
+)
+def test_main_rejects_trailing_newline_in_every_validated_value(tmp_path, var, valid, extra):
+    """``$`` also matches before a trailing newline, so a ``match`` against ``^…$``
+    would accept ``"zoey\\n"``. Every validated env var uses ``fullmatch``: the
+    plain value renders (control), the same value plus ``\\n`` is rejected and
+    writes no plist."""
+    (tmp_path / "ok").mkdir()
+    (tmp_path / "bad").mkdir()
+    ok, ok_dst = _run_main(tmp_path / "ok", {**extra, var: valid})
+    assert ok.returncode == 0, ok.stderr
+    assert ok_dst.exists()
+
+    bad, bad_dst = _run_main(tmp_path / "bad", {**extra, var: valid + "\n"})
+    assert bad.returncode == 2, bad.stderr
+    assert "rejected by allowlist" in bad.stderr
+    assert not bad_dst.exists()
+
+
+def test_main_rejects_trailing_newline_in_plist_dst(tmp_path):
+    """``PLIST_DST`` goes through the same ``_require`` allowlist, but ``_run_main``
+    pins it to its own path, so the parametrized test above cannot cover it."""
+    dst = tmp_path / "custom.plist"
+    ok, _ = _run_main(tmp_path, {"PLIST_DST": str(dst)})
+    assert ok.returncode == 0, ok.stderr
+    assert dst.exists()
+    dst.unlink()
+
+    bad, _ = _run_main(tmp_path, {"PLIST_DST": str(dst) + "\n"})
+    assert bad.returncode == 2, bad.stderr
+    assert "rejected by allowlist" in bad.stderr
+    assert not dst.exists()
+    assert not Path(str(dst) + "\n").exists()

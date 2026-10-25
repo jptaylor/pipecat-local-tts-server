@@ -40,8 +40,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -205,36 +207,46 @@ def _quantize(snapshot_path: str, dest: str, bits: int) -> None:
     convert(snapshot_path, dest, quantize=True, q_bits=bits, q_group_size=Q_GROUP_SIZE)
 
 
-def _pid_alive(pid: int) -> bool:
-    """Whether a process ``pid`` exists (one we may not signal still counts)."""
-    if pid <= 0:
-        return True  # not a real pid: never treat it as dead
+# ``_ensure_quantized`` builds into ``.<final>.tmp-<pid>-<tid>`` and renames it into
+# place, so a crash (kill -9, power loss) mid-convert strands only that sibling dir.
+# Age, not pid liveness, decides what is stale: a convert takes seconds (a few minutes
+# at worst), so a 10-minute-old dir cannot belong to a live one, and a pid check is
+# wrong across hosts sharing a home directory or after pid reuse. Kept short because a
+# convert that is killed on every start (launchd restarts it every 10 s) strands one
+# ~60 MB dir per start, and this age bounds how many pile up (~60 dirs, not ~360).
+_STALE_TMP_RE = re.compile(r"\..+\.tmp-\d+-\d+")
+_STALE_TMP_AGE_S = 600.0
+
+
+def _newest_mtime(path: str) -> float:
+    newest = os.stat(path).st_mtime
+    with os.scandir(path) as it:
+        for entry in it:
+            newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
+    return newest
+
+
+def _sweep_stale_tmp(parent: Path, max_age_s: float = _STALE_TMP_AGE_S) -> None:
+    """Best-effort removal of orphaned quantize temp dirs under ``parent``. Only real
+    (non-symlink) directories named exactly ``.<name>.tmp-<int>-<int>`` whose newest
+    mtime is older than ``max_age_s`` go; any error leaves the entry in place."""
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
+        entries = list(os.scandir(parent))
     except OSError:
-        return True  # EPERM: alive, owned by someone else
-    return True
-
-
-def _sweep_dead_temps(final: Path) -> None:
-    """Remove ``final``'s temp siblings left by a conversion whose process is gone.
-
-    A conversion killed by SIGTERM (the app's Cancel) or ``os._exit`` never runs its
-    ``finally``, and every run names its temp dir by its own pid and thread, so nothing
-    else would ever remove it. A live pid's dir (a concurrent conversion, including
-    another thread of this process) is left alone."""
-    prefix = f".{final.name}.tmp-"
-    for entry in final.parent.iterdir():
-        if not entry.name.startswith(prefix):
+        return
+    now = time.time()
+    for entry in entries:
+        try:
+            if not _STALE_TMP_RE.fullmatch(entry.name) or entry.is_symlink():
+                continue
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            if now - _newest_mtime(entry.path) <= max_age_s:
+                continue
+            logger.info("phonon: removing stale quantize temp dir %s", entry.path)
+            shutil.rmtree(entry.path, ignore_errors=True)
+        except OSError:
             continue
-        pid_text = entry.name[len(prefix) :].split("-", 1)[0]
-        if not pid_text.isdigit():
-            continue
-        pid = int(pid_text)
-        if pid != os.getpid() and not _pid_alive(pid):
-            shutil.rmtree(entry, ignore_errors=True)
 
 
 def _ensure_quantized(snapshot_path: str, sha: str, bits: int) -> str:
@@ -243,10 +255,10 @@ def _ensure_quantized(snapshot_path: str, sha: str, bits: int) -> str:
     prior run or a concurrent start) is reused without converting. Any failure
     removes the temp dir, leaves no final dir and propagates (no fp fallback)."""
     final = _quantized_dir(sha, bits)
+    _sweep_stale_tmp(final.parent)
     if final.is_dir():
         return str(final)
     final.parent.mkdir(parents=True, exist_ok=True)
-    _sweep_dead_temps(final)
     tmp = final.parent / f".{final.name}.tmp-{os.getpid()}-{threading.get_ident()}"
     shutil.rmtree(tmp, ignore_errors=True)
     try:
